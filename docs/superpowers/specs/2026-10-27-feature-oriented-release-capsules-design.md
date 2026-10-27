@@ -13,9 +13,9 @@ diffs, rehearse it on staging, then promote the same payload to production.
 
 The requested delivery order is template implementation and PR, downstream
 template upgrade after merge, then downstream migration conversion and staging
-qualification. This documentation PR supplies the spec and implementation plan;
-it implements no commands and authorizes no database writes or template upgrade.
-The target is the APEX 26.1 template. Work is inline, without subagents.
+qualification. This design now has a template implementation on the APEX 26.1
+PR branch. It authorizes no database writes or downstream template upgrade.
+Work is inline, without subagents.
 
 For a small release containing a couple of DDL statements and a few package
 updates, the proposed database-object target is 120 seconds, including identity
@@ -167,10 +167,27 @@ only once across the selected release. Conflicting versions never select a
 silent "last one wins."
 
 The fast path accepts complete stored-source units and supported, statically
-analyzable object DDL/grants. Opaque blocks, runtime DML, data repair/backfills,
-and arbitrary dynamic SQL belong in separately reviewed existing step types.
-Trusted generated source-delivery wrappers are permitted only when generated
-from validated full source and bound to that source hash.
+analyzable object DDL/grants. Opaque blocks, DDL outside the feature path, and
+arbitrary dynamic SQL stay uncovered. Version-2 `sql-script` and `ords-import`
+steps use `{type,file,schema}` logical targets (plus `excludeModules` for ORDS);
+they reject `connection` and `expectedUser`. Resolve each logical schema through
+the selected environment's migration profile, capture its complete observed
+identity in `step:<manifest-number>` of the target plan, and revalidate the
+profile and identity under the rollout's target writer lease before writing.
+Schema-version 1 retains its explicit connection and expected-user contract.
+An ORDS source must name the actual REST owner, and the selected profile must
+log in as that owner.
+
+Classify SQL-script bytes as the data phase only when each validated top-level
+statement begins with `INSERT`, `UPDATE`, `DELETE`, or `MERGE`, with optional
+explicit `COMMIT`/`ROLLBACK` statements. Any DDL, PL/SQL, query, call, or other
+form remains uncovered object work. Recognized ORDS imports are a separate
+phase. Reports bind phase and reason to the capsule source and workflow-engine
+digest; stage proof recomputes each phase and checks full step/phase coverage.
+This source classification does not prove the absence of trigger,
+autonomous-transaction, or external effects. Trusted generated source-delivery
+wrappers are permitted only when generated from validated full source and bound
+to that source hash.
 
 Legacy version-1 manifests and dated migration execution remain unchanged.
 
@@ -249,13 +266,14 @@ SQLcl's warning-success output), or changed source produce failure rather than
 a receipt. Preserve the existing treatment of ordinary compiler warnings.
 
 Route all DDL/package work in a qualified release through `feature-migrate`.
-The timing report lists included and excluded steps; object work remaining in
-legacy/DBA steps makes coverage incomplete and the fast production qualification
-ineligible. Measure `feature-migrate` execution from guarded revalidation through final
-checks. Sum that time across all object checkpoints and compare it with
-`databaseObjectBudgetSeconds`; preparation, APEX import, ORDS, data steps, and
-pauses have independent durations. A stage budget overrun preserves verified
-database results but disqualifies the stage report for production promotion.
+The timing report lists included and excluded steps; legacy migrations and
+uncovered object work make coverage incomplete and the fast production
+qualification ineligible. Measure `feature-migrate` execution from guarded
+revalidation through final checks. Sum that time across all object checkpoints
+and compare it with `databaseObjectBudgetSeconds`; preparation, APEX import,
+recognized ORDS, classified data steps, and pauses have independent durations.
+A stage budget overrun preserves verified database results but disqualifies
+the stage report for production promotion.
 Do not hard-kill active DDL to meet the aggregate budget. Stop before starting
 further object writes after the budget is exhausted.
 
@@ -267,8 +285,9 @@ does not coordinate different repositories, and cannot prove current live state.
 Only an owned local writer may update it; concurrent updates must fail closed.
 
 An interrupted/unknown apply stays unresolved even if scratch is missing.
-Refuse automatic retry or a new overlapping target release. Read the live
-selected state before preparing recovery. The explicit
+Refuse automatic retry or a new overlapping target release. Unknown whole-run
+state also keeps its target scopes occupied until an operator reconciles the
+outcome. Read the live selected state before preparing recovery. The explicit
 `--prepare --recover <attempt-id>` path binds a new reviewed target plan to
 that attempt and the observed partial state; it executes no repair by itself.
 Keep old attempt evidence and link a verified recovery rather than rewriting it.

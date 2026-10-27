@@ -38,6 +38,9 @@ PROTECTED_SAMPLES = (
     "app_context/100/purpose.md",
     "dev-tests/suites/orders.json",
     "dev-tests/suites/sql/create-orders.sql",
+    "features/example/APP_CODE/packages/example.pks.sql",
+    "releases/current.json",
+    "releases/.local-state.json",
     ".env",
     LOCK_NAME,
 )
@@ -106,6 +109,10 @@ def protected_project_path(path: str) -> bool:
     if path in {"migrations/.gitkeep", "migrations/README.md"}:
         return False
     if path.startswith("migrations/"):
+        return True
+    if path in {"features/.gitkeep", "releases/.gitkeep"}:
+        return False
+    if path.startswith("features/") or path.startswith("releases/"):
         return True
     if path == "app_context/README.md":
         return False

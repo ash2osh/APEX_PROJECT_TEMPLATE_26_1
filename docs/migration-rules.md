@@ -545,11 +545,18 @@ could not complete. Rehearsal evidence is kept under
 ## Rollout
 
 `scripts/team.sh rollout <manifest.json> --env <env>` executes a reviewed
-release as an ordered manifest. The [example manifest](rollout-manifest.example.json)
-shows each supported step type. Replace the example paths, aliases, schemas
-and application ID with project-owned files and descriptors before use.
+release as an ordered manifest. Schema version 1 keeps the migration, SQL,
+ORDS, app and pause steps described below. Schema version 2 is the separate
+feature-capsule path: it freezes committed feature sources once, prepares an
+environment-specific target plan, executes selected package/DDL checkpoints,
+and requires a verified staging report before production. See
+[feature-oriented releases](feature-releases.md) and its
+[version-2 example](feature-release.example.json). The
+[version-1 example](rollout-manifest.example.json) remains the example for the
+original step model. Replace example paths, aliases, schemas and application
+IDs with project-owned files and descriptors before use.
 
-The manifest is UTF-8 JSON with no duplicate keys. Its root contains exactly
+The schema-version 1 manifest is UTF-8 JSON with no duplicate keys. Its root contains exactly
 `schemaVersion` (integer `1`) and a nonempty `steps` array. Paths are relative
 to the repository root, use forward slashes, and may not contain `.`/`..`,
 symbolic links or generated `scratch/` state. Supported step types are:
@@ -567,12 +574,19 @@ Every input is hashed before execution and checked again around each step. A
 staging or production run has one manifest-level confirmation listing the
 manifest, destinations and input hashes; there is no confirmation bypass. DEV
 uses the normal DEV identity and migration guards. `--dry-run` validates
-inputs and writes reports without executing steps. JSON and Markdown reports
+inputs and writes reports without executing steps. Schema-version 2 dry-run
+checks the capsule and selected local source hashes offline; `--prepare` is a
+separate guarded, read-only target operation. JSON and Markdown reports
 include step status, timing, hashes and evidence paths. Successful receipts
 are local recovery evidence under `scratch/rollout-receipts/`; resuming with
 `--from-step N` requires matching receipts for every earlier step. Inspect
 target state before resuming after an ambiguous write. Reports may not overlap
-rollout inputs, receipts or recovery evidence.
+rollout inputs, receipts or recovery evidence. Capsule attempt state is local to
+this checkout, and a capsule's database-object budget covers only its feature
+checkpoints; legacy migration, SQL-script, ORDS and app-deploy time is excluded.
+When database-object work remains outside feature checkpoints, report budget
+coverage as incomplete. The budget detects overruns after an Oracle operation;
+it cannot prevent DDL from committing.
 
 ## Generated baseline migrations
 

@@ -399,6 +399,8 @@ def _capture(
     baseline_prefixes: Sequence[str] = (),
     baseline_excluded: Sequence[str] = (),
     baseline_data_tables: Sequence[Mapping] = (),
+    baseline_names: Sequence[str] = (),
+    scope_names: Sequence[str] = (),
 ) -> dict:
     try:
         target = resolve_target(values, environment, "read", schema=schema)
@@ -415,6 +417,8 @@ def _capture(
             baseline_prefixes=baseline_prefixes,
             baseline_excluded=baseline_excluded,
             baseline_data_tables=baseline_data_tables,
+            baseline_names=baseline_names,
+            scope_names=scope_names,
         )
     except TargetResolutionError as error:
         raise BaselineError(str(error)) from error
@@ -1790,15 +1794,16 @@ def _needs_clob_assembly(lines: Sequence[str]) -> bool:
     return False
 
 
-def _clob_source_step(unit: Mapping, settings: Mapping) -> str:
+def _clob_source_step(unit: Mapping, settings: Mapping | None) -> str:
     lines = [
         f"-- Exact stored source for {unit['type']} {unit['name']} assembled as a CLOB.",
-        _session_settings_sql(settings),
         "DECLARE",
         "  l_source CLOB;",
         "BEGIN",
         "  l_source := TO_CLOB('CREATE OR REPLACE ');",
     ]
+    if settings is not None:
+        lines.insert(1, _session_settings_sql(settings))
     for exported in unit["lines"]:
         has_newline = exported.endswith("\n")
         content = exported[:-1] if has_newline else exported
@@ -1814,11 +1819,12 @@ def _clob_source_step(unit: Mapping, settings: Mapping) -> str:
     return "\n".join(lines)
 
 
-def _direct_source_step(unit: Mapping, settings: Mapping) -> str:
+def _direct_source_step(unit: Mapping, settings: Mapping | None) -> str:
     stored = "".join(unit["lines"])
+    settings_sql = f"{_session_settings_sql(settings)}\n" if settings is not None else ""
     sql = (
         f"-- Exact stored source for {unit['type']} {unit['name']}.\n"
-        f"{_session_settings_sql(settings)}\n"
+        f"{settings_sql}"
         "CREATE OR REPLACE "
         f"{stored}"
     )
@@ -1843,7 +1849,7 @@ def _clob_ddl_step(label: str, ddl: str) -> str:
     return "\n".join(lines)
 
 
-def _exact_source_step(unit: Mapping, settings: Mapping) -> str:
+def _exact_source_step(unit: Mapping, settings: Mapping | None) -> str:
     return _clob_source_step(unit, settings) if _needs_clob_assembly(unit["lines"]) else _direct_source_step(unit, settings)
 
 

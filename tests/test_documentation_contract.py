@@ -19,6 +19,7 @@ DOCS = (
     ROOT / "migrations" / "README.md",
     ROOT / "docs" / "migration-planning.md",
     ROOT / "docs" / "migration-rules.md",
+    ROOT / "docs" / "feature-releases.md",
     ROOT / "docs" / "compare-env.md",
     ROOT / "docs" / "publish-rules.md",
     ROOT / "docs" / "GETTING_STARTED.md",
@@ -116,6 +117,7 @@ class DocumentationContractTests(unittest.TestCase):
             "team.sh migrate",
             "team.sh revise",
             "team.sh rollout",
+            "team.sh feature",
             "--rehearse",
             "--env dev",
             "compare-schema",
@@ -152,6 +154,16 @@ class DocumentationContractTests(unittest.TestCase):
         self.assertIn("## Rollout", migration_guide)
         self.assertIn("one manifest-level confirmation", migration_guide)
         self.assertIn("rollout-manifest.example.json", migration_guide)
+        feature_guide = contents[ROOT / "docs" / "feature-releases.md"]
+        for required in (
+            "feature freeze", "--prepare", "--stage-report", "--recover",
+            "unresolved", "coverage is incomplete", "checksum-archive",
+            "inventory and reconcile", "do not prove live staging performance",
+        ):
+            with self.subTest(feature_guide=required):
+                self.assertIn(required, feature_guide)
+        self.assertIn("Schema version 1 keeps", migration_guide)
+        self.assertIn("database-object budget", migration_guide)
         limitations = contents[ROOT / "docs" / "known-limitations.md"]
         for limitation in ("whitespace-only lines", "trailing hyphen", "DBMS_LOB.APPEND", "five-minute", "patch levels"):
             with self.subTest(limitation=limitation):

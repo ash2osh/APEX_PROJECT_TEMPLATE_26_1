@@ -142,7 +142,12 @@ class TeamPowerShellRolloutCommandTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("rollout <manifest.json> --env <env> [--from-step N] [--dry-run] [--report <file>]", result.stdout)
+        for option in (
+            "rollout <manifest.json>", "--from-step N", "--dry-run", "--prepare",
+            "--capsule DIR", "--stage-report FILE", "--recover ATTEMPT", "--report <file>",
+        ):
+            with self.subTest(option=option):
+                self.assertIn(option, result.stdout)
 
     def engines(self):
         return [
@@ -185,10 +190,12 @@ class TeamPowerShellRolloutCommandTests(unittest.TestCase):
                     check=False,
                 )
                 self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-                self.assertIn(
-                    "usage: scripts/team.ps1 rollout <manifest.json> --env <env> [--from-step N] [--dry-run] [--report <file>]",
-                    result.stderr,
-                )
+                for option in (
+                    "usage: scripts/team.ps1 rollout <manifest.json>", "--from-step N", "--dry-run", "--prepare",
+                    "--capsule DIR", "--stage-report FILE", "--recover ATTEMPT", "--report <file>",
+                ):
+                    with self.subTest(engine=Path(engine).name, option=option):
+                        self.assertIn(option, result.stderr)
 
     def test_help_documents_preflight_inventory_retry_setting(self):
         text = (ROOT / "scripts" / "team.ps1").read_text(encoding="utf-8")

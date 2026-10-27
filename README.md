@@ -19,6 +19,7 @@ separate file changes only and do not isolate a shared APEX application.
 | understand an error message | [Troubleshooting](docs/TROUBLESHOOTING.md) |
 | look up a command | [Command reference](#command-reference) |
 | inspect migration folders before selecting an order | [Migration planning](docs/migration-planning.md) |
+| build a focused package release capsule | [Feature-oriented releases](docs/feature-releases.md) |
 | compare full environment catalogs or generate a baseline | [Environment comparison](docs/compare-env.md), [Baseline generation](docs/baseline.md) |
 | see the 26.1 backport qualification | [APEX 26.1 qualification](docs/apex-26.1-qualification.md) |
 | know exactly when publish or migrate refuses | [publish-rules](docs/publish-rules.md), [migration-rules](docs/migration-rules.md) |
@@ -39,6 +40,7 @@ project-specific tests and the operational scripts, `.env`, manifest and lock.
 | Two ways to work | **Builder-first** (change it in APEX, export it) or **file-first** (edit the files, publish them). |
 | Safe publish | Refuses to overwrite newer Builder work, stamps who published and when, then re-exports the app and checks it byte for byte against your files. |
 | SQL migrations | Dated folders of numbered SQL plus `checks.json`; a live check for conflicts before applying; a verified receipt after. |
+| Feature-oriented releases | Mutable complete package sources, readable DEV diffs and one frozen staging-to-production capsule with local recovery evidence. |
 | DEV test runner | Read-only planning and explicit schema-owner fixture runs with durable reports and retained results; see [DEV test runner](docs/dev-test.md). |
 | Environment baselines | Read-only capture and granular or optionally bundled structure, grant and exact-source migration generation, with separate optional reference data. |
 | Schema comparison | Read-only comparison of selected tables, views and code between DEV, staging and production. |
@@ -527,6 +529,31 @@ workflow; baseline commands do not apply SQL. See
 [baseline generation](docs/baseline.md) for its capture, data and recovery
 limits. Live baseline commands require SQLcl 26.3.0.0 or newer.
 
+## Feature-oriented releases
+
+Use mutable feature directories for new database-object work that benefits
+from complete package sources and compact review diffs. `feature capture` reads
+only DEV; `feature diff` stays offline. Freeze committed inputs into one
+environment-neutral capsule, prepare each target separately, and promote the
+same payload from staging to production:
+
+```bash
+scripts/team.sh feature init inventory --schema APP_CODE
+scripts/team.sh feature capture inventory --package ITEM_LOOKUP --schema APP_CODE --env dev
+scripts/team.sh feature diff inventory --schema APP_CODE
+scripts/team.sh feature freeze releases/current.json
+scripts/team.sh rollout releases/current.json --env staging --dry-run --capsule <capsule-dir>
+scripts/team.sh rollout releases/current.json --env staging --prepare --capsule <capsule-dir> --report scratch/staging-prepare.json
+```
+
+Keep existing dated migrations and schema-version 1 rollout manifests on their
+current path. Capsule runs use a separate target plan and local attempt state;
+an unresolved write requires reconciliation before recovery. Production also
+requires the verified staging report for the same capsule. Budget timing covers
+selected feature checkpoints only, not app imports or excluded legacy object
+work. Read the [feature release guide](docs/feature-releases.md) before using a
+capsule against a shared target.
+
 ## Staging and production deployments
 
 For direct promotion, configure the target connection/user pair in `.env` and
@@ -736,7 +763,8 @@ unknown. Version and compatibility do not prove feature privileges or availabili
 | `scripts/team.sh archive-migrations <folder> [...] [--schema NAME] [--destination DIR] [--reason TEXT] [--yes]` | Preview archiving released folders; `--yes` moves them and updates the archived revision index. Use `--all [--keep <folder>...]` to select by schema scope. |
 | `scripts/team.sh query --env <dev\|staging\|prod> --connection <tables\|code\|apex\|ords> [--schema NAME] [--file PATH \| SQL]` | Run one conservative, bounded SELECT in a read-only SQLcl transaction; see [read-only ad-hoc queries](#read-only-ad-hoc-queries). |
 | `scripts/team.sh verify <folder> [...] --env <env> [--phase pre\|post\|both] [--only-failed] [--format text\|json] [--jobs N]` | Evaluate migration checks read-only; false checks return 1 and errors return 2. |
-| `scripts/team.sh rollout <manifest.json> --env <env> [--from-step N] [--dry-run] [--report <file>]` | Run a frozen ordered deployment plan; staging and production use one manifest-wide confirmation. |
+| `scripts/team.sh feature <init\|capture\|diff\|freeze\|clean-capsule> ...` | Create and review mutable feature sources, freeze committed schema-version 2 inputs, or preview/apply eligible local capsule cleanup. |
+| `scripts/team.sh rollout <manifest.json> --env <env> [--from-step N] [--dry-run] [--prepare] [--capsule DIR] [--stage-report FILE] [--recover UUID] [--report <file>]` | Run a schema-version 1 ordered rollout or prepare, execute and promote a feature capsule; production capsule execution requires staging proof. |
 | `scripts/team.sh compare-schema --env <env> --object <name>` | Compare selected live schema objects read-only. |
 | `scripts/team.sh compare-env --from <env> --to <env> [--section <name>] [--format text\|json\|markdown]` | Compare complete, paged environment catalogs by object name. |
 | `scripts/team.sh baseline export-source --from <env>` | Export exact stored source, compiler settings and view text to scratch. |
@@ -757,13 +785,14 @@ unknown. Version and compatibility do not prove feature privileges or availabili
 | `scripts/team.sh mcp status` | Show the saved browser MCP choice for this checkout. |
 
 `verify` uses read-only check sessions, confirms the target identity for every
-session and never applies migration SQL. `rollout` hashes all referenced input
-files before execution, stops at the first failed step and records private
-receipts under `scratch/`. A resume requires matching receipts for the same
-manifest, environment and source hashes. `--dry-run` validates the manifest
-and prints its hashes without running steps. See the [rollout rules and
-manifest schema](docs/migration-rules.md#rollout) and the
-[example manifest](docs/rollout-manifest.example.json).
+session and never applies migration SQL. Schema-version 1 `rollout` hashes all
+referenced input files before execution, stops at the first failed step and
+records private receipts under `scratch/`; a resume requires matching receipts
+for the same manifest, environment and source hashes. Schema-version 2 uses a
+frozen capsule, target-specific plans, and local checkpoint attempts; see the
+[rollout rules and manifest schema](docs/migration-rules.md#rollout), the
+[schema-version 1 example](docs/rollout-manifest.example.json), and the
+[feature release guide](docs/feature-releases.md).
 
 Exit status, the same in Bash and PowerShell:
 
