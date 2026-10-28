@@ -275,6 +275,77 @@ class FeatureRolloutTests(unittest.TestCase):
         self.assertEqual(value, f"RECONCILE {attempt_id}")
         read.assert_called_once_with("Reconciliation acknowledgment: ")
 
+    def test_recovery_refuses_to_replay_verified_prior_write_steps(self) -> None:
+        plan = self._plan([
+            {"type": "sql-script", "schema": "APP_DATA"},
+            self.steps[0],
+            self.steps[1],
+        ])
+        target_plan = SimpleNamespace(recovery_binding={"checkpoint": 2})
+        parent_run = {"steps": [
+            {"step": 1, "status": "verified"},
+            {"step": 2, "status": "verified"},
+            {"step": 3, "status": "failed"},
+        ]}
+
+        with self.assertRaisesRegex(rollout.RolloutError, r"would replay previously verified writing step\(s\): 1"):
+            rollout._assert_recovery_will_not_replay_prior_writes(plan, target_plan, parent_run)
+
+    def test_recovery_allows_prior_read_only_steps_and_requires_verified_writes(self) -> None:
+        read_only_plan = self._plan([
+            {"type": "verify", "phase": "pre"},
+            self.steps[0],
+            self.steps[1],
+        ])
+        target_plan = SimpleNamespace(recovery_binding={"checkpoint": 2})
+        parent_run = {"steps": [
+            {"step": 1, "status": "verified"},
+            {"step": 2, "status": "verified"},
+            {"step": 3, "status": "failed"},
+        ]}
+        rollout._assert_recovery_will_not_replay_prior_writes(read_only_plan, target_plan, parent_run)
+
+        write_plan = self._plan([
+            {"type": "ords-import", "schema": "REST_API"},
+            self.steps[0],
+            self.steps[1],
+        ])
+        parent_run["steps"][0]["status"] = "unknown"
+        with self.assertRaisesRegex(rollout.RolloutError, "does not have a verified receipt"):
+            rollout._assert_recovery_will_not_replay_prior_writes(write_plan, target_plan, parent_run)
+
+    def test_capsule_recovery_refuses_prior_write_before_confirmation(self) -> None:
+        from scripts import release_state
+
+        steps = [
+            {"type": "sql-script", "schema": "APP_DATA"},
+            self.steps[0],
+            self.steps[1],
+        ]
+        self._enter(self._patches(steps=steps))
+        attempt_id = "12345678-1234-4234-8234-123456789abc"
+        recovery_plan = self._target_plan("staging", 2, "2" * 64)
+        recovery_plan.recovery_attempt = attempt_id
+        recovery_plan.recovery_binding = {"checkpoint": 2}
+        self._patch_mocks[4].return_value = recovery_plan
+        parent_run = {"steps": [
+            {"step": 1, "status": "verified"},
+            {"step": 2, "status": "verified"},
+            {"step": 3, "status": "failed"},
+        ]}
+        confirmations = []
+
+        with patch.object(release_state, "recovery_parent_rollout", return_value=parent_run) as parent, \
+             patch.object(rollout, "_validate_capsule_auxiliary_targets"):
+            status = rollout.run_rollout(
+                self.manifest_path, "staging", repo_root=self.root, capsule_path=self.capsule_path,
+                confirm=lambda prompt: confirmations.append(prompt) or True,
+            )
+
+        self.assertEqual(status, 2)
+        parent.assert_called_once()
+        self.assertEqual(confirmations, [])
+
     def test_prod_refuses_without_stage_proof_before_checkpoint_execution(self) -> None:
         from scripts import feature_release
 

@@ -101,6 +101,14 @@ or stale PID file does not establish this.
 scripts/team.sh rollout releases/current.json --env staging --prepare --capsule <capsule-dir> --recover <attempt-uuid>
 ```
 
+Recovery restarts the frozen step order from the beginning. It refuses before
+confirmation when an earlier migration, SQL script, ORDS import, or APEX import
+already has a verified receipt, because replaying that completed write could
+duplicate data changes or overwrite intervening application work. The refusal
+keeps the attempt, receipt, and capsule intact. Do not rerun that capsule; retain
+the evidence while preparing a separately reviewed recovery plan that does not
+repeat the completed writes. The runner will not infer that replay is safe.
+
 Production needs its own prepared production plan and a successful staging
 report for the same capsule:
 

@@ -1963,6 +1963,49 @@ def _selected_capsule_signature(capsule) -> tuple:
     )
 
 
+def _assert_recovery_will_not_replay_prior_writes(plan: Sequence[dict], target_plan, parent_run: Mapping) -> None:
+    """Refuse recovery when restarting the frozen order would repeat a completed write step."""
+    binding = getattr(target_plan, "recovery_binding", None)
+    checkpoint = binding.get("checkpoint") if isinstance(binding, Mapping) else None
+    if type(checkpoint) is not int or checkpoint < 1:
+        raise RolloutError("recovery plan has no valid checkpoint binding")
+    checkpoint_step_number = None
+    feature_checkpoint = 0
+    for item in plan:
+        if item["type"] == "feature-migrate":
+            feature_checkpoint += 1
+            if feature_checkpoint == checkpoint:
+                checkpoint_step_number = item["number"]
+                break
+    if checkpoint_step_number is None:
+        raise RolloutError("recovery checkpoint is outside the frozen rollout step list")
+
+    parent_steps = parent_run.get("steps")
+    if not isinstance(parent_steps, list) or len(parent_steps) != len(plan):
+        raise RolloutError("recovery parent does not contain complete ordered step outcomes")
+    write_types = {"migrate", "sql-script", "ords-import", "app-deploy"}
+    completed_writes = []
+    for item in plan[:checkpoint_step_number - 1]:
+        if item["type"] not in write_types:
+            continue
+        outcome = parent_steps[item["number"] - 1]
+        if not isinstance(outcome, Mapping) or outcome.get("step") != item["number"]:
+            raise RolloutError(f"recovery parent step {item['number']} outcome is malformed")
+        if outcome.get("status") != "verified":
+            raise RolloutError(
+                f"recovery cannot safely continue because earlier writing step {item['number']} "
+                "does not have a verified receipt"
+            )
+        completed_writes.append(item["number"])
+    if completed_writes:
+        rendered = ", ".join(str(number) for number in completed_writes)
+        raise RolloutError(
+            "recovery refused before confirmation because restarting this capsule would replay "
+            f"previously verified writing step(s): {rendered}. Preserve the receipts and use an "
+            "operator-reviewed recovery path that omits those completed writes."
+        )
+
+
 def _run_capsule_rollout(
     manifest_path: Path | str,
     environment: str,
@@ -2213,6 +2256,12 @@ def _run_capsule_rollout(
             target_plan = feature_release.load_target_plan(root, capsule, environment)
             if recovery_attempt is not None and recovery_attempt != target_plan.recovery_attempt:
                 raise RolloutError("requested recovery attempt differs from the prepared target plan")
+        if target_plan.recovery_attempt is not None:
+            try:
+                parent_run = release_state.recovery_parent_rollout(root, capsule, target_plan)
+            except release_state.ReleaseStateError as error:
+                raise RolloutError(f"recovery parent validation refused: {error}") from error
+            _assert_recovery_will_not_replay_prior_writes(plan, target_plan, parent_run)
 
         capsule = reload_selected_capsule()
 

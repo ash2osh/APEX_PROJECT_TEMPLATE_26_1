@@ -1037,6 +1037,7 @@ def _assert_checkpoint_allowed_index(
     checkpoint: int,
     run_id: str,
     scope: Mapping,
+    attempt_id: str | None = None,
 ) -> None:
     run = next((row for row in index["rollouts"] if row["runId"] == run_id), None)
     if (
@@ -1059,7 +1060,7 @@ def _assert_checkpoint_allowed_index(
         row for row in index["attempts"]
         if row["targetScope"] == scope
         and _is_unresolved(row, index["attempts"], index["recoveryLinks"], index["checkpointVerifications"])
-        and row["attemptId"] != recovery_id
+        and row["attemptId"] not in {recovery_id, attempt_id}
     ]
     if unresolved:
         raise ReleaseStateError("an unresolved attempt occupies this physical target; reconcile before checkpoint verification")
@@ -1247,6 +1248,7 @@ def record_checkpoint_verification(
     lease: release_ownership.TargetWriterLease,
     evidence: Sequence[str],
     metrics: Mapping,
+    finish_attempt_metrics: Mapping | None = None,
 ) -> str:
     """Persist successful checkpoint checks, including no-op and recovery observations."""
     root = _root(repo_root)
@@ -1265,14 +1267,26 @@ def record_checkpoint_verification(
         raise ReleaseStateError("applied checkpoint verification requires its write attempt")
     if mode != "applied" and mode != "recovery" and attempt_id is not None:
         raise ReleaseStateError("no-op checkpoint verification cannot name a write attempt")
+    clean_attempt_metrics = None
+    if finish_attempt_metrics is not None:
+        if attempt_id is None:
+            raise ReleaseStateError("attempt finalization metrics require a write attempt")
+        clean_attempt_metrics = _validate_metrics(finish_attempt_metrics)
     verification_id = str(uuid.uuid4())
 
     def update(index: dict) -> dict:
-        _assert_checkpoint_allowed_index(index, capsule, plan, checkpoint, run_id, scope)
+        _assert_checkpoint_allowed_index(index, capsule, plan, checkpoint, run_id, scope, attempt_id)
         attempt = None
         if attempt_id is not None:
             _uuid(attempt_id, "checkpoint verification attemptId")
             attempt = next((row for row in index["attempts"] if row["attemptId"] == attempt_id), None)
+            if clean_attempt_metrics is not None:
+                if attempt is None or attempt["state"] != "attempting":
+                    raise ReleaseStateError("atomic checkpoint verification requires its attempting write record")
+                _finish_attempt_in_index(
+                    root, index, attempt, state="verified", evidence=evidence,
+                    clean_metrics=clean_attempt_metrics,
+                )
             if (
                 attempt is None or attempt["state"] != "verified"
                 or attempt["environment"] != plan.environment or attempt["targetScope"] != scope
@@ -1480,6 +1494,60 @@ def _no_write_classification(root: Path, evidence: list[dict]) -> str:
     return classification
 
 
+def _finish_attempt_in_index(
+    root: Path,
+    index: dict,
+    row: dict,
+    *,
+    state: str,
+    evidence: Sequence[str],
+    clean_metrics: Mapping,
+) -> None:
+    """Apply one terminal attempt transition inside an existing atomic index update."""
+    if row["state"] != "attempting":
+        raise ReleaseStateError("attempt is missing or already terminal; transitions cannot be overwritten")
+    evidence_rows = _evidence_rows(root, evidence, require_files=state == "verified")
+    classification = _no_write_classification(root, evidence_rows) if state == "not-started" else None
+    now = _utc_now()
+    started = _timestamp(row["startedAt"], "attempt startedAt")
+    finished = _timestamp(now, "attempt finishedAt")
+    duration = max(0.0, (finished - started).total_seconds())
+    result_metrics = dict(clean_metrics)
+    result_metrics.setdefault("durationSeconds", duration)
+    if classification is not None:
+        result_metrics["noWriteClassification"] = classification
+    budget_seconds = row["budget"]["seconds"]
+    metric_seconds = result_metrics.get("budgetSeconds")
+    if metric_seconds is not None and budget_seconds is not None and metric_seconds != budget_seconds:
+        raise ReleaseStateError("attempt metric budgetSeconds does not match the capsule")
+    seconds = budget_seconds if budget_seconds is not None else metric_seconds
+    elapsed = result_metrics.get("objectSeconds")
+    coverage = result_metrics.get("budgetCoverageComplete")
+    passed = None
+    if seconds is not None and elapsed is not None and coverage is not None:
+        passed = coverage is True and elapsed <= seconds
+    result_metrics["budgetPassed"] = passed if passed is not None else False
+    row.update({
+        "state": state,
+        "writePossible": state != "not-started",
+        "finishedAt": now,
+        "evidence": evidence_rows,
+        "metrics": _validate_metrics(result_metrics),
+        "budget": {
+            "seconds": seconds,
+            "elapsedSeconds": elapsed,
+            "coverageComplete": coverage,
+            "passed": passed,
+        },
+    })
+    if state == "verified" and row["recoveryOf"] is not None:
+        old = next(item for item in index["attempts"] if item["attemptId"] == row["recoveryOf"])
+        if old["state"] not in {"unknown", "attempting"} or old["recoveredBy"] is not None:
+            raise ReleaseStateError("recovery target changed before the recovery was verified")
+        if old["state"] == "unknown":
+            old["recoveredBy"] = row["attemptId"]
+
+
 def finish_attempt(
     repo_root: Path,
     attempt_id: str,
@@ -1497,48 +1565,11 @@ def finish_attempt(
 
     def update(index: dict) -> dict:
         row = next((item for item in index["attempts"] if item["attemptId"] == attempt_id), None)
-        if row is None or row["state"] != "attempting":
+        if row is None:
             raise ReleaseStateError("attempt is missing or already terminal; transitions cannot be overwritten")
-        evidence_rows = _evidence_rows(root, evidence, require_files=state == "verified")
-        classification = _no_write_classification(root, evidence_rows) if state == "not-started" else None
-        now = _utc_now()
-        started = _timestamp(row["startedAt"], "attempt startedAt")
-        finished = _timestamp(now, "attempt finishedAt")
-        duration = max(0.0, (finished - started).total_seconds())
-        result_metrics = dict(clean_metrics)
-        result_metrics.setdefault("durationSeconds", duration)
-        if classification is not None:
-            result_metrics["noWriteClassification"] = classification
-        budget_seconds = row["budget"]["seconds"]
-        metric_seconds = result_metrics.get("budgetSeconds")
-        if metric_seconds is not None and budget_seconds is not None and metric_seconds != budget_seconds:
-            raise ReleaseStateError("attempt metric budgetSeconds does not match the capsule")
-        seconds = budget_seconds if budget_seconds is not None else metric_seconds
-        elapsed = result_metrics.get("objectSeconds")
-        coverage = result_metrics.get("budgetCoverageComplete")
-        passed = None
-        if seconds is not None and elapsed is not None and coverage is not None:
-            passed = coverage is True and elapsed <= seconds
-        result_metrics["budgetPassed"] = passed if passed is not None else False
-        row.update({
-            "state": state,
-            "writePossible": state != "not-started",
-            "finishedAt": now,
-            "evidence": evidence_rows,
-            "metrics": _validate_metrics(result_metrics),
-            "budget": {
-                "seconds": seconds,
-                "elapsedSeconds": elapsed,
-                "coverageComplete": coverage,
-                "passed": passed,
-            },
-        })
-        if state == "verified" and row["recoveryOf"] is not None:
-            old = next(item for item in index["attempts"] if item["attemptId"] == row["recoveryOf"])
-            if old["state"] not in {"unknown", "attempting"} or old["recoveredBy"] is not None:
-                raise ReleaseStateError("recovery target changed before the recovery was verified")
-            if old["state"] == "unknown":
-                old["recoveredBy"] = attempt_id
+        _finish_attempt_in_index(
+            root, index, row, state=state, evidence=evidence, clean_metrics=clean_metrics,
+        )
         return index
 
     _atomic_update(root, update)
@@ -1652,6 +1683,21 @@ def _rollout_is_recovery_parent(index: Mapping, run: Mapping, capsule: ReleaseCa
         and _is_unresolved(attempt, index["attempts"], index["recoveryLinks"], index["checkpointVerifications"])
         and _run_uncertainty_is_checkpoint_only(run, capsule, [attempt])
     )
+
+
+def recovery_parent_rollout(repo_root: Path, capsule: ReleaseCapsule, plan: TargetPlan) -> dict:
+    """Return the one rollout whose unresolved checkpoint is bound by this recovery plan."""
+    root = _root(repo_root)
+    recovery_id = getattr(plan, "recovery_attempt", None)
+    if recovery_id is None:
+        raise ReleaseStateError("recovery parent lookup requires a recovery plan")
+    index = _load_index(root)
+    _validate_recovery_plan_index(index, capsule, plan)
+    attempt = next((row for row in index["attempts"] if row["attemptId"] == recovery_id), None)
+    parents = [row for row in index["rollouts"] if attempt is not None and _attempt_matches_rollout(attempt, row)]
+    if len(parents) != 1 or not _rollout_is_recovery_parent(index, parents[0], capsule, plan):
+        raise ReleaseStateError("recovery attempt does not identify one eligible parent rollout")
+    return dict(parents[0])
 
 
 def _rollout_is_reconciled(index: Mapping, run: Mapping, capsule: ReleaseCapsule) -> bool:

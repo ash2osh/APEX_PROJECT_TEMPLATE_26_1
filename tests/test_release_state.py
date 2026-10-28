@@ -333,6 +333,48 @@ class ReleaseStateTests(unittest.TestCase):
         self.assertEqual(index["rollouts"][0]["state"], "running")
         self.assertEqual(index["rollouts"][0]["checkpointVerificationIds"], verification_ids)
 
+    def test_attempt_verification_and_terminal_state_commit_atomically(self) -> None:
+        from scripts import release_ownership
+
+        state = self.state_module()
+        plan = self.make_plan()
+        run_id = self.start_rollout(self.capsule, plan)
+        scope = state.target_scope_from_identity(plan.checkpoint_guards[0]["targetIdentity"])
+        lease_identity = {
+            "runId": run_id, "environment": plan.environment,
+            "payloadDigest": self.capsule.payload_digest, "engineDigest": self.capsule.engine_digest,
+            "planDigest": plan.plan_digest, "checkpoint": 1,
+            "recoveryAttempt": plan.recovery_attempt,
+        }
+        evidence_path = self.verified_evidence("applied-checkpoint")
+        evidence = evidence_path[0]
+        with release_ownership.target_writer_lease(self.root, scope, lease_identity) as lease:
+            attempt_id = state.record_attempt(
+                self.root, self.capsule, plan, 1, run_id=run_id, lease=lease,
+            )
+            with patch.object(state, "_write_index", side_effect=state.ReleaseStateError("simulated state write refusal")):
+                with self.assertRaisesRegex(state.ReleaseStateError, "simulated state write refusal"):
+                    state.record_checkpoint_verification(
+                        self.root, self.capsule, plan, 1,
+                        run_id=run_id, attempt_id=attempt_id, lease=lease,
+                        evidence=[evidence], metrics={"objectSeconds": 1.0, "sessionCount": 1},
+                        finish_attempt_metrics={"objectSeconds": 1.0, "budgetCoverageComplete": True},
+                    )
+
+            failed_update = self.index()
+            self.assertEqual(failed_update["attempts"][0]["state"], "attempting")
+            self.assertEqual(failed_update["checkpointVerifications"], [])
+            state.record_checkpoint_verification(
+                self.root, self.capsule, plan, 1,
+                run_id=run_id, attempt_id=attempt_id, lease=lease,
+                evidence=[evidence], metrics={"objectSeconds": 1.0, "sessionCount": 1},
+                finish_attempt_metrics={"objectSeconds": 1.0, "budgetCoverageComplete": True},
+            )
+
+        committed = self.index()
+        self.assertEqual(committed["attempts"][0]["state"], "verified")
+        self.assertEqual(len(committed["checkpointVerifications"]), 1)
+
     def test_corrupt_entry_types_raise_a_release_state_error(self) -> None:
         state = self.state_module()
         self.record()
@@ -511,6 +553,10 @@ class ReleaseStateTests(unittest.TestCase):
         recovery_plan = self.make_plan(
             recovery_attempt=old_id, recovery_binding=recovery_binding,
             plan_digest=hashlib.sha256(b"bound recovery plan").hexdigest(),
+        )
+        self.assertEqual(
+            state.recovery_parent_rollout(self.root, self.capsule, recovery_plan)["runId"],
+            old_run["runId"],
         )
         recovery_run = self.start_rollout(self.capsule, recovery_plan)
 

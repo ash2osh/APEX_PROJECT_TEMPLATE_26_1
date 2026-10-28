@@ -1557,7 +1557,6 @@ def _execute_checkpoint_under_lease(
         "postconditions": None,
     }
     apply_sessions = 0
-    attempt_finalized = False
     checks_verified = False
     try:
         if write_required:
@@ -1588,20 +1587,6 @@ def _execute_checkpoint_under_lease(
         }
         _write_checkpoint_report(run_dir, report)
         evidence = _runtime_evidence(root, report, run_dir)
-        if attempt_id is not None:
-            release_state.finish_attempt(
-                root, attempt_id, state="verified", evidence=evidence,
-                metrics={
-                    "preparationSeconds": preparation_seconds,
-                    "objectSeconds": report["objectSeconds"],
-                    "sqlclSessions": report["sessionCount"],
-                    "budgetSeconds": capsule.database_object_budget_seconds,
-                    "budgetCoverageComplete": budget_covered,
-                    "includedCheckpoints": [checkpoint],
-                    "excludedObjectSteps": [],
-                },
-            )
-            attempt_finalized = True
         checks_verified = True
         try:
             verification_id = release_state.record_checkpoint_verification(
@@ -1614,6 +1599,15 @@ def _execute_checkpoint_under_lease(
                     "objectSeconds": report["objectSeconds"],
                     "sessionCount": report["sessionCount"],
                 },
+                finish_attempt_metrics={
+                    "preparationSeconds": preparation_seconds,
+                    "objectSeconds": report["objectSeconds"],
+                    "sqlclSessions": report["sessionCount"],
+                    "budgetSeconds": capsule.database_object_budget_seconds,
+                    "budgetCoverageComplete": budget_covered,
+                    "includedCheckpoints": [checkpoint],
+                    "excludedObjectSteps": [],
+                } if attempt_id is not None else None,
             )
         except release_state.ReleaseStateError as error:
             raise FeatureReleaseError(f"checkpoint checks passed but durable verification could not be recorded: {error}") from error
@@ -1622,11 +1616,6 @@ def _execute_checkpoint_under_lease(
             tuple(evidence), "checkpoint verified", verification_id,
         )
     except Exception as error:
-        if attempt_finalized:
-            return CheckpointResult(
-                2, "verified", report["objectSeconds"], report["sessionCount"],
-                tuple(evidence), str(error),
-            )
         if checks_verified and attempt_id is None:
             # The database observation passed, but the local receipt could not be committed.
             # Preserve the report as diagnostic evidence and return failure to the orchestrator.
