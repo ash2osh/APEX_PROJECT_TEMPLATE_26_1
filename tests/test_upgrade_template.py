@@ -892,6 +892,40 @@ class UpgradeTemplateTests(unittest.TestCase):
             "{\"state\":\"verified\"}\n",
         )
 
+    def test_upgrade_updates_template_files_and_preserves_feature_release_and_unrelated_project_data(self) -> None:
+        self.adopt()
+        protected = {
+            "features/dispatch/APP_CODE/packages/dispatch.pks.sql": "local package source\n",
+            "features/dispatch/APP_CODE/checks.json": "local feature checks\n",
+            "releases/current.json": "local release manifest\n",
+            "releases/.local-state.json": "local unresolved-attempt state\n",
+            "custom-notes.md": "unrelated project change\n",
+        }
+        write(self.project, protected)
+        commit_all(self.project, "add feature release project data")
+
+        manifest_v2 = {
+            **MANIFEST,
+            "upstream": str(self.template),
+            "templateOwned": [*MANIFEST["templateOwned"], "docs/feature-releases.md", "docs/feature-release.example.json"],
+        }
+        updates = {
+            "template-manifest.json": json.dumps(manifest_v2) + "\n",
+            "AGENTS.md": "rules v2 with feature releases\n",
+            "docs/feature-releases.md": "feature release workflow v1\n",
+            "docs/feature-release.example.json": '{"schemaVersion":2}\n',
+        }
+        self.release_v2(updates)
+
+        result = self.upgrade()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.read("AGENTS.md"), updates["AGENTS.md"])
+        self.assertEqual(self.read("docs/feature-releases.md"), updates["docs/feature-releases.md"])
+        for relative, expected in protected.items():
+            with self.subTest(path=relative):
+                self.assertEqual(self.read(relative), expected)
+
     def test_migration_guide_is_updated_but_local_migration_files_and_receipts_are_untouched(self) -> None:
         self.adopt()
         self.release_v2({"docs/migration-rules.md": "migration rules v2\n"})

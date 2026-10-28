@@ -84,6 +84,17 @@ class TemplateManifestTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertEqual(self.classify(path), ["templateOwned"])
 
+    def test_feature_sources_and_release_state_are_protected_from_template_upgrades(self) -> None:
+        for path in (
+            "features/dispatch/APP_CODE/packages/dispatch.pks.sql",
+            "features/dispatch/APP_CODE/checks.json",
+            "releases/current.json",
+            "releases/.local-state.json",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(protected_project_path(path))
+                self.assertEqual(self.classify(path), [])
+
     def test_apex_261_qualification_is_template_only(self) -> None:
         self.assertEqual(self.classify("docs/apex-26.1-qualification.md"), ["templateOnly"])
 

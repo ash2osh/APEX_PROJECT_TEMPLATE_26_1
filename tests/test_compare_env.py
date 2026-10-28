@@ -316,6 +316,11 @@ class EnvironmentComparisonTests(unittest.TestCase):
                     re.search(rf"\b{constant}\b", query, flags=re.IGNORECASE),
                     f"dynamic SQL names the PL/SQL constant {constant}: {query[:80]!r}",
                 )
+        source_query = re.search(r"add_query_section\('baseline-source', q'~(.*?)~'\)", sql, flags=re.DOTALL)
+        self.assertIsNotNone(source_query)
+        self.assertEqual(source_query.group(1).count(":baseline_names"), 3)
+        append = sql[sql.index("PROCEDURE append_rows("):sql.index("PROCEDURE add_query_section(")]
+        self.assertIn("c_schema, c_baseline_names_json, c_baseline_names_json, c_baseline_names_json", append)
 
     def test_catalog_sql_reads_the_database_version_for_every_oracle_product_name(self) -> None:
         """Oracle 26ai reports 'Oracle AI Database 26ai ...', which 'Oracle Database%' does not match."""
@@ -339,7 +344,7 @@ class EnvironmentComparisonTests(unittest.TestCase):
 
 
 
-    def test_environment_driver_passes_the_scope_prefixes_as_the_tenth_argument(self) -> None:
+    def test_environment_driver_passes_scope_prefixes_and_exact_names(self) -> None:
         target = Target("dev", "docker-demo2", "APP_OWNER", "APP_OWNER", "development")
         with tempfile.TemporaryDirectory() as temporary:
             for prefixes, expected in (((), []), (("absh_", "HR_WF"), ["ABSH_", "HR_WF"])):
@@ -352,17 +357,38 @@ class EnvironmentComparisonTests(unittest.TestCase):
                         if line.startswith("@@compare_env_catalog.sql ")
                     )
                     arguments = invocation.split()[1:]
-                    self.assertEqual(len(arguments), 10, invocation)
+                    self.assertEqual(len(arguments), 12, invocation)
                     self.assertEqual(json.loads(bytes.fromhex(arguments[9]).decode("utf-8")), expected)
+                    self.assertEqual(json.loads(bytes.fromhex(arguments[10]).decode("utf-8")), [])
+                    self.assertEqual(json.loads(bytes.fromhex(arguments[11]).decode("utf-8")), [])
 
-    def test_catalog_sql_scope_tokens_are_expanded_with_one_prefix_bind(self) -> None:
-        """Scoped section queries carry SCOPE_* tokens; the expansion adds exactly one :scope_prefixes bind, bound first."""
+    def test_environment_driver_passes_baseline_and_catalog_exact_names(self) -> None:
+        target = Target("staging", "stage-conn", "APP_OWNER", "APP_OWNER", "staging")
+        with tempfile.TemporaryDirectory() as temporary:
+            driver = _environment_driver(
+                Path(temporary), target, "staging", ("tables", "baseline-source"),
+                dba_capture=False, baseline_capture=True,
+                baseline_names=("DISPATCH",), scope_names=("ORDERS",),
+            )
+            invocation = next(
+                line for line in driver.read_text(encoding="utf-8").splitlines()
+                if line.startswith("@@compare_env_catalog.sql ")
+            )
+            arguments = invocation.split()[1:]
+
+        self.assertEqual(len(arguments), 12, invocation)
+        self.assertEqual(json.loads(bytes.fromhex(arguments[10]).decode("utf-8")), ["DISPATCH"])
+        self.assertEqual(json.loads(bytes.fromhex(arguments[11]).decode("utf-8")), ["ORDERS"])
+
+    def test_catalog_sql_scope_tokens_are_expanded_with_prefix_and_exact_name_binds(self) -> None:
+        """Scoped section queries carry SCOPE_* tokens with prefix and exact-name binds first."""
         sql = (ROOT / "scripts" / "compare_env_catalog.sql").read_text(encoding="utf-8")
         expand = sql[sql.index("FUNCTION expand_scope("):sql.index("PROCEDURE append_rows(")]
         self.assertEqual(expand.count(":scope_prefixes"), 1)
+        self.assertEqual(expand.count(":scope_names"), 1)
         append = sql[sql.index("PROCEDURE append_rows("):sql.index("PROCEDURE add_query_section(")]
-        self.assertIn("USING c_scope_prefixes_json, c_schema, l_offset, c_page_size", append)
-        self.assertIn("c_scope_prefixes_json, c_schema, c_baseline_prefixes_json", append)
+        self.assertIn("USING c_scope_prefixes_json, c_scope_names_json, c_schema, l_offset, c_page_size", append)
+        self.assertIn("c_scope_prefixes_json, c_scope_names_json, c_schema, c_baseline_prefixes_json", append)
         for name in ("tables", "columns", "constraints", "indexes", "sequences", "synonyms",
                      "invalid-objects", "identity-columns", "object-grants"):
             match = re.search(rf"add_query_section\('{name}', q'~(.*?)~'\)", sql, flags=re.DOTALL)
@@ -390,6 +416,40 @@ class EnvironmentComparisonTests(unittest.TestCase):
         triggers = sql[sql.index("PROCEDURE add_triggers IS"):sql.index("PROCEDURE add_stored_code IS")]
         self.assertIn("SUBSTR(t.trigger_name, 1, LENGTH(sp.prefix))", triggers)
         self.assertIn("SUBSTR(t.table_name, 1, LENGTH(sp.prefix))", triggers)
+
+    def test_exact_scope_keeps_only_selected_objects_and_affected_dependencies(self) -> None:
+        sql = (ROOT / "scripts" / "compare_env_catalog.sql").read_text(encoding="utf-8")
+        routines = (
+            sql[sql.index("PROCEDURE add_views IS"):sql.index("PROCEDURE add_baseline_views IS")],
+            sql[sql.index("PROCEDURE add_triggers IS"):sql.index("PROCEDURE add_stored_code IS")],
+            sql[sql.index("PROCEDURE add_stored_code IS"):sql.index("\nBEGIN\n  DBMS_OUTPUT.ENABLE")],
+        )
+        for routine in routines:
+            self.assertIn("c_scope_names_json", routine)
+            self.assertIn("DBMS_LOB.GETLENGTH(c_scope_prefixes_json) <= 2 AND DBMS_LOB.GETLENGTH(c_scope_names_json) <= 2", routine)
+            self.assertIn("all_dependencies", routine)
+            self.assertIn("d.referenced_name", routine)
+        self.assertIn("SCOPE_MATCH(d.referenced_name)", sql)
+
+    def test_feature_dependency_capture_is_private_and_selected_by_name_and_reference(self) -> None:
+        from scripts import compare_schema
+
+        with self.assertRaisesRegex(ValueError, "unsupported compare-env section"):
+            compare_schema._validate_compare_env_sections(("feature-dependencies",))
+        self.assertEqual(
+            ("feature-dependencies", "feature-synonym-access"),
+            compare_schema._validate_compare_env_sections(
+                ("feature-dependencies", "feature-synonym-access"), allow_baseline_internal=True,
+            ),
+        )
+
+        sql = (ROOT / "scripts" / "compare_env_catalog.sql").read_text(encoding="utf-8")
+        dependencies = re.search(r"add_query_section\('feature-dependencies', q'~(.*?)~'\)", sql, flags=re.DOTALL).group(1)
+        synonym_access = re.search(r"add_query_section\('feature-synonym-access', q'~(.*?)~'\)", sql, flags=re.DOTALL).group(1)
+        self.assertIn("SCOPE_MATCH(d.name)", dependencies)
+        self.assertIn("SCOPE_MATCH(d.referenced_name)", dependencies)
+        self.assertIn("SCOPE_MATCH(s.synonym_name)", synonym_access)
+        self.assertIn("p.grantee IN (:scope, 'PUBLIC')", synonym_access)
 
     def test_compare_env_cli_scopes_the_capture_to_the_configured_prefixes(self) -> None:
         from scripts import compare_schema
@@ -531,7 +591,7 @@ class EnvironmentComparisonTests(unittest.TestCase):
 
         self.assertEqual(captured["sections"]["tables"], payload["sections"]["tables"])
 
-    def test_environment_driver_always_supplies_all_ten_sqlcl_arguments(self) -> None:
+    def test_environment_driver_always_supplies_all_twelve_sqlcl_arguments(self) -> None:
         target = Target("dev", "docker-demo2", "APP_OWNER", "APP_OWNER", "development")
         with tempfile.TemporaryDirectory() as temporary:
             for dba_capture in (False, True):
@@ -545,7 +605,7 @@ class EnvironmentComparisonTests(unittest.TestCase):
                     )
                     arguments = invocation.split()[1:]
 
-                    self.assertEqual(len(arguments), 10, invocation)
+                    self.assertEqual(len(arguments), 12, invocation)
                     self.assertEqual(arguments[0], "4150505F4F574E4552")
                     self.assertEqual(arguments[1], "4150505F4F574E4552")
                     self.assertEqual(arguments[2], "646576")

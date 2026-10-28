@@ -79,6 +79,14 @@ def migration_archive_checkout(parent: Path):
     return root
 
 
+def feature_cli_checkout(parent: Path) -> Path:
+    """Copy the CLI into a checkout with glob characters and Unicode in its path."""
+    root = parent / "feature project [unicode] café"
+    root.mkdir()
+    shutil.copytree(ROOT / "scripts", root / "scripts")
+    return root
+
+
 class TeamCliTests(unittest.TestCase):
     def test_powershell_archive_route_keeps_schema_option_and_matches_bash_dispatch(self) -> None:
         wrapper = (ROOT / "scripts" / "team.ps1").read_text(encoding="utf-8")
@@ -862,6 +870,81 @@ class TeamCliTests(unittest.TestCase):
                 usage = subprocess.run([*command, "new-migration"], text=True, capture_output=True, check=False, cwd=ROOT)
                 self.assertNotEqual(usage.returncode, 0)
                 self.assertIn("new-migration <name> --source TYPE:NAME", usage.stderr)
+
+    def test_feature_commands_are_listed_and_offline_init_routes_through_both_wrappers(self) -> None:
+        entries = [[BASH, str(ROOT / "scripts" / "team.sh")]]
+        pwsh = _test_subprocess_safety.working_pwsh()
+        if pwsh:
+            entries.append([pwsh, "-NoProfile", "-File", str(ROOT / "scripts" / "team.ps1")])
+        for command in entries:
+            with self.subTest(entry=command[-1]):
+                help_text = subprocess.run([*command, "--help"], text=True, capture_output=True, check=False, cwd=ROOT)
+                self.assertEqual(help_text.returncode, 0, help_text.stderr)
+                self.assertIn("feature init|capture|diff|freeze|clean-capsule", help_text.stdout)
+                self.assertIn("--stage-report FILE", help_text.stdout)
+
+                invalid_capture = subprocess.run(
+                    [*command, "feature", "capture", "demo", "--package", "P", "--schema", "APP_CODE", "--env", "prod"],
+                    text=True, capture_output=True, check=False, cwd=ROOT,
+                )
+                self.assertEqual(invalid_capture.returncode, 2)
+                self.assertIn("feature capture is DEV-only", invalid_capture.stderr)
+                self.assertNotIn(".env", invalid_capture.stderr)
+
+                duplicate_environment = subprocess.run(
+                    [*command, "feature", "capture", "demo", "--package", "P", "--schema", "APP_CODE", "--env", "dev", "--env", "prod"],
+                    text=True, capture_output=True, check=False, cwd=ROOT,
+                )
+                self.assertEqual(duplicate_environment.returncode, 2)
+                self.assertIn("feature capture accepts only one --env value", duplicate_environment.stderr)
+                self.assertNotIn(".env", duplicate_environment.stderr)
+
+                slug = "wrapper-feature-" + __import__("uuid").uuid4().hex[:10]
+                try:
+                    initialized = subprocess.run(
+                        [*command, "feature", "init", slug, "--schema", "APP_CODE"],
+                        text=True, capture_output=True, check=False, cwd=ROOT,
+                    )
+                    self.assertEqual(initialized.returncode, 0, initialized.stderr)
+                    self.assertTrue((ROOT / "features" / slug / "APP_CODE" / "checks.json").is_file())
+                finally:
+                    shutil.rmtree(ROOT / "features" / slug, ignore_errors=True)
+
+    def test_feature_init_works_through_both_wrappers_in_a_unicode_glob_checkout(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="feature wrapper ") as temporary:
+            root = feature_cli_checkout(Path(temporary))
+            entries = [("team.sh", [BASH, str(root / "scripts" / "team.sh")])]
+            pwsh = _test_subprocess_safety.working_pwsh()
+            if pwsh:
+                entries.append(("team.ps1", [pwsh, "-NoProfile", "-File", str(root / "scripts" / "team.ps1")]))
+            for name, launcher in entries:
+                slug = "from-" + name.split(".", 1)[1]
+                result = subprocess.run(
+                    [*launcher, "feature", "init", slug, "--schema", "APP_CODE"],
+                    cwd=root,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                with self.subTest(wrapper=name):
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertTrue((root / "features" / slug / "APP_CODE" / "checks.json").is_file())
+                    readme = root / "features" / slug / "README.md"
+                    first_checks = root / "features" / slug / "APP_CODE" / "checks.json"
+                    first_checks_bytes = first_checks.read_bytes()
+                    readme.write_bytes(b"custom shared README\n")
+                    second = subprocess.run(
+                        [*launcher, "feature", "init", slug, "--schema", "APP_DATA"],
+                        cwd=root,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+                    self.assertTrue((root / "features" / slug / "APP_DATA" / "checks.json").is_file())
+                    self.assertEqual(readme.read_bytes(), b"custom shared README\n")
+                    self.assertEqual(first_checks.read_bytes(), first_checks_bytes)
+                    self.assertFalse((root / ".env").exists())
 
     def test_query_and_template_status_are_wired_into_both_wrappers(self) -> None:
         entries = [[BASH, str(ROOT / "scripts" / "team.sh")]]

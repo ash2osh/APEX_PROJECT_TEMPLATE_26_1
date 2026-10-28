@@ -63,6 +63,7 @@ Commands:
                                               Plan/run retained DEV fixtures or report/clean one saved run
   new-migration <name> --source TYPE:NAME [...] --env dev
                                               Start a code migration from the live DEV source
+  feature init|capture|diff|freeze|clean-capsule ... Create or review feature releases
   migrate <folder> [...] --env dev|staging|prod [--verbose] [--rehearse] [--report <file>]
                                               Apply, or rehearse DML in one transaction and roll it back
   revise <folder> [--reason TEXT]             Copy to the next migration revision
@@ -74,7 +75,8 @@ Commands:
          [--format text|json] [--jobs N]     Evaluate migration checks read-only
   query --env <env> --connection <profile> [--file <path> | SQL]
                                               Run one bounded, conservative SELECT read-only
-  rollout <manifest.json> --env <env> [--from-step N] [--dry-run] [--report <file>]
+  rollout <manifest.json> --env <env> [--from-step N] [--dry-run] [--prepare]
+         [--capsule DIR] [--stage-report FILE] [--recover ATTEMPT] [--report <file>]
                                               Confirm and execute a frozen deployment manifest
   compare-env --from <env> --to <env> [--section <name>] [...] [--format text|json|markdown]
               [--emit-dba-script <file>]
@@ -109,7 +111,7 @@ Commands:
   template-status [--format text|json] [--upstream --ref <ref>]
                                               Inspect local template drift; fetch upstream only when requested
 Options:
-  --schema <NAME>                             Run one configured schema (except upgrade-template, verify-local, template-status, migration-plan, archive-migrations, dev-test and skills)
+  --schema <NAME>                             Run one configured schema (except upgrade-template, verify-local, template-status, migration-plan, archive-migrations, dev-test, skills and feature)
   --help                                      Show this help
 Environment:
   MIGRATION_PREFLIGHT_INVENTORY_RETRIES        Retry changing live catalogs (default 3)
@@ -237,7 +239,7 @@ if ($Command -in @("--help", "-h")) {
 
 # --schema NAME is the one selection channel: strip it and set PROJECT_SCHEMA so
 # every child script's loader narrows to that schema.
-if ($Command -notin @("upgrade-template", "verify-local", "template-status", "migration-plan", "archive-migrations", "dev-test", "skills", "mcp")) {
+if ($Command -notin @("upgrade-template", "verify-local", "template-status", "migration-plan", "archive-migrations", "dev-test", "skills", "mcp", "feature")) {
   $schemaFiltered = @()
   for ($index = 0; $index -lt $Arguments.Count; $index++) {
     if ($Arguments[$index] -eq "--schema") {
@@ -445,6 +447,14 @@ try {
       if ($Arguments.Count -lt 1) { Fail "usage: scripts/team.ps1 new-migration <name> --source TYPE:NAME [...] --env dev [--schema NAME]" }
       Invoke-TeamBash -ScriptName "team.sh" -ScriptArguments (@("new-migration") + @($Arguments))
     }
+    "feature" {
+      if ($Arguments.Count -lt 1) { Fail "usage: scripts/team.ps1 feature <init|capture|diff|freeze|clean-capsule> [arguments]" }
+      $featureArguments = @($Arguments)
+      if ($featureArguments[0] -ceq "freeze" -and $featureArguments.Count -gt 1) {
+        $featureArguments[1] = ConvertTo-MigrationFolderArgument ([string] $featureArguments[1])
+      }
+      Invoke-TeamBash -ScriptName "team.sh" -ScriptArguments (@("feature") + $featureArguments)
+    }
     "query" {
       if ($Arguments.Count -lt 1) { Fail "usage: scripts/team.ps1 query --env dev|staging|prod --connection tables|code|apex|ords [--file <path> | SQL]" }
       Invoke-TeamBash -ScriptName "team.sh" -ScriptArguments (@("query") + @($Arguments))
@@ -466,8 +476,27 @@ try {
       Invoke-TeamBash -ScriptName "verify_checks.sh" -ScriptArguments @($Arguments | ForEach-Object { ConvertTo-MigrationFolderArgument $_ })
     }
     "rollout" {
-      if ($Arguments.Count -lt 1) { Fail "usage: scripts/team.ps1 rollout <manifest.json> --env <env> [--from-step N] [--dry-run] [--report <file>]" }
-      Invoke-TeamBash -ScriptName "rollout.sh" -ScriptArguments $Arguments
+      if ($Arguments.Count -lt 1) { Fail "usage: scripts/team.ps1 rollout <manifest.json> --env <env> [--from-step N] [--dry-run] [--prepare] [--capsule DIR] [--stage-report FILE] [--recover ATTEMPT] [--report <file>]" }
+      $rolloutArguments = @($Arguments)
+      if (-not $rolloutArguments[0].StartsWith("-")) {
+        $rolloutArguments[0] = ConvertTo-MigrationFolderArgument ([string] $rolloutArguments[0])
+      }
+      for ($rolloutIndex = 1; $rolloutIndex -lt $rolloutArguments.Count; $rolloutIndex++) {
+        $rolloutValue = [string] $rolloutArguments[$rolloutIndex]
+        if ($rolloutValue -cin @("--report", "--capsule", "--stage-report") -and $rolloutIndex + 1 -lt $rolloutArguments.Count) {
+          $rolloutIndex++
+          $rolloutArguments[$rolloutIndex] = ConvertTo-MigrationFolderArgument ([string] $rolloutArguments[$rolloutIndex])
+        } else {
+          foreach ($pathOption in @("--report", "--capsule", "--stage-report")) {
+            $prefix = $pathOption + "="
+            if ($rolloutValue.StartsWith($prefix, [System.StringComparison]::Ordinal)) {
+              $rolloutArguments[$rolloutIndex] = $prefix + (ConvertTo-MigrationFolderArgument $rolloutValue.Substring($prefix.Length))
+              break
+            }
+          }
+        }
+      }
+      Invoke-TeamBash -ScriptName "rollout.sh" -ScriptArguments $rolloutArguments
     }
     "compare-schema" {
       if ($Arguments.Count -lt 1) { Fail "usage: scripts/team.ps1 compare-schema [--from <env>] (--to <env>|--env <env>) (--object <name>|--pattern <glob>) [...]" }

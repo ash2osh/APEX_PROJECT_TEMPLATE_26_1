@@ -19,6 +19,7 @@ Commands:
                                               Plan/run retained DEV fixtures or report/clean one saved run
   new-migration <name> --source TYPE:NAME [...] --env dev
                                               Start a code migration from the live DEV source
+  feature init|capture|diff|freeze|clean-capsule ... Create or review feature releases
   migrate <folder> [...] --env dev|staging|prod [--verbose] [--rehearse] [--report <file>]
                                               Apply, or rehearse DML in one transaction and roll it back
   revise <folder> [--reason TEXT]             Copy to the next migration revision
@@ -30,7 +31,8 @@ Commands:
          [--format text|json] [--jobs N]     Evaluate migration checks read-only
   query --env <env> --connection <profile> [--file <path> | SQL]
                                               Run one bounded, conservative SELECT read-only
-  rollout <manifest.json> --env <env> [--from-step N] [--dry-run] [--report <file>]
+  rollout <manifest.json> --env <env> [--from-step N] [--dry-run] [--prepare]
+         [--capsule DIR] [--stage-report FILE] [--recover ATTEMPT] [--report <file>]
                                               Confirm and execute a frozen deployment manifest
   compare-env --from <env> --to <env> [--section <name>] [...] [--format text|json|markdown]
               [--emit-dba-script <file>]
@@ -65,7 +67,7 @@ Commands:
   template-status [--format text|json] [--upstream --ref <ref>]
                                               Inspect local template drift; fetch upstream only when requested
 Options:
-  --schema <NAME>                             Run one configured schema (except upgrade-template, verify-local, template-status, migration-plan, archive-migrations, dev-test and skills)
+  --schema <NAME>                             Run one configured schema (except upgrade-template, verify-local, template-status, migration-plan, archive-migrations, dev-test, skills and feature)
   --help                                      Show this help
 Environment:
   MIGRATION_PREFLIGHT_INVENTORY_RETRIES        Retry changing live catalogs (default 3)
@@ -108,7 +110,7 @@ command_name="$1"
 shift
 # --schema NAME is the one selection channel: strip it and export PROJECT_SCHEMA
 # so every child script's loader narrows to that schema.
-if [ "$command_name" != upgrade-template ] && [ "$command_name" != verify-local ] && [ "$command_name" != template-status ] && [ "$command_name" != migration-plan ] && [ "$command_name" != archive-migrations ] && [ "$command_name" != dev-test ] && [ "$command_name" != skills ] && [ "$command_name" != mcp ]; then
+if [ "$command_name" != upgrade-template ] && [ "$command_name" != verify-local ] && [ "$command_name" != template-status ] && [ "$command_name" != migration-plan ] && [ "$command_name" != archive-migrations ] && [ "$command_name" != dev-test ] && [ "$command_name" != skills ] && [ "$command_name" != mcp ] && [ "$command_name" != feature ]; then
   schema_filtered=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -311,6 +313,58 @@ case "$command_name" in
     cd "$REPO_ROOT"
     exec python3 -m scripts.new_migration "$@"
     ;;
+  feature)
+    [ "$#" -ge 1 ] || fail "usage: scripts/team.sh feature <init|capture|diff|freeze|clean-capsule> [arguments]"
+    if [ "$1" = --help ] || [ "$1" = -h ]; then
+      cd "$REPO_ROOT"
+      exec python3 -m scripts.feature_cli --help
+    fi
+    feature_command="$1"
+    case "$feature_command" in
+      init|diff|freeze|clean-capsule) ;;
+      capture)
+        [ "$#" -ge 2 ] || fail "usage: scripts/team.sh feature capture <slug> --package NAME --schema SCHEMA --env dev [--refresh]"
+        feature_help=false
+        for feature_argument in "$@"; do
+          if [ "$feature_argument" = --help ] || [ "$feature_argument" = -h ]; then feature_help=true; fi
+        done
+        feature_environment=""
+        feature_environment_count=0
+        feature_arguments=("$@")
+        for feature_index in "${!feature_arguments[@]}"; do
+          case "${feature_arguments[$feature_index]}" in
+            --env)
+              feature_next=$((feature_index + 1))
+              [ "$feature_next" -lt "${#feature_arguments[@]}" ] || fail "feature capture requires --env dev"
+              feature_environment_count=$((feature_environment_count + 1))
+              [ "$feature_environment_count" -eq 1 ] || fail "feature capture accepts only one --env value"
+              feature_environment="${feature_arguments[$feature_next]}"
+              ;;
+            --env=*)
+              feature_environment_count=$((feature_environment_count + 1))
+              [ "$feature_environment_count" -eq 1 ] || fail "feature capture accepts only one --env value"
+              feature_environment="${feature_arguments[$feature_index]#--env=}"
+              ;;
+          esac
+        done
+        if [ "$feature_help" = false ]; then
+          [ "$feature_environment" = dev ] || fail "feature capture is DEV-only; use --env dev"
+          PROJECT_ENV_FILE="${PROJECT_ENV_FILE:-$REPO_ROOT/.env}"
+          # shellcheck source=load_env.sh
+          source "$REPO_ROOT/scripts/load_env.sh" "$PROJECT_ENV_FILE"
+        fi
+        ;;
+      *) fail "unknown feature command '$feature_command'; use init, capture, diff, freeze, or clean-capsule" ;;
+    esac
+    feature_root="$REPO_ROOT"
+    case "$(uname -s 2>/dev/null)" in
+      MINGW*|MSYS*|CYGWIN*)
+        if command -v cygpath >/dev/null 2>&1; then feature_root="$(cygpath -m -- "$REPO_ROOT")"; fi
+        ;;
+    esac
+    cd "$REPO_ROOT"
+    exec python3 -m scripts.feature_cli --repo-root "$feature_root" "$@"
+    ;;
   query)
     [ "$#" -ge 1 ] || fail "usage: scripts/team.sh query --env dev|staging|prod --connection tables|code|apex|ords [--file <path> | SQL]"
     PROJECT_ENV_FILE="${PROJECT_ENV_FILE:-$REPO_ROOT/.env}"
@@ -328,7 +382,7 @@ case "$command_name" in
       exec "$REPO_ROOT/scripts/verify_checks.sh" "$@"
     ;;
   rollout)
-    [ "$#" -ge 1 ] || fail "usage: scripts/team.sh rollout <manifest.json> --env <env> [--from-step N] [--dry-run] [--report <file>]"
+    [ "$#" -ge 1 ] || fail "usage: scripts/team.sh rollout <manifest.json> --env <env> [--from-step N] [--dry-run] [--prepare] [--capsule DIR] [--stage-report FILE] [--recover ATTEMPT] [--report <file>]"
     PROJECT_ENV_FILE="${PROJECT_ENV_FILE:-$REPO_ROOT/.env}" \
       exec "$REPO_ROOT/scripts/rollout.sh" "$@"
     ;;
