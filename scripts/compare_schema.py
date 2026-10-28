@@ -82,7 +82,8 @@ COMPARE_ENV_FIELDS = {
     ),
     "constraints": ("constraint_type", "columns", "referenced_table", "referenced_columns", "condition", "condition_truncated", "status", "validated", "delete_rule", "deferrable", "deferred", "rely"),
     "indexes": ("table_name", "uniqueness", "columns", "index_type", "visibility", "status"),
-    "triggers": ("table_name", "trigger_type", "triggering_event", "base_object_type", "status", "line_count", "source_hash"),
+    # ASHARIF 2026-10-28: compare ALL_OBJECTS validity separately from the trigger enablement flag.
+    "triggers": ("table_name", "trigger_type", "triggering_event", "base_object_type", "status", "object_status", "line_count", "source_hash"),
     "sequences": ("increment_by", "min_value", "max_value", "cycle_flag", "order_flag", "cache_size"),
     "synonyms": ("table_owner", "table_name", "db_link"),
     "views": ("status", "line_count", "source_hash"),

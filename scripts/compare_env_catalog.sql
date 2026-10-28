@@ -880,7 +880,11 @@ DECLARE
       l_page_count := 0;
       FOR trigger_row IN (
         SELECT t.trigger_name, t.table_name, t.trigger_type, t.triggering_event,
-            t.base_object_type, t.status
+            t.base_object_type, t.status,
+            (SELECT CASE WHEN COUNT(DISTINCT o.status) = 1 THEN MIN(o.status) END
+               FROM all_objects o
+              WHERE o.owner = t.owner AND o.object_name = t.trigger_name
+                AND o.object_type = 'TRIGGER' AND o.subobject_name IS NULL) object_status
           FROM all_triggers t WHERE t.owner = c_schema
            AND ((DBMS_LOB.GETLENGTH(c_scope_prefixes_json) <= 2 AND DBMS_LOB.GETLENGTH(c_scope_names_json) <= 2)
              OR EXISTS (
@@ -912,6 +916,8 @@ DECLARE
         l_page.put('triggering_event', trigger_row.triggering_event);
         l_page.put('base_object_type', trigger_row.base_object_type);
         l_page.put('status', trigger_row.status);
+        -- ASHARIF 2026-10-28: report Oracle validity independently of trigger enablement.
+        l_page.put('object_status', trigger_row.object_status);
         l_page.put('line_count', line_count_value);
         l_page.put('source_hash', hash_sum_value);
         l_rows.append(l_page);

@@ -222,6 +222,13 @@ def capture_selected_state(target: Target, checkpoint: FeatureCheckpoint, run_di
         for row in catalog["sections"].get("stored-code", [])
         if isinstance(row, Mapping) and isinstance(row.get("type"), str) and isinstance(row.get("name"), str)
     }
+    # ASHARIF 2026-10-28: use the separate ALL_OBJECTS status for triggers, never ENABLED/DISABLED.
+    for row in catalog["sections"].get("triggers", []):
+        if not isinstance(row, Mapping) or not isinstance(row.get("name"), str):
+            continue
+        status = str(row.get("object_status", "")).upper()
+        if status in {"VALID", "INVALID"}:
+            code_status[("TRIGGER", row["name"])] = status
     source_units: dict[str, dict] = {}
     for item in checkpoint.inputs:
         if item.category != "stored-source" or item.unit is None:

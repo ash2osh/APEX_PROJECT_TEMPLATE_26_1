@@ -243,6 +243,71 @@ class FeaturePrepareTests(unittest.TestCase):
         self.assertFalse(state["coverage"]["ownerComplete"])
         self.assertTrue(state["coverage"]["selectedScopeComplete"])
 
+    def test_selected_trigger_validity_uses_database_object_status(self) -> None:
+        # ASHARIF 2026-10-28: validity comes from ALL_OBJECTS status, independently of trigger enablement.
+        from scripts import feature_release
+
+        owner, name = "APP_CODE", "PROBE_TRIGGER"
+        source = "TRIGGER PROBE_TRIGGER\nBEFORE INSERT ON PROBE_TABLE\nFOR EACH ROW\nBEGIN NULL; END;\n"
+        sql = f"CREATE OR REPLACE {source}/\n".encode()
+        item = FeatureInput(
+            "features/probe/APP_CODE/triggers/probe_trigger.sql", sql,
+            hashlib.sha256(sql).hexdigest(), (owner, "TRIGGER", name), "stored-source",
+        )
+        checkpoint = FeatureCheckpoint(
+            owner, (item,), (), (QueryCheck("after-trigger", "SELECT 1 FROM DUAL", 1),), ((owner, name),),
+        )
+        source_lines = source.splitlines(keepends=True)
+
+        def catalog(*, enabled: str, object_status: str | None, present: bool = True) -> dict:
+            sections = {section: [] for section in feature_release.STRUCTURAL_SECTIONS}
+            if present:
+                sections["baseline-source"] = [
+                    {"name": name, "type": "TRIGGER", "line": number, "text": line}
+                    for number, line in enumerate(source_lines, 1)
+                ]
+                sections["baseline-settings"] = [{"name": name, "type": "TRIGGER", **SETTINGS}]
+                trigger = {"name": name, "status": enabled, "table_name": "PROBE_TABLE"}
+                if object_status is not None:
+                    trigger["object_status"] = object_status
+                sections["triggers"] = [trigger]
+            return {
+                "identity": IDENTITY_FIELDS,
+                "coverage": {"sections": {section: {"complete": True} for section in feature_release.SELECTED_SECTIONS}},
+                "sections": sections,
+            }
+
+        for enabled, object_status, expected_valid in (
+            ("DISABLED", "VALID", True),
+            ("ENABLED", "INVALID", False),
+        ):
+            with self.subTest(enabled=enabled, object_status=object_status), patch.object(
+                feature_release.compare_schema, "capture_environment_catalog",
+                return_value=catalog(enabled=enabled, object_status=object_status),
+            ):
+                state = feature_release.capture_selected_state(
+                    self._target("staging"), checkpoint, self.root / "scratch/trigger-run",
+                )
+                self.assertIs(state["sourceUnits"]["TRIGGER:PROBE_TRIGGER"]["valid"], expected_valid)
+                self.assertEqual(state["structural"]["triggers"][0]["status"], enabled)
+
+        with patch.object(
+            feature_release.compare_schema, "capture_environment_catalog",
+            return_value=catalog(enabled="ENABLED", object_status=None),
+        ), self.assertRaisesRegex(feature_release.FeatureReleaseError, "validity state is unavailable"):
+            feature_release.capture_selected_state(
+                self._target("staging"), checkpoint, self.root / "scratch/trigger-run-missing-status",
+            )
+
+        with patch.object(
+            feature_release.compare_schema, "capture_environment_catalog",
+            return_value=catalog(enabled="DISABLED", object_status=None, present=False),
+        ):
+            absent = feature_release.capture_selected_state(
+                self._target("staging"), checkpoint, self.root / "scratch/trigger-run-new-trigger",
+            )
+        self.assertEqual(absent["sourceUnits"], {})
+
     def test_prepare_writes_target_and_dev_diffs_without_apply_or_receipts(self) -> None:
         from scripts import feature_release
 
