@@ -291,28 +291,46 @@ class FeatureRolloutTests(unittest.TestCase):
         with self.assertRaisesRegex(rollout.RolloutError, r"would replay previously verified writing step\(s\): 1"):
             rollout._assert_recovery_will_not_replay_prior_writes(plan, target_plan, parent_run)
 
+    def test_recovery_refuses_to_replay_verified_prior_feature_checkpoint(self) -> None:
+        plan = self._plan([self.steps[0], self.steps[1]])
+        target_plan = SimpleNamespace(recovery_binding={"checkpoint": 2})
+        parent_run = {"steps": [
+            {"step": 1, "status": "verified"},
+            {"step": 2, "status": "failed"},
+        ]}
+
+        with self.assertRaisesRegex(rollout.RolloutError, r"previously verified writing step\(s\): 1"):
+            rollout._assert_recovery_will_not_replay_prior_writes(plan, target_plan, parent_run)
+
     def test_recovery_allows_prior_read_only_steps_and_requires_verified_writes(self) -> None:
         read_only_plan = self._plan([
             {"type": "verify", "phase": "pre"},
             self.steps[0],
-            self.steps[1],
         ])
-        target_plan = SimpleNamespace(recovery_binding={"checkpoint": 2})
-        parent_run = {"steps": [
+        read_only_target_plan = SimpleNamespace(recovery_binding={"checkpoint": 1})
+        read_only_parent_run = {"steps": [
             {"step": 1, "status": "verified"},
-            {"step": 2, "status": "verified"},
-            {"step": 3, "status": "failed"},
+            {"step": 2, "status": "failed"},
         ]}
-        rollout._assert_recovery_will_not_replay_prior_writes(read_only_plan, target_plan, parent_run)
+        rollout._assert_recovery_will_not_replay_prior_writes(
+            read_only_plan, read_only_target_plan, read_only_parent_run,
+        )
 
         write_plan = self._plan([
             {"type": "ords-import", "schema": "REST_API"},
             self.steps[0],
             self.steps[1],
         ])
-        parent_run["steps"][0]["status"] = "unknown"
+        write_target_plan = SimpleNamespace(recovery_binding={"checkpoint": 2})
+        write_parent_run = {"steps": [
+            {"step": 1, "status": "unknown"},
+            {"step": 2, "status": "verified"},
+            {"step": 3, "status": "failed"},
+        ]}
         with self.assertRaisesRegex(rollout.RolloutError, "does not have a verified receipt"):
-            rollout._assert_recovery_will_not_replay_prior_writes(write_plan, target_plan, parent_run)
+            rollout._assert_recovery_will_not_replay_prior_writes(
+                write_plan, write_target_plan, write_parent_run,
+            )
 
     def test_capsule_recovery_refuses_prior_write_before_confirmation(self) -> None:
         from scripts import release_state

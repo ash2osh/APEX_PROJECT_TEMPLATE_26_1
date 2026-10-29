@@ -298,5 +298,40 @@ class JobsFromEnvironmentTests(unittest.TestCase):
         self.assertEqual(commands[0][3:], ["-v", "test_x", "test_y"])
 
 
+class UnittestRunnerSafetyTests(unittest.TestCase):
+    def test_run_unittest_closes_stdin_and_bounds_the_suite(self):
+        seen = {}
+
+        class Completed:
+            returncode, stdout = 0, "suite output\n"
+
+        def fake_run(command, **kwargs):
+            seen.update(kwargs)
+            return Completed()
+
+        with patch("scripts.ci_run_tests.subprocess.Popen", side_effect=AssertionError("Popen must not be used")), \
+             patch("scripts.ci_run_tests.subprocess.run", fake_run), \
+             contextlib.redirect_stdout(io.StringIO()):
+            code, output = run_unittest(["discover", "-s", "tests"])
+
+        self.assertEqual(code, 0)
+        self.assertEqual(output, "suite output\n")
+        self.assertIs(seen["stdin"], subprocess.DEVNULL)
+        self.assertEqual(seen["timeout"], 900)
+
+    def test_run_unittest_returns_a_bounded_timeout_with_partial_output(self):
+        def fake_run(command, **kwargs):
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"], output=b"partial output\n")
+
+        with patch("scripts.ci_run_tests.subprocess.Popen", side_effect=AssertionError("Popen must not be used")), \
+             patch("scripts.ci_run_tests.subprocess.run", fake_run), \
+             contextlib.redirect_stdout(io.StringIO()):
+            code, output = run_unittest(["discover", "-s", "tests"])
+
+        self.assertEqual(code, 124)
+        self.assertIn("partial output", output)
+        self.assertIn("unittest timed out after 900 seconds", output)
+
+
 if __name__ == "__main__":
     unittest.main()

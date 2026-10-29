@@ -1983,7 +1983,7 @@ def _assert_recovery_will_not_replay_prior_writes(plan: Sequence[dict], target_p
     parent_steps = parent_run.get("steps")
     if not isinstance(parent_steps, list) or len(parent_steps) != len(plan):
         raise RolloutError("recovery parent does not contain complete ordered step outcomes")
-    write_types = {"migrate", "sql-script", "ords-import", "app-deploy"}
+    write_types = {"migrate", "sql-script", "ords-import", "app-deploy", "feature-migrate"}
     completed_writes = []
     for item in plan[:checkpoint_step_number - 1]:
         if item["type"] not in write_types:
