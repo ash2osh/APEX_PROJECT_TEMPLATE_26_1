@@ -357,9 +357,10 @@ graphify extract . --force
 graphify query "which pages read the HR_USERS table?"
 ```
 
-The first build may ask you to configure a semantic backend (it summarizes the
-notes in `app_context/`); follow Graphify's own setup for that. After later
-changes run `graphify update .`, which runs locally at no cost. After `backup-db` or when tables
+Semantic indexing of notes in `app_context/` may use an optional configured
+backend. It is separate from routine code graph updates. After later `.apx` or
+SQL changes, use only the offline local CLI command `graphify update .`; it
+runs at no cost and requires no LLM API key. After `backup-db` or when tables
 or packages change, run `python3 scripts/setup_graphify_apx.py` first, so pages
 link to the real table nodes instead of stale cached ones. The graph reflects
 your repository's files, not the live database; export and back up first when

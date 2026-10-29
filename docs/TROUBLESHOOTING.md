@@ -113,6 +113,8 @@ for migration rules see [migration-rules.md](migration-rules.md).
 | You see | What it means | What to do |
 | --- | --- | --- |
 | `installed extractor is missing` | Graphify was installed or upgraded after setup last ran. | `python3 scripts/setup_graphify_apx.py`. Rerun it after every Graphify upgrade. |
+| A routine `.apx` or SQL graph update asks for an LLM API key | Code relationship updates use the local Graphify CLI and do not need a key. | Run `graphify update .` from the CLI. Do not use the Graphify skill, MCP, or a provider API to update the graph. |
+| Semantic indexing of `app_context/` reports a missing backend | The optional context indexer may use a configured semantic backend; routine code graph updates are unaffected. | Skip semantic context indexing unless it is needed. For `.apx` and SQL changes, use the local CLI command `graphify update .`; no LLM API key is required. |
 | Pages show as unconnected stubs | Graphify cached results from before the database copy existed. | `scripts/team.sh backup-db`, then `python3 scripts/setup_graphify_apx.py` and `graphify update .`. |
 
 ## Still stuck?

@@ -5,10 +5,12 @@ description: Turn any folder of files into a navigable knowledge graph
 
 # Workflow: graphify
 
-Use the graphify skill exposed by the current agent client when available. If
-the client does not expose that skill, use the repository's
-`scripts/setup_graphify_apx.py` and `graphify` CLI commands directly; do not
-assume a provider-specific home directory or invent an unavailable tool.
+Use a Graphify skill or MCP for queries and graph navigation when available.
+For updates to `.apx` and database SQL relationships, use only the offline
+local CLI command `graphify update .`. Do not use the Graphify skill or MCP to
+update the graph, and do not call a provider API directly. This deterministic
+update runs locally and does not require an LLM API key. Semantic indexing of changed
+`app_context/**/*.md` files is optional and separate from code graph updates.
 
 ## Domain corpus
 
@@ -31,8 +33,7 @@ must reflect Builder state.
 
 ## Fresh setup and full rebuild
 
-After installing the optional Graphify CLI, configure a supported semantic
-backend and run:
+After installing the optional Graphify CLI, run:
 
 ```bash
 python3 scripts/setup_graphify_apx.py
@@ -42,17 +43,19 @@ graphify extract . --force
 The setup copies the tracked `scripts/graphify_apexlang_extractor.py` into the
 isolated Graphify package, registers `.apx`, verifies the installed bytes, and
 runs a smoke extraction. The full extraction indexes Markdown context as well
-as deterministic APEXlang and SQL structure. Do not add `--code-only`: that
-would omit `app_context`.
+as deterministic APEXlang and SQL structure. Semantic indexing of context may
+use a configured backend; it is optional and not needed for routine `.apx` or
+SQL graph updates. Do not add `--code-only`: that would omit `app_context`.
 
 ## Incremental updates
 
-- After changing `.apx` or database `.sql` source, run `graphify update .`.
-  This refreshes AST relationships without an LLM call and preserves unchanged
-  semantic context nodes.
-- After changing `app_context/**/*.md`, run `graphify extract .`. Semantic
-  hashes make this incremental; only changed semantic sources should be
-  redispatched.
+- After changing `.apx` or database `.sql` source, run the local CLI command
+  `graphify update .`. This refreshes AST relationships without an LLM call and
+  preserves unchanged semantic context nodes. Do not update through a skill,
+  MCP, or provider API.
+- After changing `app_context/**/*.md`, run `graphify extract .` only when
+  optional semantic context indexing is wanted. Semantic hashes make this
+  incremental; only changed semantic sources should be redispatched.
 - After changing `.graphifyignore` or intentionally deleting substantial
   source, run `graphify extract . --force` and repeat the source-root checks.
 
