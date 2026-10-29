@@ -825,7 +825,9 @@ graph reflects this repository's files; export first when it must describe
 current Builder state.
 
 Install Graphify and its SQL parser (the distribution is `graphifyy`, the
-command is `graphify`), then configure a supported semantic backend:
+command is `graphify`). A semantic backend is optional for indexing Markdown
+notes in `app_context/`; it is not required for routine `.apx` and SQL graph
+updates:
 
 ```bash
 uv tool install graphifyy --with tree-sitter-sql
@@ -841,8 +843,11 @@ graphify extract . --force
   failures. This checks APEXlang parsing and file presence, not live runtime
   validity or semantic completeness; it uses the default output directory's
   saved corpus exclusions and Git-ignore setting.
-- `graphify update .` after APEXlang or database changes (local, no API cost).
-- `graphify extract .` after changing `app_context`.
+- For `.apx` and SQL graph updates, use only the offline local CLI command
+  `graphify update .`; do not use a Graphify skill, MCP, or provider API to
+  update the graph. These updates run locally and require no LLM API key.
+- `graphify extract .` after changing `app_context` only when optional semantic
+  context indexing is wanted; it may use a configured backend.
 - `python3 scripts/setup_graphify_apx.py` then `graphify update .` after the first
   `backup-db` or when tables or packages change, so pages link to the real
   database nodes instead of cached stubs.

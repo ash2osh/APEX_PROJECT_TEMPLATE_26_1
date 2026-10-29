@@ -184,6 +184,10 @@ is gated on `graphify-out/graph.json` existing. Install it with
 `uv tool install graphifyy --with tree-sitter-sql`, run
 `python3 scripts/setup_graphify_apx.py` (rerun after every Graphify upgrade;
 `--verify` checks without changing anything), then `graphify extract . --force`.
+For routine `.apx` and `database/*.sql` graph updates, use only the offline
+local CLI command `graphify update .`; do not use the Graphify skill, MCP, or a
+provider API to update the graph. These updates need no LLM API key. Semantic
+indexing of changed `app_context/**/*.md` is optional and separate.
 The corpus is a domain allowlist of `apps/`, `database/`, and `app_context/`.
 Graphify links cross-schema references and mirrored synonyms when their targets
 are present in the database mirror. The graph reflects this repository's
