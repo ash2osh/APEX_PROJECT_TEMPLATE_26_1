@@ -372,6 +372,34 @@ def _guard_query(query: Mapping) -> dict:
     return value
 
 
+def _header_tokens(line: str) -> list[str]:
+    tokens = re.findall(r'"(?:[^"]|"")*"|[^\s"]+', line)
+    return [token[1:-1].replace('""', '"') if token.startswith('"') else token.upper() for token in tokens]
+
+
+def _same_stored_source(live_lines: list[str], expected_lines: list[str]) -> bool:
+    """Compare captured source with the live text.
+
+    The header names the unit, so its keywords may differ in case, its name may be quoted or
+    not, and blanks may stand where an owner qualifier was. The body must match exactly.
+    """
+    if not live_lines or len(live_lines) != len(expected_lines):
+        return live_lines == expected_lines
+    return (
+        _header_tokens(live_lines[0]) == _header_tokens(expected_lines[0])
+        and live_lines[1:] == expected_lines[1:]
+    )
+
+
+def _same_settings(left: Mapping[str, object], right: Mapping[str, object]) -> bool:
+    """Compare compiler settings by value. The live query returns numbers and the validator
+    returns text, and an empty PLSQL_CCFLAGS is stored as NULL."""
+    def text(value: object) -> str:
+        return "" if value is None else str(value)
+
+    return {key: text(value) for key, value in left.items()} == {key: text(value) for key, value in right.items()}
+
+
 def _source_guards(checkpoint: FeatureCheckpoint, state: Mapping, checkpoint_number: int) -> list[dict]:
     actual_units = state["sourceUnits"]
     result: list[dict] = []
@@ -436,9 +464,9 @@ def _source_guards(checkpoint: FeatureCheckpoint, state: Mapping, checkpoint_num
             before_lines = list(actual["lines"])
             expected_valid = actual.get("valid") is True
 
-        expected_matches = before_lines == expected_lines
+        expected_matches = _same_stored_source(before_lines, expected_lines)
         settings_match = not setting_overrides or (
-            before_settings is not None and apply_settings == before_settings
+            before_settings is not None and _same_settings(apply_settings, before_settings)
         )
         no_op = actual is not None and expected_matches and settings_match and expected_valid
         if not isinstance(apply_settings, Mapping):
@@ -1169,12 +1197,6 @@ def _checkpoint_runtime_checks(
         if item.category != "stored-source" or item.unit is None:
             continue
         _owner, object_type, name = item.unit
-        expected_unit, _overrides = _stored_source(item)
-        expected_lines = expected_unit["lines"]
-        for query in baseline._source_check_queries(
-            {"name": name, "type": object_type, "lines": expected_lines}, checkpoint.schema,
-        ):
-            postconditions.append(QueryCheck(query["id"], query["sql"], query["expected"]))
         source_guard = next((
             row for row in guard["sourceGuards"]
             if isinstance(row, Mapping)
@@ -1184,6 +1206,19 @@ def _checkpoint_runtime_checks(
         ), None)
         if source_guard is None or not isinstance(source_guard.get("applySettings"), Mapping):
             raise FeatureReleaseError(f"prepared compiler settings are missing for {object_type} {name}")
+        if source_guard.get("noOp") is True:
+            # A unit that is already current keeps the text it has. Its header may be rendered
+            # differently from the frozen one, so check the live text the plan captured.
+            source_checks = source_guard.get("sourceVerification")
+            if not isinstance(source_checks, list) or not source_checks:
+                raise FeatureReleaseError(f"prepared no-op source check is missing for {object_type} {name}")
+        else:
+            expected_unit, _overrides = _stored_source(item)
+            source_checks = baseline._source_check_queries(
+                {"name": name, "type": object_type, "lines": expected_unit["lines"]}, checkpoint.schema,
+            )
+        for query in source_checks:
+            postconditions.append(QueryCheck(query["id"], query["sql"], query["expected"]))
         setting_query = baseline._exact_settings_check(
             source_guard["applySettings"], name, object_type, checkpoint.schema,
         )

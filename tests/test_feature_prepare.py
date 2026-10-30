@@ -738,6 +738,34 @@ class FeaturePrepareTests(unittest.TestCase):
             with self.assertRaisesRegex(feature_release.FeatureReleaseError, "edition"):
                 feature_release.prepare_target(self.root, two_checkpoints, "staging", environ=self._environment("staging"))
 
+    def test_no_op_comparison_ignores_header_case_quoting_and_setting_types(self) -> None:
+        from scripts import feature_release
+
+        # A captured header is rebuilt with upper-case keywords, a quoted name and blanks where the
+        # owner qualifier was. The live text keeps what the developer wrote. Only the header may differ.
+        frozen = ["PACKAGE" + " " * 10 + '"DISPATCH" AS\n', "  procedure run;\n", "END DISPATCH;\n"]
+        self.assertTrue(feature_release._same_stored_source(
+            ["package DISPATCH as\n", "  procedure run;\n", "END DISPATCH;\n"], frozen,
+        ))
+        self.assertFalse(feature_release._same_stored_source(
+            ["package DISPATCH as\n", "  procedure stop;\n", "END DISPATCH;\n"], frozen,
+        ))
+        self.assertFalse(feature_release._same_stored_source(
+            ["package OTHER as\n", "  procedure run;\n", "END DISPATCH;\n"], frozen,
+        ))
+        self.assertFalse(feature_release._same_stored_source(
+            ["package body DISPATCH as\n", "  procedure run;\n", "END DISPATCH;\n"], frozen,
+        ))
+
+        self.assertTrue(feature_release._same_settings(
+            {"plsql_optimize_level": "2", "plsql_ccflags": ""},
+            {"plsql_optimize_level": 2, "plsql_ccflags": None},
+        ))
+        self.assertFalse(feature_release._same_settings(
+            {"plsql_optimize_level": "3", "plsql_ccflags": ""},
+            {"plsql_optimize_level": 2, "plsql_ccflags": None},
+        ))
+
     def test_only_identical_valid_stored_unit_is_marked_noop(self) -> None:
         from scripts import feature_release
 
