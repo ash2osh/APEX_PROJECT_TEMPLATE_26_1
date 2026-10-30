@@ -46,14 +46,13 @@ The whole module takes about three to four minutes against a local container.
 | `test_production_refuses_without_a_capsule_or_stage_proof` | Production refuses without a capsule or stage proof, and writes nothing either way. |
 | `test_ddl_with_a_missing_prerequisite_is_refused_at_prepare` | A missing prerequisite table stops preparation before any write. |
 | `test_abrupt_termination_mid_apply_is_recovered_after_reconciliation` | A SIGKILL mid-apply, then reconciliation, then recovery to success. |
+| `test_noop_checkpoint_is_refused_while_an_unresolved_attempt_occupies_the_scope` | An unchanged staging unit is a no-op. An unresolved attempt on the same target still refuses it at the checkpoint level, and nothing is written. |
 | `test_two_schemas_on_one_database_apply_as_two_checkpoints` | Two schemas on one database, applied as two checkpoints. Needs the second schema. |
 
 ## Not covered
 
 - A migration profile that differs from the read profile. That was checked by
   hand with a proxy login.
-- A checkpoint-level no-op refused by an unknown attempt. The unit tests cover
-  it. The live run only reached the rollout-level refusal.
 - Oracle versions other than the one you run against.
 - Real staging or production targets. These checks never touch them. The
   feature-release guide requires a separately authorized disposable rehearsal

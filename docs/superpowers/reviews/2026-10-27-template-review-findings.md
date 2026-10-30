@@ -28,7 +28,7 @@ Repair plan (historical): [feature release review remediation](../plans/2026-10-
 | --- | --- | --- | --- | --- |
 | F1 | P1 | Version-2 execution without `--capsule` entered the legacy executor. A production SQL-only manifest returned success without staging proof; a mixed manifest ran its SQL step before rejecting feature-migrate. | Fixed, live-verified | `test_prod_refuses_without_stage_proof_before_checkpoint_execution`. Live: production without a capsule, and without stage proof, is refused and writes nothing. A mixed manifest is refused with no rows written. |
 | F2 | P1 | DDL had no dependency preflight. `CREATE INDEX` on a missing table produced a plan with zero preconditions, and earlier DDL could commit first. | Fixed, live-verified | `test_later_missing_index_table_refuses_before_first_create`. Live: preparation refuses with "missing prerequisite table". |
-| F3 | P1 | A no-op checkpoint skipped durable unresolved-attempt checks, so a retry could succeed while an unknown attempt remained. | Partly verified | `test_noop_cannot_bypass_unknown_or_attempting_occupancy`, `test_noop_cannot_bypass_attempting_occupancy`. Live: an identical retry was refused by the rollout-level check. The checkpoint-level path was not reached live. |
+| F3 | P1 | A no-op checkpoint skipped durable unresolved-attempt checks, so a retry could succeed while an unknown attempt remained. | Fixed, live-verified | `test_noop_cannot_bypass_unknown_or_attempting_occupancy`, `test_noop_cannot_bypass_attempting_occupancy`. Live: `test_noop_checkpoint_is_refused_while_an_unresolved_attempt_occupies_the_scope` reaches the checkpoint-level refusal on a no-op checkpoint. An identical retry is also refused by the rollout-level check. |
 | F4 | P1 | Cleanup inferred success only from feature write attempts. | Fixed, live-verified | `test_cleanup_refuses_unresolved_production_attempt`, `test_all_noop_and_mixed_production_runs_need_complete_evidence_before_cleanup`. Live: a failed production run is ineligible; a verified production no-op is eligible. |
 | F5 | P1 | Abrupt termination left `attempting`, and recovery accepted only `unknown`. | Fixed, live-verified | `test_recovery_preparation_accepts_reconciled_attempting_after_writer_terminated`, `test_recovery_checkpoint_runs_while_the_killed_parent_rollout_is_still_recorded_running`. Live: a SIGKILL mid-apply, then reconciliation, then recovery to success. |
 | F6 | P1 | Two schemas on one database were treated as conflicting identities. | Fixed, live-verified | `test_prepare_multiple_schemas_on_one_database_uses_each_staging_migration_profile`. Live: two-schema preparation and apply. |
@@ -38,6 +38,7 @@ Repair plan (historical): [feature release review remediation](../plans/2026-10-
 | F10 | P2 | All SQL-script and ORDS steps counted as uncovered object work. | Fixed, live-verified | `test_auxiliary_step_classifier_only_accepts_top_level_dml_and_recognized_ords`. Live: a DML-only step keeps `coverageComplete` true in staging and production. |
 | F11 | P2 | Initializing a second schema for one feature refused the shared README. | Fixed, live-verified | `test_init_second_schema_preserves_shared_readme_and_first_checks`. Live: a second schema initializes and keeps the README. |
 | F12 | P2 | Review directory names exceeded filesystem limits for long unit names. | Fixed, live-verified | `test_review_directory_component_is_bounded_for_long_unit_names`. Live: a 128-character package name captures and writes review diffs. |
+| F13 | P2 | Found live: the no-op check never matched a captured package. The rebuilt header differed in case, quoting and blanks; settings compared numbers with text and an empty `PLSQL_CCFLAGS` with NULL; and the no-op postcondition compared the rebuilt header with the live text. | Fixed, live-verified | `test_no_op_comparison_ignores_header_case_quoting_and_setting_types`. Live: `test_noop_checkpoint_is_refused_while_an_unresolved_attempt_occupies_the_scope` and `test_abrupt_termination_mid_apply_is_recovered_after_reconciliation` both reach the no-op path. |
 
 F8 follows Oracle's documented compilation model: an explicit `CREATE OR REPLACE`
 takes its compilation settings from the session. See
@@ -68,7 +69,7 @@ the branch, each with a regression test.
 
 ## Open
 
-- F3's checkpoint path has no live check. The live run reached only the rollout-level refusal.
-- Only one Oracle version (23.26.3.0.0 Free) has been run. Other targets have not.
-- No authorized disposable staging rehearsal has been run.
+- Only one Oracle version (23.26.3.0.0 Free) has been run. Other targets have not. The two production clones run 23.26.1.0.0 and have not been tested.
+- The staging rehearsal ran against disposable local schemas only, on 2026-10-30. No real staging or production system has been run.
 - The repair plan's checklist (`docs/superpowers/plans/`) has not been ticked off against these results.
+

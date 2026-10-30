@@ -427,6 +427,73 @@ class LiveFeatureReleaseTests(unittest.TestCase):
         staging = self._staged(capsule)
         self.assertEqual(len(staging["steps"]), 2)
 
+    def test_noop_checkpoint_is_refused_while_an_unresolved_attempt_occupies_the_scope(self) -> None:
+        # The live package already matches the frozen source, so the staging checkpoint is a
+        # no-op. An attempt left unresolved on the same target must still block it at the
+        # checkpoint level. The earlier live run only reached the rollout-level refusal.
+        from scripts import feature_release, release_capsule, release_ownership, release_state
+
+        slug = self._name("noop")
+        package = f"LIVE_{self.token}_NOOP"
+        self._sql(CONNECTION, f"""
+            create or replace package {package} as
+              function ping return number;
+            end {package};
+            /
+            create or replace package body {package} as
+              function ping return number is begin return 1; end;
+            end {package};
+            /
+        """, drops=(_drop_package(package),))
+        self._feature(slug)
+        captured = self._capture(slug, package)
+        self._checks(slug, self._valid_body_check(package))
+        self._manifest([{"type": "feature-migrate", "schema": SCHEMA, "inputs": captured}])
+        _commit(self.project, "live checks: no-op checkpoint with an unresolved attempt")
+        capsule = self._freeze()
+        result, _ = self._rollout("staging", capsule=capsule, prepare=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        # The synthetic attempt below must not outlive this test: the other scenarios share this checkout.
+        root = self.project
+        index_path = root / "releases" / ".local-state.json"
+        index_before = index_path.read_bytes() if index_path.exists() else None
+
+        def restore_index() -> None:
+            if index_before is None:
+                index_path.unlink(missing_ok=True)
+            else:
+                index_path.write_bytes(index_before)
+
+        self.addCleanup(restore_index)
+        loaded = release_capsule.load_capsule(root, Path(capsule))
+        plan = feature_release.load_target_plan(root, loaded, "staging")
+        # Prove the premise: every stored unit already matches the frozen source on staging.
+        source_guards = plan.checkpoint_guards[0]["sourceGuards"]
+        self.assertTrue(source_guards)
+        self.assertTrue(all(guard["noOp"] is True for guard in source_guards))
+        run_id = release_state.start_rollout(root, loaded, plan)
+        scope = release_state.target_scope_from_identity(plan.checkpoint_guards[0]["targetIdentity"])
+        identity = {
+            "runId": run_id, "environment": plan.environment,
+            "payloadDigest": loaded.payload_digest, "engineDigest": loaded.engine_digest,
+            "planDigest": plan.plan_digest, "checkpoint": 1,
+            "recoveryAttempt": plan.recovery_attempt,
+        }
+        with release_ownership.target_writer_lease(root, scope, identity) as lease:
+            release_state.record_attempt(root, loaded, plan, 1, run_id=run_id, lease=lease)
+
+        # The in-process call reads the same profile values the CLI reads from PROJECT_ENV_FILE.
+        profile = dict(line.split("=", 1) for line in _env_text().splitlines() if "=" in line)
+        with self.assertRaisesRegex(feature_release.FeatureReleaseError, "unresolved attempt occupies this physical target"):
+            feature_release.execute_checkpoint(root, loaded, plan, 1, run_id=run_id, environ=profile)
+
+        index = release_state._load_index(root)
+        self.assertEqual([row for row in index["checkpointVerifications"] if row["runId"] == run_id], [])
+        self.assertEqual(self._count(
+            f"select count(*) from user_source where name = '{package}' and type = 'PACKAGE BODY' "
+            "and text like '%return 1;%'"), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
