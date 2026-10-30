@@ -109,6 +109,12 @@ keeps the attempt, receipt, and capsule intact. Do not rerun that capsule; retai
 the evidence while preparing a separately reviewed recovery plan that does not
 repeat the completed writes. The runner will not infer that replay is safe.
 
+A rollout killed mid-step may record no outcome for that step or any later one.
+Recovery accepts such a parent, provided every earlier writing step has a
+verified outcome. Once an acknowledged recovery has verified the interrupted
+checkpoint, the killed run's record no longer blocks later runs on the same
+target. Those runs must still pass the same occupancy checks as any other.
+
 Production needs its own prepared production plan and a successful staging
 report for the same capsule:
 
@@ -171,3 +177,7 @@ template guide or example.
 Offline tests and hosted CI do not prove live staging performance. A measured
 claim needs a separately authorized disposable staging rehearsal with the
 actual selected payload and final source/settings/validity read-back.
+
+To exercise this path against a disposable schema, run the opt-in live checks
+described in [live feature-release checks](live-feature-tests.md). CI does not
+run them.

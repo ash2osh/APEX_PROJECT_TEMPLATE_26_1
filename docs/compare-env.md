@@ -58,6 +58,13 @@ and is never executed.
 | `installed-options` | JVM and Spatial option values and installed component status. |
 | `versions` | Database and APEX versions. |
 
+The capture's `identity` records `database_version` as `DBMS_DB_VERSION` reports
+it, for example `23.0`. The migration checks and the feature-release preflight
+record the same value, so a capture from this version compares cleanly with
+them. Captures made before this change stored the internal version string
+(`23.0.0.0.0`) in that field. Take a fresh capture before comparing those with
+a feature-release preflight.
+
 Each record is matched by its section key and then compared field by field.
 Reports classify records as `missing on target`, `different`, or `only on
 target`. A `different` item includes the field names that changed in JSON and

@@ -1210,6 +1210,9 @@ BEGIN
      ORDER BY d.name, d.type, d.referenced_owner, d.referenced_name, d.referenced_type
      OFFSET :page_offset ROWS FETCH NEXT :page_size ROWS ONLY~');
 
+  -- The grantee test uses CURRENT_SCHEMA rather than a second :scope bind. The driver sets
+  -- CURRENT_SCHEMA to the target schema before this runs, and a repeated bind would break
+  -- the positional USING list (ORA-01008).
   add_query_section('feature-synonym-access', q'~
     SCOPE_WITH
     SELECT JSON_OBJECT('owner' VALUE p.table_schema, 'object_name' VALUE p.table_name,
