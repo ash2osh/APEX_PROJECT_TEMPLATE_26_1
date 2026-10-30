@@ -167,5 +167,12 @@ end.
   database versions before using the report for a production rollout.
 - Oracle catalog columns and ORDS metadata views vary by database/ORDS release.
   Unsupported or unreadable sections are blockers, not identical results.
+- Environments must have distinct database identities. The comparison refuses a
+  source and target that resolve to the same database, container, schema and
+  edition, and it reports `SELF_COMPARISON`. Containers built from the same Oracle Free
+  image all report `FREE` and `FREEPDB1`, so a rehearsal across them cannot be compared.
+  Give each environment its own `DB_UNIQUE_NAME`. The same limit applies to a release
+  guard: when identities match, nothing in the identity can tell a mis-pointed
+  connection from the right one, so connection names and profiles carry that check.
 - A source hash identifies changed stored logic but is not a source export.
   Use an exact source baseline and review the deployment migration separately.

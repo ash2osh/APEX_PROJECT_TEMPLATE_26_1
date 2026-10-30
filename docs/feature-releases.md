@@ -20,7 +20,10 @@ scripts/team.sh feature diff inventory --schema APP_CODE
 ```
 
 Capture reads the complete live DEV package specification and body, when a body
-exists, and stores a retained source baseline under ignored `scratch/`. It
+exists, and stores a retained source baseline under ignored `scratch/`. It uses the
+`CODE_*` profile, not `MIGRATION_*`. A feature that touches more than one schema
+needs every DEV schema listed in `CODE_SCHEMA`, with aligned `CODE_SQLCL_CONNECTION`
+and `CODE_EXPECTED_USER` values; otherwise the second schema's capture is refused. It
 refuses to replace edited source; use `--refresh` only after reviewing the live
 change and reconciling the source. `diff` is offline and writes source diffs and
 review metadata under `ai_generate/YYYY-MM-DD/feature-diffs/`. Add its output to
