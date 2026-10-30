@@ -389,6 +389,15 @@ class ValidateMigrationTests(unittest.TestCase):
         self.assertEqual(2, len(spans))
 
 
+    def test_migration_commit_is_refused_as_transaction_control_not_as_spacing(self) -> None:
+        # The runner commits once after a clean run. A COMMIT inside the file would split that
+        # transaction, so it is refused. The message must say so, not suggest a spacing fix.
+        from scripts.validate_migration import validate_sql_only
+
+        for source in ("INSERT INTO T (ID) VALUES (1);\nCOMMIT;\n", "COMMIT ;\n", "rollback;\n"):
+            with self.subTest(source=source), self.assertRaisesRegex(ValueError, "transaction control"):
+                validate_sql_only(source)
+
     def test_rollout_transaction_control_accepts_only_commit_and_rollback(self) -> None:
         from scripts.validate_migration import validate_sql_only
 
