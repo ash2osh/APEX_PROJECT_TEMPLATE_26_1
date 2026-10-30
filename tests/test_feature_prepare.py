@@ -741,7 +741,8 @@ class FeaturePrepareTests(unittest.TestCase):
     def test_only_identical_valid_stored_unit_is_marked_noop(self) -> None:
         from scripts import feature_release
 
-        exact_lines = ["PACKAGE DISPATCH AS\n", "  PROCEDURE RUN;\n", "END DISPATCH;\n"]
+        # ALL_SOURCE blanks the APP_CODE. owner qualifier of the header and keeps its columns.
+        exact_lines = ["PACKAGE" + " " * 10 + "DISPATCH AS\n", "  PROCEDURE RUN;\n", "END DISPATCH;\n"]
         exact = self._state(environment="stage", lines=exact_lines, valid=True)
         exact["sourceUnits"]["PACKAGE:DISPATCH"]["settings"] = dict(SETTINGS)
         with patch.object(feature_release.release_capsule, "load_capsule", return_value=self.capsule), \
@@ -803,6 +804,22 @@ class FeaturePrepareTests(unittest.TestCase):
 
         with self.assertRaisesRegex(feature_release.FeatureReleaseError, "settings prologue changed"):
             feature_release._checkpoint_guard(tampered, 1, self.checkpoint)
+
+    def test_new_unit_guard_has_no_before_digest_and_still_validates(self) -> None:
+        # A unit that does not exist yet has no before-state, so its guard has no
+        # beforeSourceSha256. Validation must accept that shape when it is reproduced.
+        from scripts import feature_release
+
+        state = self._state(environment="staging")
+        state["sourceUnits"] = {}
+        with patch("scripts.feature_release.release_capsule.load_capsule", return_value=self.capsule), \
+             patch("scripts.feature_release.capture_selected_state", return_value=state):
+            plan = feature_release.prepare_target(
+                self.root, self.capsule, "staging", environ=self._environment("staging"),
+            )
+        self.assertFalse(plan.checkpoint_guards[0]["sourceGuards"][0]["targetExists"])
+        guard = feature_release._checkpoint_guard(plan, 1, self.checkpoint)
+        self.assertIsNone(guard["sourceGuards"][0]["beforeSourceSha256"])
 
 
 if __name__ == "__main__":

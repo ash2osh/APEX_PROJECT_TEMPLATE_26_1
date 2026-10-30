@@ -1048,10 +1048,7 @@ BEGIN
   l_identity.put('container_id', SYS_CONTEXT('USERENV', 'CON_ID'));
   l_identity.put('container_name', SYS_CONTEXT('USERENV', 'CON_NAME'));
   l_identity.put('edition', SYS_CONTEXT('USERENV', 'CURRENT_EDITION_NAME'));
-  SELECT MAX(version) INTO l_db_version
-    FROM product_component_version
-   WHERE product LIKE 'Oracle%Database%';
-  l_identity.put('database_version', l_db_version);
+  l_identity.put('database_version', TO_CHAR(DBMS_DB_VERSION.VERSION) || '.' || TO_CHAR(DBMS_DB_VERSION.RELEASE));
 
   add_query_section('tables', q'~
     SCOPE_WITH
@@ -1209,7 +1206,7 @@ BEGIN
       FROM all_dependencies d
      WHERE d.owner = :scope
        AND (SCOPE_MATCH(d.name)
-         OR (d.referenced_owner = :scope AND SCOPE_MATCH(d.referenced_name)))
+         OR (d.referenced_owner = d.owner AND SCOPE_MATCH(d.referenced_name)))
      ORDER BY d.name, d.type, d.referenced_owner, d.referenced_name, d.referenced_type
      OFFSET :page_offset ROWS FETCH NEXT :page_size ROWS ONLY~');
 
@@ -1221,7 +1218,7 @@ BEGIN
       JOIN all_tab_privs p ON p.table_schema = s.table_owner AND p.table_name = s.table_name
      WHERE (s.owner = :scope OR s.owner = 'PUBLIC')
        AND SCOPE_MATCH(s.synonym_name)
-       AND p.grantee IN (:scope, 'PUBLIC')
+       AND p.grantee IN (SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA'), 'PUBLIC')
        AND p.privilege = 'SELECT'
      ORDER BY p.table_schema, p.table_name, p.grantee, p.privilege
      OFFSET :page_offset ROWS FETCH NEXT :page_size ROWS ONLY~');
@@ -1325,7 +1322,7 @@ BEGIN
   END IF;
 
   l_completed_at := TO_CHAR(SYSTIMESTAMP AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.FF3"Z"');
-  l_identity.put('database_version', l_db_version);
+  l_identity.put('database_version', TO_CHAR(DBMS_DB_VERSION.VERSION) || '.' || TO_CHAR(DBMS_DB_VERSION.RELEASE));
   l_coverage.put('complete', l_unavailable.get_size = 0);
   l_coverage.put('pageSize', c_page_size);
   l_coverage.put('maxRows', c_max_rows);

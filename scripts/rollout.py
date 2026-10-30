@@ -1131,8 +1131,10 @@ def _script_driver(
             f"  c_expected_{field} CONSTANT VARCHAR2(512) := UTL_RAW.CAST_TO_VARCHAR2(HEXTORAW('{sql_hex(str(expected_identity[field]))}'));"
             for field in OBSERVED_IDENTITY_FIELDS
         )
+        # The driver declares the database name as v_database_name; every other field is v_<field>.
+        identity_variables = {"db_name": "database_name"}
         identity_checks = "\n".join(
-            f"  IF NVL(v_{field}, '{field.upper()}_MISSING') <> c_expected_{field} THEN RAISE_APPLICATION_ERROR(-20075, 'rollout writer identity mismatch'); END IF;"
+            f"  IF NVL(v_{identity_variables.get(field, field)}, '{field.upper()}_MISSING') <> c_expected_{field} THEN RAISE_APPLICATION_ERROR(-20075, 'rollout writer identity mismatch'); END IF;"
             for field in OBSERVED_IDENTITY_FIELDS
         )
         identity_output = (

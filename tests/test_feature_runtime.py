@@ -712,6 +712,33 @@ class FeatureRuntimeTests(unittest.TestCase):
         index = json.loads((self.root / "releases/.local-state.json").read_text(encoding="utf-8"))
         self.assertEqual(index["attempts"][-1]["state"], "unknown")
 
+    def test_stored_source_header_blanks_the_owner_as_oracle_stores_all_source(self) -> None:
+        # ALL_SOURCE keeps the columns of an owner qualifier as blanks, so the expected
+        # first line must have that padding or every source postcondition fails live.
+        from scripts import feature_release
+
+        source = (
+            b'CREATE OR REPLACE PACKAGE BODY "APP_CODE"."DISPATCH" as\n'
+            b"  PROCEDURE RUN is begin null; end;\n"
+            b'end "DISPATCH";\n/\n'
+        )
+        item = replace(
+            self.item, path="features/dispatch/APP_CODE/packages/dispatch.pkb.sql", source=source,
+            sha256=hashlib.sha256(source).hexdigest(), unit=("APP_CODE", "PACKAGE BODY", "DISPATCH"),
+        )
+        expected_unit, _settings = feature_release._stored_source(item)
+        self.assertEqual(expected_unit["lines"][0], "PACKAGE BODY" + " " * 12 + '"DISPATCH" as\n')
+
+    def test_validity_check_ids_are_kebab_case_for_underscored_unit_names(self) -> None:
+        # Oracle names often contain underscores, but the check runner accepts only
+        # lowercase kebab-case ids. An underscore id failed every feature postcondition.
+        from scripts import feature_release, migration_manifest
+
+        for object_type, name in (("PACKAGE BODY", "ITEM_LOOKUP"), ("PACKAGE", "APP_DISPATCH_2"), ("TRIGGER", "T$AUDIT")):
+            with self.subTest(name=name):
+                identifier = feature_release._validity_check_id(object_type, name)
+                self.assertIsNotNone(migration_manifest.CHECK_ID_RE.fullmatch(identifier), identifier)
+
     def test_noop_unit_has_no_apply_session_or_write_attempt(self) -> None:
         from scripts import feature_release
 

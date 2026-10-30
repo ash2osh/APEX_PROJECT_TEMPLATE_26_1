@@ -313,8 +313,9 @@ def _stored_source(item: FeatureInput) -> tuple[dict, dict[str, str]]:
     if actual_name != name or actual_owner not in {None, owner}:
         raise FeatureReleaseError(f"stored source header does not match validated unit {object_type} {name}: {item.path}")
     if actual_owner is not None:
-        prefix = f"{header.group('indent')}{header.group('kind')} {header.group('second')}"
-        lines[0] = prefix + lines[0][header.end():]
+        # ALL_SOURCE blanks the owner qualifier and keeps its columns, so the expected header does too.
+        owner_start, name_start = header.start("first"), header.start("second")
+        lines[0] = lines[0][:owner_start] + " " * (name_start - owner_start) + lines[0][name_start:]
     overrides: dict[str, str] = {}
     for start, end in spans[:-1]:
         statement = text[start:end].strip()
@@ -1094,7 +1095,12 @@ def _checkpoint_guard(plan: TargetPlan, checkpoint_number: int, checkpoint: Feat
             raise FeatureReleaseError("prepared source compiler guard checks are malformed")
         if source_guard.get("valid") is not None and type(source_guard.get("valid")) is not bool:
             raise FeatureReleaseError("prepared source compiler guard validity is malformed")
+        # Only a unit that does not exist yet has no before-state digest.
+        if (source_guard.get("beforeSourceSha256") is None) != (source_guard.get("targetExists") is False):
+            raise FeatureReleaseError("prepared source compiler guard before-state does not match whether the unit exists")
         for digest_field in ("beforeSourceSha256", "expectedSourceSha256", "settingsPrologueSha256"):
+            if digest_field == "beforeSourceSha256" and source_guard.get(digest_field) is None:
+                continue
             if not isinstance(source_guard.get(digest_field), str) or HASH_RE.fullmatch(source_guard[digest_field]) is None:
                 raise FeatureReleaseError(f"prepared source compiler guard {digest_field} is malformed")
         _validated_source_prologue(source_guard)
@@ -1131,6 +1137,11 @@ def _runtime_checks(checks: Sequence[QueryCheck], label: str) -> tuple[QueryChec
         ids.add(check.id)
         result.append(check)
     return tuple(result)
+
+
+def _validity_check_id(object_type: str, name: str) -> str:
+    # Check ids are lowercase kebab-case, so Oracle underscores and $ are slugged and hashed.
+    return f"valid-{baseline._safe_check_slug(name + '-' + object_type)}"
 
 
 def _checkpoint_runtime_checks(
@@ -1178,7 +1189,7 @@ def _checkpoint_runtime_checks(
         )
         postconditions.append(QueryCheck(setting_query["id"], setting_query["sql"], setting_query["expected"]))
         postconditions.append(QueryCheck(
-            f"valid-{object_type.lower().replace(' ', '-')}-{name.lower()}",
+            _validity_check_id(object_type, name),
             "SELECT CASE WHEN EXISTS (SELECT 1 FROM ALL_OBJECTS "
             f"WHERE OWNER = {_sql_literal(checkpoint.schema)} AND OBJECT_TYPE = {_sql_literal(object_type)} "
             f"AND OBJECT_NAME = {_sql_literal(name)} AND STATUS = 'VALID') "
