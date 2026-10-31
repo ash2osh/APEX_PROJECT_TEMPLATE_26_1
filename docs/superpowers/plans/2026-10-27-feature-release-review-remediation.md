@@ -1,5 +1,7 @@
 # Feature Release Review Remediation Implementation Plan
 
+> **Status: historical.** The checklist below is intentionally unticked. The work it describes was done through [PR #47](https://github.com/ash2osh/APEX_PROJECT_TEMPLATE_26_1/pull/47) in the 26.1 template and [PR #82](https://github.com/ash2osh/APEX_PROJECT_TEMPLATE_TEAM/pull/82) in the 26.2 template, not by stepping through these boxes. Use [the review findings](../reviews/2026-10-27-template-review-findings.md) as the source of truth. It records each finding's status and the test or live scenario that covers it.
+
 > **For agentic workers:** Execute task by task, inline, without subagents. The repository workflow selection is none; follow these checked steps directly. Do not install or enable a workflow pack. This is a planning deliverable, not authorization to implement, commit, push, merge, connect to a database, or deploy.
 
 **Goal:** Fix all twelve confirmed template-review findings while preserving the mutable-source workflow, frozen staged payload, target guards, durable recovery evidence, and version-1 behavior.
