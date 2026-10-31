@@ -326,7 +326,8 @@ class EnvironmentComparisonTests(unittest.TestCase):
         """Oracle 26ai reports 'Oracle AI Database 26ai ...', which 'Oracle Database%' does not match."""
         sql = (ROOT / "scripts" / "compare_env_catalog.sql").read_text(encoding="utf-8")
         self.assertNotIn("LIKE 'Oracle Database%'", sql)
-        self.assertEqual(sql.count("LIKE 'Oracle%Database%'"), 2)
+        # Only the versions section reads PRODUCT_COMPONENT_VERSION now; the identity uses DBMS_DB_VERSION.
+        self.assertEqual(sql.count("LIKE 'Oracle%Database%'"), 1)
 
     def test_catalog_sql_constraints_page_before_correlated_subqueries(self) -> None:
         """ORA-style paging with OFFSET evaluates select-list subqueries for every row before the offset; page the base rows first."""
@@ -449,7 +450,31 @@ class EnvironmentComparisonTests(unittest.TestCase):
         self.assertIn("SCOPE_MATCH(d.name)", dependencies)
         self.assertIn("SCOPE_MATCH(d.referenced_name)", dependencies)
         self.assertIn("SCOPE_MATCH(s.synonym_name)", synonym_access)
-        self.assertIn("p.grantee IN (:scope, 'PUBLIC')", synonym_access)
+        self.assertIn("p.grantee IN (SYS_CONTEXT('USERENV', 'CURRENT_SCHEMA'), 'PUBLIC')", synonym_access)
+
+    def test_compare_env_identity_reports_the_database_version_the_migration_checks_report(self) -> None:
+        # The feature preflight compares the identity captured at preparation with the one
+        # its precondition checks report at execution. PRODUCT_COMPONENT_VERSION gives the
+        # internal version (23.0.0.0.0) while the checks give DBMS_DB_VERSION (23.0), so
+        # every staging or production feature run was refused as an identity change.
+        expression = "TO_CHAR(DBMS_DB_VERSION.VERSION) || '.' || TO_CHAR(DBMS_DB_VERSION.RELEASE)"
+        sql = (ROOT / "scripts" / "compare_env_catalog.sql").read_text(encoding="utf-8")
+        identity_versions = re.findall(r"l_identity\.put\('database_version', ([^;]+)\);", sql)
+        self.assertEqual(len(identity_versions), 2)
+        for value in identity_versions:
+            self.assertEqual(value.strip(), expression)
+        self.assertIn(expression, (ROOT / "scripts" / "migration_checks.py").read_text(encoding="utf-8"))
+
+    def test_every_compare_env_query_binds_scope_once_for_its_positional_arguments(self) -> None:
+        # append_rows passes the scope JSON, the schema and the page window in fixed
+        # positions. A second :scope in one query needs another argument there, so
+        # Oracle raises ORA-01008 at run time; the text checks above cannot see that.
+        sql = (ROOT / "scripts" / "compare_env_catalog.sql").read_text(encoding="utf-8")
+        sections = re.findall(r"add_query_section\('([a-z-]+)', q'~(.*?)~'\)", sql, flags=re.DOTALL)
+        self.assertIn("feature-dependencies", [name for name, _body in sections])
+        for name, body in sections:
+            with self.subTest(section=name):
+                self.assertLessEqual(len(re.findall(r":scope\b", body)), 1)
 
     def test_compare_env_cli_scopes_the_capture_to_the_configured_prefixes(self) -> None:
         from scripts import compare_schema

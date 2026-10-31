@@ -219,7 +219,11 @@ def sha256_pair(path: Path) -> tuple[str, str] | None:
 
 
 def fetch_template(source: str, ref: str | None, destination: Path) -> str:
-    run_git(destination.parent, "clone", "--quiet", source, str(destination))
+    # git clone reads a leading dash as an option ("-bogus" becomes "-b ogus"), so a
+    # source from the lock, the manifest or --source must never reach it that way.
+    if source.startswith("-"):
+        raise UpgradeError("template source must not begin with '-'")
+    run_git(destination.parent, "clone", "--quiet", "--", source, str(destination))
     if ref:
         try:
             resolved = run_git(destination, "rev-parse", "--verify", "--end-of-options", ref + "^{commit}").strip()
@@ -769,7 +773,7 @@ def _post_upgrade_sync(project_root: Path, actions: list[Action]) -> None:
     graphify_out = project_root / "graphify-out"
     touched_extractor = any(
         a.path in ("scripts/graphify_apexlang_extractor.py", "scripts/setup_graphify_apx.py")
-        and a.kind in ("UPDATE", "ADD")
+        and a.kind in ("CREATE", "UPDATE")
         for a in actions
     )
     if not (graphify_out.is_dir() or touched_extractor):
