@@ -63,7 +63,7 @@ Commands:
                                               Plan/run retained DEV fixtures or report/clean one saved run
   new-migration <name> --source TYPE:NAME [...] --env dev
                                               Start a code migration from the live DEV source
-  feature init|capture|diff|freeze|clean-capsule ... Create or review feature releases
+  feature init|capture|diff|doctor|freeze|clean-capsule ... Create or review feature releases
   migrate <folder> [...] --env dev|staging|prod [--verbose] [--rehearse] [--report <file>]
                                               Apply, or rehearse DML in one transaction and roll it back
   revise <folder> [--reason TEXT]             Copy to the next migration revision
@@ -448,7 +448,7 @@ try {
       Invoke-TeamBash -ScriptName "team.sh" -ScriptArguments (@("new-migration") + @($Arguments))
     }
     "feature" {
-      if ($Arguments.Count -lt 1) { Fail "usage: scripts/team.ps1 feature <init|capture|diff|freeze|clean-capsule> [arguments]" }
+      if ($Arguments.Count -lt 1) { Fail "usage: scripts/team.ps1 feature <init|capture|diff|doctor|freeze|clean-capsule> [arguments]" }
       $featureArguments = @($Arguments)
       if ($featureArguments[0] -ceq "freeze" -and $featureArguments.Count -gt 1) {
         $featureArguments[1] = ConvertTo-MigrationFolderArgument ([string] $featureArguments[1])

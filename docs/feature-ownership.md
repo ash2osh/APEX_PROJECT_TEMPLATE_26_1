@@ -1,6 +1,6 @@
 # Feature ownership and DEV drift
 
-Status: design for the feature-release path. The implementation lands in the same pull request.
+Status: implemented (`feature doctor`, `feature capture --move-from`, the refresh guard and the freeze gate).
 
 A release capsule installs the **feature file**, not what is on DEV. Two things can therefore put an old
 version of a stored unit into a release without any command complaining:
@@ -32,11 +32,12 @@ Offline checks (always):
   schema, type, name; spec and body are separate units) or an object created in a `ddl.sql`. A claim made by more
   than one feature is an error. `ALTER TABLE ... ADD COLUMN c` claims the pair (table, column), so two features may
   add different columns to one table.
-- **Orphan checks.** A postcondition in a feature's `checks.json` that names a stored unit whose file is not in that
-  feature is reported (warning).
+- **Orphan checks.** A check in a feature's `checks.json` that names a stored unit (`OBJECT_NAME`/`OBJECT_TYPE`)
+  whose file is not in that feature is reported as a warning. After a move, this is how a forgotten check shows up.
 - Exit code 0 clean, 1 findings, 2 could not run.
 
-`feature freeze` runs the offline checks first and refuses on an ownership error.
+`feature freeze` runs the ownership check first and refuses when an object is held by two features and one of them is
+selected by the manifest. A duplicate between features the release does not select is left to `feature doctor`.
 
 ### D2. What counts as a claim
 
@@ -63,11 +64,33 @@ Ways forward after a refusal: apply the lines to DEV and repeat; `--discard-unap
 
 ### D4. Drift against DEV: `feature doctor --live`
 
-Read-only. Reads the DEV source of every stored unit of every feature through the `CODE_*` profile (one fixed
-`SELECT` on `ALL_SOURCE` in a read-only transaction), and compares it with the file, ignoring comments, blank lines,
-whitespace and letter case. Each file is `EQUAL`, `BEHIND DEV`, `AHEAD OF DEV`, `DIVERGED`, `NOT ON DEV` or
-`ACCEPTED`. `feature freeze` runs the live check when the DEV profile is configured; `--no-live "<reason>"` skips
-it and the reason is recorded in the capsule. Without a DEV profile the report says the check was not live.
+Read-only. Reads the DEV spec and body of every package file of the selected features with the same guarded DEV
+capture `feature capture` uses (the `CODE_*` profile, identity check, one session per schema), and compares each
+file with it, ignoring comments, blank lines, whitespace and letter case. Each file is equal, `BEHIND DEV`,
+`AHEAD OF DEV`, `DIVERGED`, `NOT ON DEV` or `ACCEPTED`.
+
+The comparison is three-way when the retained DEV baseline of the file exists (`scratch/feature-source/...`, written by
+`feature capture`): the file, DEV now, and DEV as it was when the file was captured. An edit to existing code is the
+file's own work, not a loss, as long as DEV has not changed since the capture. What a release would undo are the DEV
+changes made since then: lines DEV added that the file lacks, or lines DEV removed that the file still holds. Without a
+baseline (a file written by hand, or moved with `--keep-file`) the two-way comparison is used, which cannot tell an edit
+from a DEV change, so an edited line shows as `DIVERGED` until a capture with `--refresh` retains a baseline.
+
+| State | Meaning | Level |
+| --- | --- | --- |
+| `BEHIND DEV` | DEV changed since the capture and the file lacks or still holds those lines; a release would undo them | error |
+| `DIVERGED` | the same, and the file also has edits of its own (or, without a baseline, both sides differ) | error |
+| `NOT ON DEV` | the package is not in the schema on DEV | error |
+| `AHEAD OF DEV` | the file has edits or additions DEV lacks and DEV has not changed since the capture: new work not compiled yet (the template has no DEV apply path, so this is normal) | warning |
+| `ACCEPTED` | the differing lines are exactly those recorded in `accepted-differences.json` | info |
+
+Only errors stop a freeze or give `feature doctor` a non-zero exit.
+
+`feature freeze` runs the comparison for the packages of the selected features when a DEV profile is configured.
+`--no-live "<reason>"` skips it. What the freeze checked, or why it did not, is written to
+`scratch/freeze-checks/<capsule directory name>.json` (outside the capsule and its digest). Without a DEV profile
+the freeze says the comparison did not run; if a profile exists but DEV cannot be read, the freeze stops (exit 2)
+and names `--no-live`. A schema without a DEV profile is reported by `doctor --live` as `LIVE SKIPPED`.
 
 ### D5. Differences the owner decided on: `features/<slug>/accepted-differences.json`
 
@@ -79,6 +102,7 @@ it and the reason is recorded in the capsule. Without a DEV profile the report s
 ```
 
 A difference is `ACCEPTED` only while the differing lines equal the recorded lines; any other drift still fails.
+A move with `--keep-file` carries the entry to the receiving feature; a move that takes the DEV version drops it.
 
 ### D6. `feature capture --refresh`
 
@@ -103,10 +127,13 @@ Names are generic.
 ## Not covered
 
 - Views, DDL files and data scripts are checked for ownership but not compared with DEV.
-- The live comparison covers stored sources of the schema the `CODE_*` profile logs in to.
+- The live comparison covers packages (spec and body): the stored sources `feature capture` can read.
+- `--keep-file` does not retain a DEV baseline; run a capture with `--refresh` once the file equals DEV.
 - A unit claimed by a feature and also by an old `migrations/` folder is not detected.
 
 ## Tests
 
-Offline unit tests for each row of the tables; live checks (opt-in, Docker) in `tests/test_live_feature_release.py`
-for `doctor --live`, a move and a refused refresh, as described in [live feature-release checks](live-feature-tests.md).
+`tests/test_feature_ownership.py` covers each row of the tables with a faked DEV capture, and was mutation-checked
+(each rule removed in turn makes a test fail). Live checks (opt-in, Docker) in `tests/test_live_feature_release.py`
+exercise `doctor --live`, a move and a refused refresh against a real schema, as described in
+[live feature-release checks](live-feature-tests.md).
