@@ -453,7 +453,7 @@ or production has the same schema name as DEV, and do not fall back to DEV when
 a target is incomplete. The SQLcl login user may differ from the schema owner.
 
 Staging and production applies show the resolved target and require an
-interactive confirmation. The runner verifies the observed database identity
+interactive confirmation, or `--confirm-target <db_unique_name>` for a run whose operator has verified the target. `--confirm-target <db_unique_name>` skips that prompt only when the value equals the observed `db_unique_name` exactly. A mismatch refuses before any write. The run manifest records `confirmation` as `flag` or `terminal`. The runner verifies the observed database identity
 and current schema before writing and verifies the committed result afterward.
 The apply session compares its database name, unique name, service, container,
 edition and version with the preflight observation before it runs the first

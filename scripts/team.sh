@@ -20,7 +20,7 @@ Commands:
   new-migration <name> --source TYPE:NAME [...] --env dev
                                               Start a code migration from the live DEV source
   feature init|capture|diff|doctor|freeze|clean-capsule ... Create or review feature releases
-  migrate <folder> [...] --env dev|staging|prod [--verbose] [--rehearse] [--report <file>]
+  migrate <folder> [...] --env dev|staging|prod [--verbose] [--rehearse] [--report <file>] [--confirm-target <db_unique_name>]
                                               Apply, or rehearse DML in one transaction and roll it back
   revise <folder> [--reason TEXT]             Copy to the next migration revision
   revise --check <folder>                     Report whether local attempt/receipt evidence locks a folder

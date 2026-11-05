@@ -302,6 +302,54 @@ class MigrateCliTests(unittest.TestCase):
                 self.assertFalse(any(call[0] == "apply" for call in fake.calls))
                 self.assertFalse((folder / f"status.{environment}.json").exists())
 
+    def test_confirm_target_matching_observed_name_skips_prompt_and_records_the_flag(self):
+        for environment in ("staging", "prod"):
+            with self.subTest(environment=environment):
+                folder = self.add_folder(f"2026-09-28_flag-{environment}-r001", {"001-create-table.sql": "CREATE TABLE T (ID NUMBER);\n"})
+                migration = self.load(folder.name)
+                prompts = []
+                result, fake = self.apply(
+                    migration,
+                    self.target(environment),
+                    confirm=lambda prompt, prompts=prompts: prompts.append(prompt) or False,
+                    confirm_target=f"{environment.upper()}DB_UNIQUE",
+                )
+                self.assertEqual(result, 0)
+                self.assertEqual(prompts, [])
+                self.assertTrue(any(call[0] == "apply" for call in fake.calls))
+                manifests = list(self.root.rglob("run-manifest.json"))
+                self.assertTrue(manifests)
+                recorded = [json.loads(path.read_text(encoding="utf-8")).get("confirmation") for path in manifests]
+                self.assertIn("flag", recorded)
+
+    def test_confirm_target_mismatch_refuses_before_any_prompt_or_write(self):
+        folder = self.add_folder("2026-09-28_flag-mismatch-r001", {"001-create-table.sql": "CREATE TABLE T (ID NUMBER);\n"})
+        migration = self.load(folder.name)
+        prompts = []
+        result, fake = self.apply(
+            migration,
+            self.target("staging"),
+            confirm=lambda prompt, prompts=prompts: prompts.append(prompt) or True,
+            confirm_target="WRONGDB_UNIQUE",
+        )
+        self.assertEqual(result, 2)
+        self.assertEqual(prompts, [])
+        self.assertFalse(any(call[0] == "apply" for call in fake.calls))
+        self.assertFalse((folder / "status.staging.json").exists())
+
+    def test_confirm_target_cli_rejects_dev_rehearse_and_blank_values_before_loading(self):
+        for argv in (
+            ["migrations/none", "--env", "dev", "--confirm-target", "DEVDB_UNIQUE"],
+            ["migrations/none", "--env", "staging", "--rehearse", "--confirm-target", "STAGINGDB_UNIQUE"],
+            ["migrations/none", "--env", "staging", "--confirm-target", "   "],
+        ):
+            with self.subTest(argv=argv):
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    code = main(argv, environ={}, repo_root=self.root)
+                self.assertEqual(code, 2)
+                self.assertIn("migration error", err.getvalue())
+
     def test_verified_dev_evidence_does_not_block_stage_or_prod_with_or_without_scratch(self):
         folder = self.add_folder("2026-10-14_promotion-scope-r001", {"001-create-table.sql": "CREATE TABLE T (ID NUMBER);\n"})
         migrations = self.load(folder.name)
