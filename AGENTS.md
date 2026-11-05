@@ -129,7 +129,10 @@ owner-only commands retain their owner-login checks. See
   Checks cover only selected local migrations and observed live state; they
   cannot see another independent repository's pending files. Staging and
   production migrations require `STAGING_SCHEMA` or `PROD_SCHEMA` in addition
-  to the existing connection and expected-user settings. Receipts are written
+  to the existing connection and expected-user settings. Staging and production
+  applies ask `[y/N]` at the terminal. `--confirm-target <db_unique_name>` skips that
+  prompt only when the value equals the observed `db_unique_name`; an agent must
+  never supply it unless the developer typed that exact name for the run. Receipts are written
   only after a verified apply. Multi-schema projects use
   `migrations/<SCHEMA>/…`; one migration changes one schema. See
   [docs/migration-rules.md](docs/migration-rules.md) for naming, ordering,

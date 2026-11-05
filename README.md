@@ -471,7 +471,7 @@ rejected before connecting.
 For staging or production, configure the existing connection and expected
 user plus `STAGING_SCHEMA` or `PROD_SCHEMA`. The migration schema can differ
 between environments, so these settings are explicit and never inferred from
-DEV. Direct staging and production applies require interactive confirmation.
+DEV. Direct staging and production applies require interactive confirmation, unless the operator passes `--confirm-target <db_unique_name>` with the observed database name. `--confirm-target <db_unique_name>` skips that prompt only when the value equals the observed `db_unique_name` exactly. A mismatch refuses before any write.
 
 Compare selected live object names or prefixes with `compare-schema`:
 
@@ -756,7 +756,7 @@ unknown. Version and compatibility do not prove feature privileges or availabili
 | `scripts/team.sh check-conflicts <folder> [...] --env <env>` | Preflight selected migrations against a live schema. |
 | `scripts/team.sh check-conflicts <folder> [...] --local` | Analyze selected migrations without a connection. |
 | `scripts/team.sh migration-plan [<folder> ...] [--schema NAME] [--format text\|json\|markdown]` | Inventory local migration folders or run a selected guarded read-only live preflight. |
-| `scripts/team.sh migrate <folder> [...] --env <env> [--verbose] [--rehearse] [--report <file>]` | Verify and apply selected migration folders, or rehearse eligible DML in one transaction and roll it back. |
+| `scripts/team.sh migrate <folder> [...] --env <env> [--verbose] [--rehearse] [--report <file>] [--confirm-target <db_unique_name>]` | Verify and apply selected migration folders, or rehearse eligible DML in one transaction and roll it back. `--confirm-target` replaces the staging or production prompt only with the exact observed database name. |
 | `scripts/team.sh new-migration <name> --source TYPE:NAME [...] --env dev [--schema NAME]` | Start `migrations/<SCHEMA>/<today>_<name>-r001/` from the source live on DEV: one editable step per object, preconditions that refuse the apply if that source changes first, postconditions that each object is VALID. Read-only. |
 | `scripts/team.sh revise <folder> [--reason TEXT]` | Copy a migration to its next revision; the old folder stays unchanged. |
 | `scripts/team.sh revise --check <folder>` | Report whether local receipt or attempt evidence locks a folder; exit 0/1/2 for unlocked/locked/unknown. |
