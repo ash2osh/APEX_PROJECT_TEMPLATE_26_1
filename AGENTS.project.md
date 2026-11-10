@@ -1,3 +1,3 @@
 <!-- Project-specific agent instructions. The template upgrade never overwrites this file. -->
 
-For browser runtime checks, follow the [Chrome DevTools MCP skill](.agents/skills/chrome-devtools-mcp/SKILL.md) and [daemon guide](docs/CHROME_DEVTOOLS_MCP.md). Route browser calls through the project client; do not create a second Chrome MCP connection.
+For browser runtime checks, run `scripts/team.sh mcp status` to see this checkout's browser choice (chrome, firefox, both, or none). Then follow the [Browser MCP selection guide](docs/browser-mcp.md) and the skill for that browser: the [Chrome DevTools MCP skill](.agents/skills/chrome-devtools-mcp/SKILL.md) or the Firefox DevTools MCP skill. Use one connection per browser session. The persistent Chrome daemon ([daemon guide](docs/CHROME_DEVTOOLS_MCP.md)) is only a fallback for when Chrome is not selected and the task asks for Chrome work with authorized startup; when Chrome is selected, do not start or call it.

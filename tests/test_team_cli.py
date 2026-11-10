@@ -858,6 +858,63 @@ class TeamCliTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertIn("Usage: scripts/team.", result.stdout)
 
+    def test_team_sh_refuses_a_bash_older_than_4_4_with_one_line_and_status_2(self) -> None:
+        # No Bash 3.2 is installed here, so the guard is tested as a function fed the version parts that BASH_VERSINFO
+        # would hold. The real top-level call still runs under the Bash that runs this test.
+        source = (ROOT / "scripts" / "team.sh").read_text(encoding="utf-8")
+        match = re.search(r"^team_require_bash\(\) \{\n.*?^\}\n", source, re.S | re.M)
+        self.assertIsNotNone(match, "team.sh must define team_require_bash")
+        guard = match.group(0)
+        message = "team error: Bash 4.4 or newer is required (found {found}); on macOS install one with: brew install bash\n"
+
+        def run_guard(major: str, minor: str, version: str) -> subprocess.CompletedProcess[str]:
+            script = "set -euo pipefail\n" + guard + 'team_require_bash "$1" "$2" "$3"\n'
+            return subprocess.run([BASH, "-c", script, "bash", major, minor, version], text=True, capture_output=True, check=False)
+
+        for major, minor, version, found in (("3", "2", "3.2.57(1)-release", "3.2.57"), ("4", "3", "4.3.48(1)-release", "4.3.48"), ("4", "0", "4.0.44", "4.0.44")):
+            with self.subTest(version=version):
+                result = run_guard(major, minor, version)
+                self.assertEqual(2, result.returncode, result.stdout + result.stderr)
+                self.assertEqual(message.format(found=found), result.stderr)
+                self.assertEqual("", result.stdout)
+        for major, minor, version in (("4", "4", "4.4.23(1)-release"), ("5", "0", "5.0.0"), ("5", "2", "5.2.21(1)-release")):
+            with self.subTest(version=version):
+                result = run_guard(major, minor, version)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual("", result.stderr)
+        # The real guard, against the running shell, must not stop the script.
+        running = subprocess.run([BASH, str(ROOT / "scripts" / "team.sh"), "--help"], text=True, capture_output=True, check=False, cwd=ROOT)
+        self.assertEqual(0, running.returncode, running.stderr)
+
+    def test_schema_help_names_exactly_the_commands_the_wrappers_exclude(self) -> None:
+        # The --schema option line says which commands do not take --schema. It must list the code's exclusions.
+        sh_source = (ROOT / "scripts" / "team.sh").read_text(encoding="utf-8")
+        ps_source = (ROOT / "scripts" / "team.ps1").read_text(encoding="utf-8")
+        sh_excluded = set(re.findall(r'\[ "\$command_name" != ([a-z-]+) \]', sh_source))
+        ps_list = re.search(r'\$Command -notin @\(([^)]*)\)', ps_source)
+        self.assertIsNotNone(ps_list)
+        ps_excluded = set(re.findall(r'"([a-z-]+)"', ps_list.group(1)))
+        self.assertEqual(sh_excluded, ps_excluded)
+        self.assertTrue(sh_excluded)
+        for name, source in (("team.sh", sh_source), ("team.ps1", ps_source)):
+            with self.subTest(wrapper=name):
+                line = next(text for text in source.splitlines() if text.lstrip().startswith("--schema <NAME>"))
+                named = re.search(r"\(except (.*)\)$", line).group(1)
+                listed = set(re.split(r", | and ", named))
+                self.assertEqual(sorted(sh_excluded), sorted(listed))
+
+    def test_migrate_without_a_folder_prints_every_option_in_both_wrappers(self) -> None:
+        expected = "[--verbose] [--rehearse] [--report <file>] [--confirm-target <db_unique_name>]"
+        entries = [("team.sh", [BASH, str(ROOT / "scripts" / "team.sh")])]
+        pwsh = _test_subprocess_safety.working_pwsh()
+        if pwsh:
+            entries.append(("team.ps1", [pwsh, "-NoProfile", "-File", str(ROOT / "scripts" / "team.ps1")]))
+        for name, command in entries:
+            with self.subTest(wrapper=name):
+                result = subprocess.run([*command, "migrate"], text=True, capture_output=True, check=False, cwd=ROOT)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn(expected, result.stdout + result.stderr)
+
     def test_new_migration_is_listed_and_needs_arguments_in_both_wrappers(self) -> None:
         entries = [[BASH, str(ROOT / "scripts" / "team.sh")]]
         pwsh = _test_subprocess_safety.working_pwsh()

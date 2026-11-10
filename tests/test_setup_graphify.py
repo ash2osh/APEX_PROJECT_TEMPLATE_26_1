@@ -28,6 +28,44 @@ assert SPEC and SPEC.loader
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
+# File-system writes made by the code under test, recorded through the interpreter's audit hook. The hook is
+# process-local and does nothing unless a test has set _WRITE_WATCH, so it cannot disturb other test modules.
+# It must never raise: an exception would surface inside the code under test.
+_WRITE_WATCH: list[str] | None = None
+_PATH_WRITE_EVENTS = frozenset({"os.mkdir", "os.rmdir", "os.remove", "os.truncate", "shutil.rmtree", "os.rename", "os.replace", "os.link", "os.symlink"})
+_WRITING_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_APPEND | os.O_TRUNC
+
+
+def _watch_writes(event: str, args: tuple) -> None:
+    if _WRITE_WATCH is None:
+        return
+    if event == "open":
+        path = args[0] if args else None
+        mode = args[1] if len(args) > 1 else None
+        flags = args[2] if len(args) > 2 else None
+        writes = (isinstance(mode, str) and any(letter in mode for letter in "wax+")) or (
+            isinstance(flags, int) and bool(flags & _WRITING_FLAGS)
+        )
+        if writes and isinstance(path, (str, bytes, os.PathLike)):
+            _WRITE_WATCH.append(os.path.abspath(os.fsdecode(path)))
+    elif event in _PATH_WRITE_EVENTS:
+        # A name relative to an open directory descriptor is one step inside shutil.rmtree. The rmtree call itself
+        # is recorded with its absolute path, so only absolute string paths are kept.
+        _WRITE_WATCH.extend(arg for arg in args[:2] if isinstance(arg, str) and os.path.isabs(arg))
+
+
+sys.addaudithook(_watch_writes)
+
+
+class _TempfileIn:
+    """Stands in for the tempfile module: mkdtemp makes its directories inside one directory the test owns."""
+
+    def __init__(self, directory: Path) -> None:
+        self.directory = directory
+
+    def mkdtemp(self, suffix: str | None = None, prefix: str | None = None, dir: str | None = None) -> str:
+        return tempfile.mkdtemp(suffix=suffix, prefix=prefix, dir=self.directory)
+
 
 class GraphifyPatchTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -121,25 +159,36 @@ class GraphifyPatchTests(unittest.TestCase):
             self.assertEqual(MODULE.main(["--verify"]), 0)
 
     def test_verify_mode_does_not_mutate_package_or_scratch(self) -> None:
+        global _WRITE_WATCH
         self.write_package()
         self.assertTrue(MODULE.patch_graphify_dir(self.root))
-        scratch = REPO_ROOT / "scratch"
+        # --verify keeps its smoke-test directory in tempfile's default location. Point that at a directory this test
+        # owns, and do not read the shared repository scratch/ tree: other test modules create and delete entries there
+        # while this one runs in parallel.
+        private_scratch = Path(tempfile.mkdtemp(prefix="graphify-verify-scratch.")).resolve()
+        self.addCleanup(shutil.rmtree, private_scratch, ignore_errors=True)
         package_before = self.snapshot_tree(self.root)
-        scratch_before = self.snapshot_tree(scratch)
+        scratch_before = self.snapshot_tree(private_scratch)
         previous_dont_write_bytecode = sys.dont_write_bytecode
 
         sys.dont_write_bytecode = False
+        _WRITE_WATCH = []
         try:
-            with mock.patch.object(
-                MODULE, "find_graphify_dirs", return_value=[str(self.root)]
+            with (
+                mock.patch.object(MODULE, "find_graphify_dirs", return_value=[str(self.root)]),
+                mock.patch.object(MODULE, "tempfile", _TempfileIn(private_scratch)),
             ):
                 self.assertEqual(MODULE.main(["--verify"]), 0)
             self.assertFalse(sys.dont_write_bytecode)
         finally:
+            writes, _WRITE_WATCH = _WRITE_WATCH, None
             sys.dont_write_bytecode = previous_dont_write_bytecode
 
+        # Any write outside the private directory (the package, the repository, its scratch/) fails the test.
+        outside = [path for path in writes if not path.startswith(str(private_scratch))]
+        self.assertEqual(outside, [], "--verify wrote outside its private scratch directory")
         self.assertEqual(package_before, self.snapshot_tree(self.root))
-        self.assertEqual(scratch_before, self.snapshot_tree(scratch))
+        self.assertEqual(scratch_before, self.snapshot_tree(private_scratch))
 
     def test_public_verify_fallback_discovery_does_not_mutate_package(self) -> None:
         fake_parent = Path(tempfile.mkdtemp(prefix="graphify-fallback-test."))

@@ -221,16 +221,35 @@ class BashEnvironmentListTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual("file-dev-dba|file-stage-dba|file-prod-dba\n", result.stdout)
 
-    def test_dba_sqlcl_connection_ambient_preserved_when_absent_from_file(self) -> None:
+    def test_dba_sqlcl_connections_ambient_ignored_when_absent_from_file(self) -> None:
+        # Only the file may set these keys: an inherited value must neither be visible nor exported to children.
         env_path = write_env(self.directory, {})
         env = os.environ.copy()
-        env["DEV_DBA_SQLCL_CONNECTION"] = "ambient-dev-dba"
+        for key in ("DEV_DBA_SQLCL_CONNECTION", "STAGING_DBA_SQLCL_CONNECTION", "PROD_DBA_SQLCL_CONNECTION"):
+            env[key] = f"ambient-{key.lower()}"
         result = subprocess.run(
-            [BASH, "-c", 'set -e; source "$1" "$2"; printf "%s\\n" "$DEV_DBA_SQLCL_CONNECTION"', "bash", str(ROOT / "scripts" / "load_env.sh"), str(env_path)],
+            [BASH, "-c", 'set -e; source "$1" "$2"; printf "%s|%s|%s\\n" "${DEV_DBA_SQLCL_CONNECTION-unset}" "${STAGING_DBA_SQLCL_CONNECTION-unset}" "${PROD_DBA_SQLCL_CONNECTION-unset}"', "bash", str(ROOT / "scripts" / "load_env.sh"), str(env_path)],
             env=env, text=True, capture_output=True, check=False,
         )
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual("ambient-dev-dba\n", result.stdout)
+        self.assertEqual("unset|unset|unset\n", result.stdout)
+        exported = subprocess.run(
+            [BASH, "-c", 'set -e; source "$1" "$2"; for key in DEV_DBA_SQLCL_CONNECTION STAGING_DBA_SQLCL_CONNECTION PROD_DBA_SQLCL_CONNECTION; do if printenv "$key" >/dev/null; then echo "exported $key"; fi; done', "bash", str(ROOT / "scripts" / "load_env.sh"), str(env_path)],
+            env=env, text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(0, exported.returncode, exported.stderr)
+        self.assertEqual("", exported.stdout)
+
+    def test_dba_sqlcl_connection_from_the_file_is_the_only_value_a_child_process_sees(self) -> None:
+        env_path = write_env(self.directory, {}, "\nSTAGING_DBA_SQLCL_CONNECTION=file-stage-dba\n")
+        env = os.environ.copy()
+        env["STAGING_DBA_SQLCL_CONNECTION"] = "ambient-stage-dba"
+        result = subprocess.run(
+            [BASH, "-c", 'source "$1" "$2" && printenv STAGING_DBA_SQLCL_CONNECTION', "bash", str(ROOT / "scripts" / "load_env.sh"), str(env_path)],
+            env=env, text=True, capture_output=True, check=False,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("file-stage-dba\n", result.stdout)
 
     def test_dba_sqlcl_connection_refusals(self) -> None:
         # File blank
@@ -245,16 +264,16 @@ class BashEnvironmentListTests(unittest.TestCase):
         self.assertNotEqual(0, result.returncode)
         self.assertIn("DEV_DBA_SQLCL_CONNECTION contains unsupported characters", result.stderr)
 
-        # Ambient blank
+        # Ambient blank: an inherited value is not configuration, so it is neither refused nor exported.
         env_path = write_env(self.directory, {})
         env = os.environ.copy()
         env["DEV_DBA_SQLCL_CONNECTION"] = "   "
         result = subprocess.run(
-            [BASH, "-c", 'set -e; source "$1" "$2"', "bash", str(ROOT / "scripts" / "load_env.sh"), str(env_path)],
+            [BASH, "-c", 'set -e; source "$1" "$2"; printf "%s\\n" "${DEV_DBA_SQLCL_CONNECTION-unset}"', "bash", str(ROOT / "scripts" / "load_env.sh"), str(env_path)],
             env=env, text=True, capture_output=True, check=False,
         )
-        self.assertNotEqual(0, result.returncode)
-        self.assertIn("DEV_DBA_SQLCL_CONNECTION must not be empty", result.stderr)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("unset\n", result.stdout)
 
     def test_require_single_refuses_a_multi_project_without_a_selection(self) -> None:
         env_path = write_env(self.directory, MULTI)
@@ -331,15 +350,16 @@ class PowerShellEnvironmentListTests(unittest.TestCase):
             self.assertEqual(0, result.returncode, result.stderr)
             self.assertEqual("file-dev-dba|file-stage-dba|file-prod-dba", result.stdout.strip())
 
-    def test_dba_sqlcl_connection_ambient_preserved_when_absent_from_file(self) -> None:
+    def test_dba_sqlcl_connections_ambient_ignored_when_absent_from_file(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             env_path = write_env(Path(temporary), {})
             env = os.environ.copy()
-            env["DEV_DBA_SQLCL_CONNECTION"] = "ambient-dev-dba"
-            script = f'. "{ROOT / "scripts" / "load_env.ps1"}" -EnvFile "{env_path}"; "$($env:DEV_DBA_SQLCL_CONNECTION)"'
+            for key in ("DEV_DBA_SQLCL_CONNECTION", "STAGING_DBA_SQLCL_CONNECTION", "PROD_DBA_SQLCL_CONNECTION"):
+                env[key] = f"ambient-{key.lower()}"
+            script = f'. "{ROOT / "scripts" / "load_env.ps1"}" -EnvFile "{env_path}"; "[$($env:DEV_DBA_SQLCL_CONNECTION)|$($env:STAGING_DBA_SQLCL_CONNECTION)|$($env:PROD_DBA_SQLCL_CONNECTION)]"'
             result = subprocess.run([PWSH, "-NoProfile", "-Command", script], env=env, text=True, capture_output=True, check=False)
             self.assertEqual(0, result.returncode, result.stderr)
-            self.assertEqual("ambient-dev-dba", result.stdout.strip())
+            self.assertEqual("[||]", result.stdout.strip())
 
     def test_refusals_match_the_bash_loader_word_for_word(self) -> None:
         # Both loaders are also run directly (and by the helper scripts); the PowerShell one

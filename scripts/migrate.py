@@ -1303,7 +1303,7 @@ def main(
     )
     args = parser.parse_args(argv)
     if not args.folders:
-        print("usage: scripts/team.sh migrate <migration-folder> [...] --env dev|staging|prod [--rehearse] [--report <file>]", file=sys.stderr)
+        print("usage: scripts/team.sh migrate <migration-folder> [...] --env dev|staging|prod [--verbose] [--rehearse] [--report <file>] [--confirm-target <db_unique_name>]", file=sys.stderr)
         return 2
     if args.report is not None and not args.rehearse:
         print("migration error: --report requires --rehearse", file=sys.stderr)

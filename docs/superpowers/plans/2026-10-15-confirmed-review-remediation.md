@@ -45,7 +45,7 @@ in [the follow-up result](../reviews/2026-10-15-review-followup.md).
 | Baselines | `scripts/baseline.py`, `tests/test_baseline.py`, `tests/test_baseline_bundle.py`, `tests/test_baseline_bundle_cli.py`, `tests/test_migrate_cli.py` | F6–F8 exact numeric formatting, added-column checks, view validity. |
 | Configuration | `scripts/load_env.sh`, `scripts/load_env.ps1`, `scripts/local_config.py`, `.env.example`, `tests/test_local_config.py`, `tests/test_env_schema_lists.py`, `tests/test_compare_env.py`, `tests/test_baseline.py` | F4 optional DBA alias parsing and supported-command coverage. |
 | Upgrades/docs | `template-manifest.json`, `README.md`, `docs/GETTING_STARTED.md`, `tests/test_upgrade_template.py`, `tests/test_documentation_contract.py`, `tests/test_template_manifest.py` | F5 26.1 default upstream, old-lock recovery, ownership. |
-| Dependency gate | `pyproject.toml`, `.github/workflows/database-checks.yml` | F9 correct graph extra and real resolver coverage. |
+| Dependency gate | `pyproject.toml`, `.github/workflows/template-checks.yml` | F9 correct graph extra and real resolver coverage. |
 
 ## Order and finding coverage
 
@@ -173,7 +173,7 @@ Tasks are executed sequentially in this session. Their independence does not aut
 
 ### Task 9: Correct the Graphify distribution and test resolution — F9
 
-**Files:** Modify `pyproject.toml`, `.github/workflows/database-checks.yml`. Graphify installation/setup scripts keep their existing CLI/package distinction.
+**Files:** Modify `pyproject.toml`, `.github/workflows/template-checks.yml`. Graphify installation/setup scripts keep their existing CLI/package distinction.
 
 **Interfaces:** Graph extra becomes `graph = ["graphifyy", "tree-sitter-sql"]`. No runtime dependency is added. A Linux Python 3.10 CI step resolves project extras with pip’s dry-run facility; it must not use `--no-deps` or otherwise skip the requirement under test.
 

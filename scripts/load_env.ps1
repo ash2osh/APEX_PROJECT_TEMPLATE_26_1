@@ -24,6 +24,9 @@ foreach ($projectEnvMigrationPrefix in @("", "STAGING_", "PROD_")) {
 }
 Remove-Item -Path Env:MIGRATION_APPLY_TIMEOUT_SECONDS, Env:MIGRATION_CHECK_TIMEOUT_SECONDS,
   Env:MIGRATION_CHECK_BATCH_BYTES, Env:MIGRATION_PREFLIGHT_INVENTORY_RETRIES -ErrorAction SilentlyContinue
+# A DBA connection comes only from the file: an inherited value must not reach the caller.
+Remove-Item -Path Env:DEV_DBA_SQLCL_CONNECTION, Env:STAGING_DBA_SQLCL_CONNECTION,
+  Env:PROD_DBA_SQLCL_CONNECTION -ErrorAction SilentlyContinue
 $projectEnvRepoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 if ([string]::IsNullOrWhiteSpace($EnvFile)) { $EnvFile = Join-Path $projectEnvRepoRoot ".env" }
 # Mirror load_env.sh: a relative PROJECT_ENV_FILE resolves against the
