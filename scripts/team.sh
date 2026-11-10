@@ -2,6 +2,17 @@
 # Unified entry point for local APEX team workflows.
 set -euo pipefail
 
+# Bash 4.4 or newer: the scripts expand empty arrays under `set -u`, which Bash before 4.4 rejects.
+# Keep this block parseable by Bash 3.2 (the macOS default), so the message can be printed by an old shell.
+team_require_bash() {
+  local major="$1" minor="$2" version="$3"
+  if (( major < 4 || (major == 4 && minor < 4) )); then
+    printf 'team error: Bash 4.4 or newer is required (found %s); on macOS install one with: brew install bash\n' "${version%%[(]*}" >&2
+    exit 2
+  fi
+}
+team_require_bash "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}" "$BASH_VERSION"
+
 usage() {
   cat <<'USAGE'
 Usage: scripts/team.sh <command> [arguments]
@@ -67,7 +78,7 @@ Commands:
   template-status [--format text|json] [--upstream --ref <ref>]
                                               Inspect local template drift; fetch upstream only when requested
 Options:
-  --schema <NAME>                             Run one configured schema (except upgrade-template, verify-local, template-status, migration-plan, archive-migrations, dev-test, skills and feature)
+  --schema <NAME>                             Run one configured schema (except upgrade-template, verify-local, template-status, migration-plan, archive-migrations, dev-test, skills, mcp and feature)
   --help                                      Show this help
 Environment:
   MIGRATION_PREFLIGHT_INVENTORY_RETRIES        Retry changing live catalogs (default 3)
@@ -301,7 +312,7 @@ case "$command_name" in
     exec "$REPO_ROOT/scripts/dev_test.sh" "$@"
     ;;
   migrate)
-    [ "$#" -ge 1 ] || fail "usage: scripts/team.sh migrate <migration-folder> [...] --env dev|staging|prod [--rehearse] [--report <file>]"
+    [ "$#" -ge 1 ] || fail "usage: scripts/team.sh migrate <migration-folder> [...] --env dev|staging|prod [--verbose] [--rehearse] [--report <file>] [--confirm-target <db_unique_name>]"
     PROJECT_ENV_FILE="${PROJECT_ENV_FILE:-$REPO_ROOT/.env}" \
       exec "$REPO_ROOT/scripts/migrate.sh" "$@"
     ;;

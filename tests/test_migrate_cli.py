@@ -337,6 +337,16 @@ class MigrateCliTests(unittest.TestCase):
         self.assertFalse(any(call[0] == "apply" for call in fake.calls))
         self.assertFalse((folder / "status.staging.json").exists())
 
+    def test_no_folder_prints_a_usage_line_with_every_migrate_option(self):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            status = main([])
+        self.assertEqual(status, 2)
+        usage = stderr.getvalue()
+        self.assertIn("usage: scripts/team.sh migrate <migration-folder>", usage)
+        for option in ("[--verbose]", "[--rehearse]", "[--report <file>]", "[--confirm-target <db_unique_name>]"):
+            self.assertIn(option, usage)
+
     def test_confirm_target_cli_rejects_dev_rehearse_and_blank_values_before_loading(self):
         for argv in (
             ["migrations/none", "--env", "dev", "--confirm-target", "DEVDB_UNIQUE"],
