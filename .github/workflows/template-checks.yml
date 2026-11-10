@@ -66,6 +66,11 @@ jobs:
       - name: Python syntax
         run: |
           python3 -m compileall -q scripts/ tools/ tests/
+      - name: Install Ruff
+        # Lint runs in `offline`. Ruff is installed here only because tests/test_pre_push_check.py runs
+        # scripts/pre_push_check.py, which fails without it.
+        run: |
+          python3 -m pip install --disable-pip-version-check --no-input 'ruff>=0.5'
       - name: Behavioral tests
         env:
           CI_TEST_JOBS: '4'
