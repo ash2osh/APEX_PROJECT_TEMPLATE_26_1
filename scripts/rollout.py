@@ -24,13 +24,13 @@ from collections.abc import Callable, Mapping, Sequence
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts import migrate, migration_attempts, verify_checks
+from scripts import migrate, migration_attempts, terminal_confirm, verify_checks
 from scripts.db_targets import Target, TargetResolutionError, batch_schema, flat_migrations_apply, looks_like_production_identity, resolve_target
 from scripts.deployment_descriptor import read_descriptor
 from scripts.migration_manifest import MigrationManifestError, assert_single_layout, load_batch
 from scripts.ords_export import OrdsExportError, check_no_oauth, check_structure, mask_sql
 from scripts.path_utils import relative_to_root
-from scripts.sqlcl_session import ALIAS_RE, SqlclError, run_sqlcl
+from scripts.sqlcl_session import ALIAS_RE, SqlclError, run_sqlcl, safe_rmtree
 from scripts.validate_app_source import validate_app_source
 from scripts.validate_migration import FIRST_WORD, mask_comments_and_literals, statement_spans, validate_sql_only
 
@@ -882,6 +882,7 @@ def _write_confirmation_evidence(
     manifest: RolloutManifest,
     plan: Sequence[dict],
     environment: str,
+    confirmed_by: str,
 ) -> None:
     evidence = {
         "schemaVersion": 1,
@@ -890,6 +891,7 @@ def _write_confirmation_evidence(
         "manifestSha256": manifest.sha256,
         "environment": environment,
         "confirmedAt": _utc_now(),
+        "confirmedBy": confirmed_by,
         "steps": [
             {
                 "number": item["number"],
@@ -971,7 +973,7 @@ def _verify_receipt(root: Path, manifest: RolloutManifest, environment: str, pla
     return receipt, path
 
 
-def _confirmation_text(manifest: RolloutManifest, plan: Sequence[dict], environment: str, from_step: int) -> str:
+def _confirmation_text(manifest: RolloutManifest, plan: Sequence[dict], environment: str, from_step: int, *, question: bool = True) -> str:
     lines = [
         f"Rollout manifest SHA-256: {manifest.sha256}",
         f"Target environment: {environment.upper()}",
@@ -982,13 +984,94 @@ def _confirmation_text(manifest: RolloutManifest, plan: Sequence[dict], environm
         lines.append(f"Step {item['number']:02d} [{state}] {item['description']} — SHA-256 {item['sha256']}")
         for file in item["inputHashes"]:
             lines.append(f"  {file['path']} — SHA-256 {file['sha256']}")
-    lines.append("Continue with this rollout? [y/N]")
+    if question:
+        lines.append("Continue with this rollout? [y/N]")
     return "\n".join(lines)
 
 
-def _confirm_from_terminal(prompt: str) -> bool:
+def _confirmation_flag_problem(
+    environment: str, *, yes: bool, confirm_target: str | None, dry_run: bool, prepare_only: bool,
+) -> str | None:
+    """Refusals that need no connection and write nothing: the flags must fit the run they accompany."""
+    if confirm_target is not None and not confirm_target.strip():
+        return "--confirm-target needs the observed db_unique_name"
+    if (yes or confirm_target is not None) and (dry_run or prepare_only):
+        return "--yes and --confirm-target apply to a rollout run, not to --dry-run or --prepare"
+    if confirm_target is not None and environment == "dev":
+        return "--confirm-target applies only to --env staging or prod"
+    if environment == "prod" and yes and confirm_target is None:
+        return terminal_confirm.PRODUCTION_NAME_REQUIRED + "; --yes alone is refused and no steps were run"
+    return None
+
+
+def _app_step_target(step: Mapping, root: Path, environment: str) -> Target:
+    """The production or staging database an app-deploy step publishes to, from its descriptor."""
+    _relative, app_dir = _read_app_inputs(root, step["appId"], environment)
+    descriptor = read_descriptor(app_dir / "deployments" / f"{environment}.json", step["appId"])
+    schema = descriptor["app"]["databaseSession"]["parsingSchema"]
+    connection, expected_user = _app_target_details(schema, environment)
+    return Target(environment, connection, expected_user, schema, "production" if environment == "prod" else "staging")
+
+
+def _plan_targets(plan: Sequence[dict], root: Path, environment: str) -> list[Target]:
+    """Every database a legacy rollout plan writes to, one entry per step."""
+    targets: list[Target] = []
+    for item in plan:
+        step = item["step"]
+        if step["type"] in {"migrate", "sql-script", "ords-import"}:
+            binding = _target_binding(step, root, environment)
+            targets.append(Target(environment, binding["connection"], binding["expectedUser"], binding["schema"], binding["classification"]))
+        elif step["type"] == "app-deploy":
+            targets.append(_app_step_target(step, root, environment))
+    return targets
+
+
+def _capsule_plan_targets(target_plan, environment: str) -> list[Target]:
+    """Every database the prepared capsule target plan binds, from its frozen records."""
+    default_classification = "production" if environment == "prod" else "staging"
+    return [
+        Target(environment, record["connection"], record["expectedUser"], record["schema"], record.get("classification") or default_classification)
+        for record in target_plan.targets.values()
+        if isinstance(record, Mapping)
+    ]
+
+
+def _observed_db_unique_name(target: Target, run_dir: Path) -> str:
+    """Read the target's db_unique_name through the shared read-only catalog path."""
     try:
-        print(prompt)
+        identity = _observe_target_identity(target, run_dir)
+    except (OSError, RuntimeError, ValueError) as error:
+        raise RolloutError(f"cannot observe the database identity of {target.connection} before confirmation: {error}") from error
+    name = identity.get("db_unique_name", "")
+    if not name:
+        raise RolloutError(f"the database identity of {target.connection} has no db_unique_name")
+    return name
+
+
+def _assert_confirm_target(root: Path, targets: Sequence[Target], confirm_target: str, environment: str) -> None:
+    """Refuse unless every target's observed db_unique_name equals confirm_target. Read-only; runs before any write."""
+    unique_targets = list(dict.fromkeys(targets))
+    if not unique_targets:
+        raise RolloutError(f"--confirm-target has no {environment} database target to check in this rollout; no steps were run")
+    scratch = _safe_scratch_root(root)
+    run_dir = Path(tempfile.mkdtemp(prefix="confirm-target-", dir=scratch))
+    try:
+        for index, target in enumerate(unique_targets, start=1):
+            observed = _observed_db_unique_name(target, run_dir / f"target-{index:02d}")
+            if observed != confirm_target:
+                raise RolloutError(
+                    f"--confirm-target {confirm_target!r} does not match the observed db_unique_name {observed!r} "
+                    f"for {target.connection}; no steps were run"
+                )
+    finally:
+        safe_rmtree(run_dir)
+
+
+def _confirm_from_terminal(prompt: str) -> bool:
+    print(prompt)
+    if not terminal_confirm.may_read_yes_no():
+        return False
+    try:
         return input().strip().casefold() in {"y", "yes"}
     except (EOFError, OSError):
         return False
@@ -996,6 +1079,8 @@ def _confirm_from_terminal(prompt: str) -> bool:
 
 def _recovery_ack_from_terminal(prompt: str) -> str:
     print(prompt, file=sys.stderr)
+    if not terminal_confirm.may_read_acknowledgment():
+        return ""
     try:
         return input("Reconciliation acknowledgment: ")
     except (EOFError, OSError):
@@ -1472,6 +1557,7 @@ def _execute_app_deploy(
     evidence_dir: Path,
     manifest_confirmed: bool,
     expected_input_hashes: dict[str, str],
+    confirm_target: str | None = None,
 ) -> StepResult:
     if environment not in {"staging", "prod"}:
         raise RolloutError("app-deploy is supported only for staging and production")
@@ -1509,21 +1595,28 @@ def _execute_app_deploy(
 
     child_env = dict(os.environ)
     log_path = evidence_dir / "deploy-output.log"
+    # The rollout's manifest confirmation is already held (typed, or by its own flags), so the
+    # child takes --yes and reads no answer. Production also needs the name: the rollout's
+    # --confirm-target, or else the name read from the target just before this child starts.
+    child_flags = ["--yes"]
+    if environment == "prod":
+        child_name = confirm_target
+        if child_name is None:
+            child_name = _observed_db_unique_name(_app_step_target(step, repo_root, environment), evidence_dir / "target-identity")
+        child_flags += ["--confirm-target", child_name]
     # deploy.sh is a Bash entry point. On Windows, `sys.executable` is Python, so
     # launch Git Bash by its resolved path through the project's shared helper.
     from scripts.sqlcl_session import bash_command
     command = [
         bash_command(), (repo_root / "scripts" / "deploy.sh").as_posix(), str(step["appId"]),
-        "--env", environment, "--app-source-dir", staged_app_dir.as_posix(),
+        "--env", environment, "--app-source-dir", staged_app_dir.as_posix(), *child_flags,
     ]
     try:
-        # The rollout's single manifest confirmation is already held in memory;
-        # feed it to deploy.sh's existing target prompt for this child run.
         completed = subprocess.run(
             command,
             cwd=repo_root,
             env=child_env,
-            input="y\n",
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -1556,6 +1649,7 @@ def execute_step(
     plan: Sequence[dict],
     manifest_confirmed: bool,
     expected_identity: Mapping[str, str] | None = None,
+    confirm_target: str | None = None,
 ) -> StepResult:
     """Execute one step using existing command or SQLcl paths."""
     kind = step["type"]
@@ -1642,6 +1736,7 @@ def execute_step(
             evidence_dir=evidence_dir,
             manifest_confirmed=manifest_confirmed,
             expected_input_hashes=_planned_input_hashes(plan, step_number),
+            confirm_target=confirm_target,
         )
     if kind == "pause":
         print(step["message"])
@@ -1749,6 +1844,8 @@ def _run_legacy_rollout(
     report_path: Path | str | None = None,
     repo_root: Path = ROOT,
     confirm: Callable[[str], bool] = _confirm_from_terminal,
+    yes: bool = False,
+    confirm_target: str | None = None,
 ) -> int:
     """Validate, hash, confirm, execute and report one rollout manifest."""
     started = time.perf_counter()
@@ -1784,6 +1881,7 @@ def _run_legacy_rollout(
             "steps": [_report_step(item) for item in plan],
             "reportFiles": {},
             "confirmationPath": None,
+            "confirmedBy": None,
             "error": None,
         }
         if from_step > 1:
@@ -1815,15 +1913,23 @@ def _run_legacy_rollout(
 
         manifest_confirmed = False
         if environment in {"staging", "prod"}:
-            try:
-                approved = bool(confirm(_confirmation_text(manifest, plan, environment, from_step)))
-            except (EOFError, OSError):
-                approved = False
+            if confirm_target is not None:
+                _assert_confirm_target(root, _plan_targets(plan, root, environment), confirm_target, environment)
+            if yes or confirm_target is not None:
+                print(_confirmation_text(manifest, plan, environment, from_step, question=False))
+                print(terminal_confirm.confirmed_line(yes, confirm_target))
+                approved = True
+            else:
+                try:
+                    approved = bool(confirm(_confirmation_text(manifest, plan, environment, from_step)))
+                except (EOFError, OSError):
+                    approved = False
             if not approved:
                 _finish_report(report, started, "declined", 1)
                 _write_reports(report, report_paths)
                 _announce_report_paths(report_paths, root)
                 return 1
+            report["confirmedBy"] = terminal_confirm.confirmed_by(yes, confirm_target)
             manifest_confirmed = True
         scratch = _safe_scratch_root(root)
         rollout_runs = scratch / "rollout-runs"
@@ -1839,7 +1945,7 @@ def _run_legacy_rollout(
         report["evidenceDir"] = relative_to_root(run_evidence, root).as_posix()
         if environment in {"staging", "prod"}:
             confirmation_path = run_evidence / "rollout-confirmation.json"
-            _write_confirmation_evidence(confirmation_path, manifest, plan, environment)
+            _write_confirmation_evidence(confirmation_path, manifest, plan, environment, report["confirmedBy"])
             report["confirmationPath"] = relative_to_root(confirmation_path, root).as_posix()
 
         _write_reports(report, report_paths)
@@ -1862,6 +1968,7 @@ def _run_legacy_rollout(
                     manifest=manifest,
                     plan=plan,
                     manifest_confirmed=manifest_confirmed,
+                    confirm_target=confirm_target,
                 )
                 if not isinstance(result, StepResult):
                     raise RolloutError("rollout step executor returned an invalid result")
@@ -2139,6 +2246,8 @@ def _run_capsule_rollout(
     stage_report_path: Path | str | None,
     recovery_attempt: str | None,
     recovery_confirm: Callable[[str], str] | None,
+    yes: bool = False,
+    confirm_target: str | None = None,
 ) -> int:
     from scripts import feature_release, release_capsule, release_ownership, release_state
 
@@ -2491,6 +2600,7 @@ def _run_capsule_rollout(
             "steps": [_report_step(item) for item in plan],
             "reportFiles": {},
             "confirmationPath": None,
+            "confirmedBy": None,
             "error": None,
         }
         if dry_run:
@@ -2500,20 +2610,28 @@ def _run_capsule_rollout(
             _announce_report_paths(report_paths, root)
             return 0
 
-        try:
-            approved = bool(confirm(
-                _confirmation_text(manifest, plan, environment, 1)
-                + f"\nCapsule payload SHA-256: {capsule.payload_digest}"
-                + f"\nWorkflow engine SHA-256: {capsule.engine_digest}"
-                + f"\nTarget plan SHA-256: {target_plan.plan_digest}"
-            ))
-        except (EOFError, OSError):
-            approved = False
+        capsule_digests = (
+            f"\nCapsule payload SHA-256: {capsule.payload_digest}"
+            + f"\nWorkflow engine SHA-256: {capsule.engine_digest}"
+            + f"\nTarget plan SHA-256: {target_plan.plan_digest}"
+        )
+        if confirm_target is not None:
+            _assert_confirm_target(root, _capsule_plan_targets(target_plan, environment), confirm_target, environment)
+        if yes or confirm_target is not None:
+            print(_confirmation_text(manifest, plan, environment, 1, question=False) + capsule_digests)
+            print(terminal_confirm.confirmed_line(yes, confirm_target))
+            approved = True
+        else:
+            try:
+                approved = bool(confirm(_confirmation_text(manifest, plan, environment, 1) + capsule_digests))
+            except (EOFError, OSError):
+                approved = False
         if not approved:
             _finish_report(report, started, "declined", 1)
             _write_reports(report, report_paths)
             _announce_report_paths(report_paths, root)
             return 1
+        report["confirmedBy"] = terminal_confirm.confirmed_by(yes, confirm_target)
 
         capsule = reload_selected_capsule()
         _validate_capsule_app_targets(root, target_plan, [item["step"] for item in plan], environment)
@@ -2534,6 +2652,7 @@ def _run_capsule_rollout(
             "engineDigest": capsule.engine_digest,
             "targetPlanDigest": target_plan.plan_digest,
             "confirmedAt": _utc_now(),
+            "confirmedBy": report["confirmedBy"],
             "inputHashes": list(capsule.input_hashes),
         }, ensure_ascii=False, sort_keys=True, indent=2) + "\n")
         report["confirmationPath"] = relative_to_root(confirmation_path, root).as_posix()
@@ -2644,6 +2763,7 @@ def _run_capsule_rollout(
                                 plan=plan,
                                 manifest_confirmed=True,
                                 expected_identity=expected_identity,
+                                confirm_target=confirm_target,
                             )
                     else:
                         result = execute_step(
@@ -2656,6 +2776,7 @@ def _run_capsule_rollout(
                             plan=plan,
                             manifest_confirmed=True,
                             expected_identity=expected_identity,
+                            confirm_target=confirm_target,
                         )
                     _snapshot(manifest, plan, f"after step {item['number']}", environment)
                     if step["type"] in {"sql-script", "ords-import"} and step_report.get("phase") == "uncovered-object":
@@ -2783,8 +2904,16 @@ def run_rollout(
     stage_report_path: Path | str | None = None,
     recovery_attempt: str | None = None,
     recovery_confirm: Callable[[str], str] | None = None,
+    yes: bool = False,
+    confirm_target: str | None = None,
 ) -> int:
     """Keep the schema-1 rollout API intact and route capsule runs through v2."""
+    problem = _confirmation_flag_problem(
+        environment, yes=yes, confirm_target=confirm_target, dry_run=dry_run, prepare_only=prepare_only,
+    )
+    if problem is not None:
+        print(f"rollout error: {problem}", file=sys.stderr)
+        return 2
     if prepare_only or capsule_path is not None:
         if capsule_path is None:
             raise RolloutError("prepare-only requires a release capsule path")
@@ -2799,7 +2928,7 @@ def run_rollout(
             report_path=report_path, repo_root=repo_root, confirm=confirm,
             prepare_only=prepare_only, capsule_path=capsule_path,
             stage_report_path=stage_report_path, recovery_attempt=recovery_attempt,
-            recovery_confirm=recovery_confirm,
+            recovery_confirm=recovery_confirm, yes=yes, confirm_target=confirm_target,
         )
     if stage_report_path is not None or recovery_attempt is not None:
         raise RolloutError("stage report and recovery attempt require a feature capsule")
@@ -2822,7 +2951,7 @@ def run_rollout(
             return 2
     return _run_legacy_rollout(
         manifest_path, environment, from_step=from_step, dry_run=dry_run,
-        report_path=report_path, repo_root=repo_root, confirm=confirm,
+        report_path=report_path, repo_root=repo_root, confirm=confirm, yes=yes, confirm_target=confirm_target,
     )
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -2835,6 +2964,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--capsule", type=Path, help="selected frozen feature release capsule")
     parser.add_argument("--stage-report", type=Path, help="verified staging report required for production promotion")
     parser.add_argument("--recover", help="prepare a reviewed recovery plan for an unresolved attempt UUID")
+    parser.add_argument("-y", "--yes", action="store_true", help="accept the staging/production confirmation; production also needs --confirm-target")
+    parser.add_argument(
+        "--confirm-target",
+        metavar="DB_UNIQUE_NAME",
+        help="staging/prod: accept the confirmation when DB_UNIQUE_NAME equals every target's observed db_unique_name exactly",
+    )
     args = parser.parse_args(argv)
     if args.prepare and args.dry_run:
         parser.error("--prepare and --dry-run cannot be combined")
@@ -2857,6 +2992,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         stage_report_path=args.stage_report,
         recovery_attempt=args.recover,
         recovery_confirm=_recovery_ack_from_terminal if args.recover is not None else None,
+        yes=args.yes,
+        confirm_target=args.confirm_target,
     )
 
 

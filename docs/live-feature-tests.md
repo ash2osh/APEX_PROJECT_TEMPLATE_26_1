@@ -69,6 +69,16 @@ with one database and two schemas (19 tests, two skipped). Run one test with `-k
 | `test_disabled_trigger_is_refused_at_prepare_and_rechecked_before_apply` | A trigger DISABLED on the staging database, which the release would replace, is refused at prepare. It stays disabled, its source is unchanged, and no plan is written. Enabled at prepare and disabled again before apply, it is refused by the apply precondition, and nothing is written. |
 | `test_convert_plan_reads_dated_migration_folders_offline` | `feature convert-plan` on three dated folders in the copy. Text and JSON output both exit 0, and no file in the copy changes. No database is used. |
 
+## Confirmations and acknowledgments
+
+The module confirms its rollouts with `-y`, and a production rollout also passes `--confirm-target`
+with the name the module reads once at class setup through `SYS_CONTEXT('USERENV', 'DB_UNIQUE_NAME')`.
+The production profile is the same database as DEV, so one name serves both. If
+`TEMPLATE_LIVE_SECOND_CONNECTION` is a different database, a production rollout that writes to both is
+refused by the name rule. The two typed acknowledgments (`RECONCILE` and `RECONCILE-RUN`) read their
+answers from redirected input only when the child environment sets `TEAM_ACK_FROM_STDIN=1`; only this
+module sets it. Piped `y` answers are no longer accepted by any prompt.
+
 ## Not covered
 
 - A migration profile that differs from the read profile. That was checked by

@@ -8,11 +8,13 @@ $ErrorActionPreference = "Stop"
 
 function Show-Usage {
   @"
-Usage: scripts/publish_app.ps1 <app_id> [--env <dev|staging|prod>] [--force]
+Usage: scripts/publish_app.ps1 <app_id> [--env <dev|staging|prod>] [--force] [--yes|-y] [--confirm-target <db_unique_name>]
 
 Imports one APEXlang application with deployments/<env>.json. Staging and
-production imports require interactive confirmation. --force skips only the
-Builder drift check; it does not skip target confirmation or identity checks.
+production imports require interactive confirmation, typed at a terminal; piped
+answers are refused. --yes accepts it; production also needs --confirm-target
+with the observed db_unique_name. --force skips only the Builder drift check;
+it does not skip target confirmation or identity checks.
 "@ | Write-Output
 }
 
@@ -28,6 +30,11 @@ if ([string]::IsNullOrWhiteSpace($AppId) -or $AppId -cnotmatch '^[1-9][0-9]{0,17
 $appEnvironment = "dev"
 $force = $false
 $describe = $false
+$autoYes = $false
+$confirmTarget = ""
+$confirmTargetGiven = $false
+# The answer a terminal prompt must replace; scripts/terminal_confirm.py holds the same text.
+$yesRefusal = 'refused: this confirmation is read from a terminal; piped or redirected answers are not accepted. Run the command in a terminal, or pass --yes (-y) to accept the prompt explicitly and on the record.'
 for ($index = 0; $index -lt $RemainingArguments.Count;) {
   switch ($RemainingArguments[$index]) {
     "--env" {
@@ -41,6 +48,18 @@ for ($index = 0; $index -lt $RemainingArguments.Count;) {
       $force = $true
       $index += 1
     }
+    { $_ -in @("--yes", "-y") } {
+      $autoYes = $true
+      $index += 1
+    }
+    "--confirm-target" {
+      if ($index + 1 -ge $RemainingArguments.Count -or [string]::IsNullOrWhiteSpace($RemainingArguments[$index + 1])) {
+        throw "publish error: --confirm-target needs the observed db_unique_name"
+      }
+      $confirmTarget = $RemainingArguments[$index + 1]
+      $confirmTargetGiven = $true
+      $index += 2
+    }
     "--describe" {
       $describe = $true
       $index += 1
@@ -52,6 +71,12 @@ for ($index = 0; $index -lt $RemainingArguments.Count;) {
 }
 if ($appEnvironment -notin @("dev", "staging", "prod")) {
   throw "publish error: unsupported environment '$appEnvironment'; use dev, staging, or prod"
+}
+if ($confirmTargetGiven -and $appEnvironment -eq "dev") {
+  throw "publish error: --confirm-target applies only to --env staging or prod"
+}
+if ($autoYes -and $appEnvironment -eq "prod" -and -not $confirmTargetGiven) {
+  throw "publish error: production also needs --confirm-target <db_unique_name>; --yes alone is refused and nothing was imported"
 }
 
 # An & script call has its own variables but shares the caller's process
@@ -227,7 +252,12 @@ if ($expectedUser -cne $parsingSchema) {
 if ($actingAsBanner) {
   Write-Output $actingAsBanner
 }
-if ($appEnvironment -ne "dev") {
+if ($appEnvironment -ne "dev" -and -not $autoYes -and -not $confirmTargetGiven) {
+  if ([Console]::IsInputRedirected) {
+    Write-Output "Deploying to $targetLabel. Proceed? [y/N]"
+    [Console]::Error.WriteLine($yesRefusal)
+    throw "Publish cancelled."
+  }
   $answer = Read-Host "Deploying to $targetLabel. Proceed? [y/N]"
   if ($answer -notmatch '^(?i:y|yes)$') { throw "Publish cancelled." }
 }
@@ -372,6 +402,24 @@ try {
       $value = [string]$identityJson.identity.$field
       if ([string]::IsNullOrEmpty($value)) { throw "publish error: pre-publication identity is incomplete ($field)" }
       $identityValues += ([System.BitConverter]::ToString([System.Text.Encoding]::UTF8.GetBytes($value)) -replace '-', '')
+    }
+  }
+  if ($appEnvironment -ne "dev" -and $confirmTargetGiven) {
+    if (-not $lifecycleEnabled -or [string]::IsNullOrEmpty([string]$identityJson.identity.db_unique_name)) {
+      throw "publish error: --confirm-target: the observed db_unique_name is unavailable; nothing imported"
+    }
+    $observedDbUniqueName = [string]$identityJson.identity.db_unique_name
+    if ($observedDbUniqueName -cne $confirmTarget) {
+      throw "publish error: --confirm-target '$confirmTarget' does not match the observed db_unique_name '$observedDbUniqueName'; nothing imported"
+    }
+  }
+  if ($appEnvironment -ne "dev" -and ($autoYes -or $confirmTargetGiven)) {
+    if ($autoYes -and $confirmTargetGiven) {
+      Write-Output "Confirmed by --yes and --confirm-target $confirmTarget; the interactive prompt was skipped."
+    } elseif ($autoYes) {
+      Write-Output "Confirmed by --yes; the interactive prompt was skipped."
+    } else {
+      Write-Output "Confirmed by --confirm-target $confirmTarget; the interactive prompt was skipped."
     }
   }
   # An import leaves no Builder timestamp, so a DEV publish stamps its own tag

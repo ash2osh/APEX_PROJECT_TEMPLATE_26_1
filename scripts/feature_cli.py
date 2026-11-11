@@ -15,7 +15,7 @@ from collections.abc import Callable, Mapping, Sequence
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from scripts import feature_claims, feature_convert, feature_doctor, feature_sources, release_capsule, release_state, rollout
+from scripts import feature_claims, feature_convert, feature_doctor, feature_sources, release_capsule, release_state, rollout, terminal_confirm
 from scripts.feature_manifest import FEATURE_RE, SCHEMA_RE, FeatureManifestError, load_feature_checkpoint
 from scripts.path_utils import relative_to_root
 
@@ -236,7 +236,7 @@ def _parser() -> argparse.ArgumentParser:
 
     clean_parser = subparsers.add_parser("clean-capsule", help="preview or remove an eligible local capsule")
     clean_parser.add_argument("payload_digest", help="64-character capsule payload digest")
-    clean_parser.add_argument("--yes", action="store_true", help="apply eligible local cleanup")
+    clean_parser.add_argument("-y", "--yes", action="store_true", help="apply eligible local cleanup")
     reconcile_parser = subparsers.add_parser(
         "reconcile-run",
         help="close an unfinished rollout run that has no checkpoint to recover, after a typed acknowledgment",
@@ -259,6 +259,8 @@ def _reconcile_ack_from_terminal(expected: str) -> str:
         "Only the developer types it; nothing else closes the run.",
         file=sys.stderr,
     )
+    if not terminal_confirm.may_read_acknowledgment():
+        return ""
     try:
         return input("Acknowledgment: ")
     except (EOFError, OSError):

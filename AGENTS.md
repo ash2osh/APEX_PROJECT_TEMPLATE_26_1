@@ -132,7 +132,7 @@ owner-only commands retain their owner-login checks. See
   to the existing connection and expected-user settings. Staging and production
   applies ask `[y/N]` at the terminal. `--confirm-target <db_unique_name>` skips that
   prompt only when the value equals the observed `db_unique_name`; an agent must
-  never supply it unless the developer typed that exact name for the run. Receipts are written
+  never supply it unless the developer typed that exact name for the run. `-y` / `--yes` (migrate, rollout, publish, deploy, archive-migrations, feature clean-capsule) replaces a `[y/N]` prompt; an agent passes it for staging or production only when the developer asked in this conversation for that run to be unattended, and production also needs the typed name. An agent never sets `TEAM_ACK_FROM_STDIN`. Receipts are written
   only after a verified apply. Multi-schema projects use
   `migrations/<SCHEMA>/…`; one migration changes one schema. See
   [docs/migration-rules.md](docs/migration-rules.md) for naming, ordering,
@@ -163,7 +163,7 @@ owner-only commands retain their owner-login checks. See
   [docs/daily-change-record.md](docs/daily-change-record.md).
 - **Promotion:** Put an explicit deployment descriptor in the application
   source. Use `scripts/team.sh deploy <app-id> --env staging` or `--env prod`;
-  each direct import requires the displayed `[y/N]` confirmation. Add
+  each direct import requires the displayed `[y/N]` confirmation, typed at a terminal, or `-y` under the same rule as `--confirm-target` above. Add
   `--manual` to print a DBA runbook without connecting. A deployment writes
   to the selected APEX workspace and parsing schema.
 - **Other commands:** `scripts/team.sh doctor` validates `.env` and performs a

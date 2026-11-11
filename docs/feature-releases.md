@@ -285,6 +285,18 @@ scripts/team.sh feature clean-capsule <payload-sha256>
 A manifest with neither a feature step nor a migrate step is refused at freeze. The
 freeze record under `scratch/freeze-checks/` states `migrationOnly` and `migrationSteps`.
 
+### Confirming a rollout without a prompt
+
+`rollout` prints every step hash and asks `Continue with this rollout? [y/N]` for staging and
+production. `-y` / `--yes` accepts that question. Production also needs
+`--confirm-target <db_unique_name>`: `-y` alone is refused before any step runs, and a name that
+differs from the observed `db_unique_name` of any database the rollout writes to refuses before the
+first write (the check only reads). `--confirm-target` alone is accepted too, as it is for `migrate`.
+`--yes` and `--confirm-target` do not apply to `--dry-run` or `--prepare`, and piped input is refused.
+The rollout report and `rollout-confirmation.json` record `confirmedBy`. An app-deploy step runs
+`deploy.sh` with `--yes` and, on production, the name; it never receives a piped answer. `-y` does
+not cover the typed `RECONCILE` acknowledgments, the `Press Enter` pause, or `--recover`.
+
 ## Closing a run that has no checkpoint to recover
 
 A run that ended unknown, with no checkpoint attempt to recover, keeps its target

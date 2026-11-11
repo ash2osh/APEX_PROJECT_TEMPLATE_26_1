@@ -13,6 +13,7 @@ Then report that difference. Each entry says why it is kept and what to do inste
 | Two developers publishing the same app at the same instant can both import; there is no lock. | `AGENTS.md` forbids team mutexes, checkout rosters and metadata tables. | Tell the team which app you are publishing. The drift guard catches every import that is not simultaneous. |
 | The first publish of an app made with `apex generate` stops at the post-import byte check and records no baseline. | Loosening the exact-bytes check for that case would weaken the main safety guard. | Follow "A new app from `apex generate`" in [publish-rules.md](publish-rules.md): commit, export, commit, publish again. |
 | The drift guard cannot see unsaved edits in an open Builder page. | APEX records only saved changes. | Ask teammates before publishing a shared app. |
+| A process with shell access can pass `-y` or `--confirm-target` to a staging or production run. | A `[y/N]` prompt cannot be answered from a pipe, but a process that runs the command itself can always pass a flag. The flag makes the unattended confirmation explicit and recorded (`confirmedBy` in the run manifest, rollout report and printed line); it does not make it impossible. | Review the run before an unattended job runs it; keep `-y` out of scripts nobody reviews. |
 
 ## Checks and their reach
 

@@ -4,12 +4,14 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/publish_app.sh <app_id> [--env <dev|staging|prod>] [--force]
-       scripts/publish_app.sh <app_id> --env staging|prod --app-source-dir <dir>
+Usage: scripts/publish_app.sh <app_id> [--env <dev|staging|prod>] [--force] [--yes|-y] [--confirm-target <db_unique_name>]
+       scripts/publish_app.sh <app_id> --env staging|prod --app-source-dir <dir> [--yes|-y] [--confirm-target <db_unique_name>]
 
 Imports one APEXlang application with deployments/<env>.json. Staging and
-production imports require interactive confirmation. --force skips only the
-Builder drift check; it does not skip target confirmation or identity checks.
+production imports require interactive confirmation, typed at a terminal; piped
+answers are refused. --yes accepts it; production also needs --confirm-target
+with the observed db_unique_name. --force skips only the Builder drift check;
+it does not skip target confirmation or identity checks.
 USAGE
 }
 
@@ -28,6 +30,11 @@ app_environment=dev
 force=false
 describe=false
 app_source_override=""
+yes=false
+confirm_target=""
+confirm_target_given=false
+# The answer a terminal prompt must replace; scripts/terminal_confirm.py holds the same text.
+YES_REFUSAL='refused: this confirmation is read from a terminal; piped or redirected answers are not accepted. Run the command in a terminal, or pass --yes (-y) to accept the prompt explicitly and on the record.'
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --env)
@@ -38,6 +45,17 @@ while [ "$#" -gt 0 ]; do
     --force)
       force=true
       shift
+      ;;
+    --yes|-y)
+      yes=true
+      shift
+      ;;
+    --confirm-target)
+      [ "$#" -ge 2 ] || fail "--confirm-target needs the observed db_unique_name"
+      [ -n "${2//[[:space:]]/}" ] || fail "--confirm-target needs the observed db_unique_name"
+      confirm_target="$2"
+      confirm_target_given=true
+      shift 2
       ;;
     --describe)
       describe=true
@@ -60,6 +78,12 @@ case "$app_environment" in
   *) fail "unsupported environment '$app_environment'; use dev, staging, or prod" ;;
 esac
 [ -z "$app_source_override" ] || [ "$app_environment" != dev ] || fail '--app-source-dir is supported only for staging or production deployment'
+if [ "$confirm_target_given" = true ] && [ "$app_environment" = dev ]; then
+  fail "--confirm-target applies only to --env staging or prod"
+fi
+if [ "$yes" = true ] && [ "$app_environment" = prod ] && [ "$confirm_target_given" != true ]; then
+  fail "production also needs --confirm-target <db_unique_name>; --yes alone is refused and nothing was imported"
+fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 PROJECT_ENV_FILE="${PROJECT_ENV_FILE:-$REPO_ROOT/.env}"
@@ -243,11 +267,19 @@ fi
 if [ -n "$acting_as_banner" ]; then
   printf '%s\n' "$acting_as_banner"
 fi
-if [ "$app_environment" != dev ]; then
+# --yes or --confirm-target replaces the question. The name is checked against the
+# observed database once it is read, before any import; see below.
+if [ "$app_environment" != dev ] && [ "$yes" != true ] && [ "$confirm_target_given" != true ]; then
   printf 'Deploying to %s. Proceed? [y/N]: ' "$target_label"
+  if [ ! -t 0 ]; then
+    printf '\n'
+    printf '%s\n' "$YES_REFUSAL" >&2
+    printf 'Publish cancelled.\n' >&2
+    exit 1
+  fi
   answer=""
   IFS= read -r answer || true
-  # An answer piped from Windows PowerShell arrives as "y" followed by CR LF; drop the CR.
+  # An answer typed at a Windows terminal arrives as "y" followed by CR LF; drop the CR.
   answer="${answer%$'\r'}"
   case "${answer,,}" in
     y|yes) ;;
@@ -398,6 +430,25 @@ PY
   if [ -z "$identity_values" ]; then fail 'pre-publication database identity is unavailable; nothing imported'; fi
 fi
 IFS=$'\t' read -r expected_db_unique_name expected_service_name expected_container_id expected_container_name expected_edition expected_server_host expected_session_user expected_current_schema <<< "$identity_values"
+if [ "$app_environment" != dev ] && [ "$confirm_target_given" = true ]; then
+  if [ -z "$expected_db_unique_name" ] || [ "$expected_db_unique_name" = - ]; then
+    fail "--confirm-target: the observed db_unique_name is unavailable; nothing imported"
+  fi
+  observed_db_unique_name="$(python3 -c 'import sys; sys.stdout.write(bytes.fromhex(sys.argv[1]).decode("utf-8"))' "$expected_db_unique_name")" || \
+    fail "--confirm-target: the observed db_unique_name could not be read; nothing imported"
+  if [ "$observed_db_unique_name" != "$confirm_target" ]; then
+    fail "--confirm-target '$confirm_target' does not match the observed db_unique_name '$observed_db_unique_name'; nothing imported"
+  fi
+fi
+if [ "$app_environment" != dev ] && { [ "$yes" = true ] || [ "$confirm_target_given" = true ]; }; then
+  if [ "$yes" = true ] && [ "$confirm_target_given" = true ]; then
+    printf 'Confirmed by --yes and --confirm-target %s; the interactive prompt was skipped.\n' "$confirm_target"
+  elif [ "$yes" = true ]; then
+    printf 'Confirmed by --yes; the interactive prompt was skipped.\n'
+  else
+    printf 'Confirmed by --confirm-target %s; the interactive prompt was skipped.\n' "$confirm_target"
+  fi
+fi
 if [ "$app_environment" = dev ] && [ "$force" != true ]; then
   drift_guard="$REPO_ROOT/scripts/check_builder_drift.py"
   [ -f "$drift_guard" ] || fail "Builder drift guard is missing; refusing import"
