@@ -864,7 +864,7 @@ def _read_text(path: Path, root: Path, label: str) -> str:
 
 
 def diff_captured_package(repo_root: Path, feature: str, schema: str, *, day: str) -> tuple[Path, ...]:
-    """Compare edited feature package files with their captured DEV source."""
+    """Compare edited feature stored source files with their captured DEV source."""
     requested_root = Path(repo_root)
     if requested_root.is_symlink():
         raise FeatureSourcesError("repository root cannot be a symlink")

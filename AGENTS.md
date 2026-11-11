@@ -158,7 +158,7 @@ owner-only commands retain their owner-login checks. See
   `ai_generate/YYYY-MM-DD/` with the readable diff of each migration
   (`migrate --env dev` writes it after a verified apply; by hand,
   `python3 scripts/migration_diff.py migrations/<SCHEMA>/<folder>` before
-  `backup-db` refreshes the mirror; `feature diff` writes complete package
+  `backup-db` refreshes the mirror; `feature diff` writes complete stored-unit
   source diffs under `feature-diffs/`) and one `WALKTHROUGH.md` for that day. Commit the folder with the work. See
   [docs/daily-change-record.md](docs/daily-change-record.md).
 - **Promotion:** Put an explicit deployment descriptor in the application

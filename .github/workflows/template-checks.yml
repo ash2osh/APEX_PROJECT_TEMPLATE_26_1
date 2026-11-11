@@ -38,9 +38,28 @@ jobs:
       - name: Shell syntax
         run: |
           for script in scripts/*.sh; do bash -n "$script"; done
+      - name: ShellCheck (error severity)
+        run: shellcheck --severity=error scripts/*.sh
+      - name: PowerShell parse
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -Path scripts -Filter '*.ps1')
+          if ($files.Count -eq 0) { Write-Host 'no scripts/*.ps1 found'; exit 1 }
+          $bad = 0
+          foreach ($file in $files) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors)
+            foreach ($problem in $errors) {
+              Write-Host ('{0}:{1}: {2}' -f $file.FullName, $problem.Extent.StartLineNumber, $problem.Message)
+              $bad++
+            }
+          }
+          if ($bad -gt 0) { exit 1 }
       - name: Behavioral tests
         env:
           CI_TEST_JOBS: '4'
+          CI_FORBID_SKIP: 'PowerShell .*(not installed|required)|needs PowerShell|requires PowerShell|no PowerShell found'
         run: python3 scripts/ci_run_tests.py
       - name: Validate the example configuration
         run: |
@@ -71,9 +90,16 @@ jobs:
         # scripts/pre_push_check.py, which fails without it.
         run: |
           python3 -m pip install --disable-pip-version-check --no-input 'ruff>=0.5'
+      - name: Install the Graphify extra
+        # Lets the Graphify pipeline tests run here instead of skipping. setup_graphify_apx.py patches the
+        # `graphify` on PATH (pip puts its console script beside python3) and fails the step if it cannot.
+        run: |
+          python3 -m pip install --disable-pip-version-check --no-input '.[graph]'
+          python3 scripts/setup_graphify_apx.py
       - name: Behavioral tests
         env:
           CI_TEST_JOBS: '4'
+          CI_FORBID_SKIP: 'PowerShell .*(not installed|required)|needs PowerShell|requires PowerShell|no PowerShell found|Graphify Python launcher is unavailable'
         run: python3 scripts/ci_run_tests.py
 
   windows-offline:
@@ -95,6 +121,22 @@ jobs:
       - name: Shell syntax
         shell: bash
         run: for script in scripts/*.sh; do bash -n "$script"; done
+      - name: PowerShell parse
+        shell: pwsh
+        run: |
+          $files = @(Get-ChildItem -Path scripts -Filter '*.ps1')
+          if ($files.Count -eq 0) { Write-Host 'no scripts/*.ps1 found'; exit 1 }
+          $bad = 0
+          foreach ($file in $files) {
+            $tokens = $null
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($file.FullName, [ref]$tokens, [ref]$errors)
+            foreach ($problem in $errors) {
+              Write-Host ('{0}:{1}: {2}' -f $file.FullName, $problem.Extent.StartLineNumber, $problem.Message)
+              $bad++
+            }
+          }
+          if ($bad -gt 0) { exit 1 }
       - name: Use the long form of the temp directory
         # The runner's temp directory is a short 8.3 name (RUNNER~1) that resolve() expands, which broke
         # path comparisons in tests three times. Keep the runner's own (private) directory, with its long name.
@@ -111,6 +153,7 @@ jobs:
       - name: Behavioral tests
         env:
           CI_TEST_JOBS: '4'
+          CI_FORBID_SKIP: 'PowerShell .*(not installed|required)|needs PowerShell|requires PowerShell|no PowerShell found'
         run: python scripts/ci_run_tests.py
       - name: Validate the example configuration
         shell: bash

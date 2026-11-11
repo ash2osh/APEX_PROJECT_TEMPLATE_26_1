@@ -505,7 +505,7 @@ class LiveFeatureReleaseTests(unittest.TestCase):
         # The file equals DEV: the live doctor compares both files and finds nothing.
         result = self._team("feature", "doctor", "--live", "--feature", first)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("2 package file(s) compared with DEV", result.stdout)
+        self.assertIn("2 stored source file(s) compared with DEV", result.stdout)
 
         # A teammate compiles a new function on DEV: the file is now behind DEV.
         self._sql(CONNECTION, spec.format(extra="  function pong return number;\n")

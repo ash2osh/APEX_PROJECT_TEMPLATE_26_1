@@ -814,10 +814,6 @@ def build_receipt(
     }
 
 
-def _same_target_identity(expected: Mapping[str, str], observed: Mapping[str, str]) -> None:
-    _assert_same_target(expected, observed)
-
-
 def _preflight_snapshot(
     migrations: Sequence[Migration],
     target: Target,
@@ -859,25 +855,6 @@ def _print_target_summary(target: Target, identity: Mapping[str, str], frozen: S
         print(f"Migration {migration.folder.name} payload={migration.payload_digest}")
         for file in migration.files:
             print(f"  {file.sequence:03d} {file.name} sha256={file.sha256}")
-
-
-def _update_run_manifest(
-    path: Path,
-    target_identity: Mapping[str, str],
-    frozen: Sequence[_FrozenMigration],
-    records: list[dict],
-    *,
-    state: str,
-) -> dict:
-    manifest = {
-        "schemaVersion": 1,
-        "state": state,
-        "createdAt": records[0].get("createdAt") if records else _utc_now(),
-        "target": dict(target_identity),
-        "migrations": records,
-    }
-    _atomic_write_json(path, manifest)
-    return manifest
 
 
 def _receipt_record(migration: Migration, run_manifest: dict) -> dict:

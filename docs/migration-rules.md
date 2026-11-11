@@ -235,7 +235,7 @@ a count of `INVALID` objects in `ALL_OBJECTS`.
 
 Use a dated migration for seed rows, data fixes, and small one-off DDL or DML.
 Use a [feature release](feature-releases.md) for new object work that benefits
-from complete package sources and one frozen payload for staging and production.
+from complete stored-unit sources and one frozen payload for staging and production.
 
 | Change | Path |
 |---|---|
