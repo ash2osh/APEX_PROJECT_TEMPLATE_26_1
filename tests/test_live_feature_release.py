@@ -1314,18 +1314,16 @@ class LiveFeatureReleaseTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn("null; null;", proc_file.read_text(encoding="utf-8"))
 
-        # DEV changes the function: the live doctor reports its file as out of step with DEV. A refresh compares the
-        # file with DEV's text only, so it stops on the line DEV no longer has, as the feature-releases guide documents.
+        # DEV changes the function: the live doctor reports its file as out of step with DEV. The function file is
+        # unedited (it equals the retained DEV baseline of its capture), so a refresh replaces it without
+        # --discard-unapplied. The edited procedure above is still refused without the flag.
         self._sql(CONNECTION, f"create or replace function {fn} return number is begin return 2; end;\n/\n")
         result = self._team("feature", "doctor", "--live", "--feature", first)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn(fn_paths[0], result.stdout)
         refresh_function = ["feature", "capture", first, "--function", fn, "--schema", SCHEMA, "--env", "dev", "--refresh"]
-        result = self._team(*refresh_function)
-        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-        self.assertIn("DEV does not have", result.stderr)
         self.assertIn("return 1", fn_file.read_text(encoding="utf-8").lower())
-        result = self._team(*refresh_function, "--discard-unapplied")
+        result = self._team(*refresh_function)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("return 2", fn_file.read_text(encoding="utf-8").lower())
         self.assertEqual(self._team("feature", "doctor", "--live", "--feature", first).returncode, 0)

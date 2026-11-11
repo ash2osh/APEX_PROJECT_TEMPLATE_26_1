@@ -128,8 +128,12 @@ A move with `--keep-file` carries the entry to the receiving feature; a move tha
 
 ### D6. `feature capture --refresh`
 
-`--refresh` applies the D3 table to the file it replaces: lines the file has and DEV does not (unapplied edits, or an
-accepted difference) stop the refresh unless `--discard-unapplied` is given.
+`--refresh` compares the file it replaces with its retained DEV baseline, the DEV capture the file was taken from. A
+file equal to that baseline has no local edits, so the refresh replaces it with the current DEV source, even when DEV
+changed a line since the capture, and needs no flag. A file that differs from its baseline applies the D3 rule: lines
+the file has and DEV does not (unapplied edits, or an accepted difference) stop the refresh unless
+`--discard-unapplied` is given. A missing or unreadable baseline, or an accepted difference recorded for the file,
+keeps that stop even for an otherwise unedited file.
 
 ## Examples
 
