@@ -88,10 +88,8 @@ module sets it. Piped `y` answers are no longer accepted by any prompt.
   feature-release guide requires a separately authorized disposable rehearsal
   before any measured claim.
 - A `migrate` step killed mid-apply. The kill check covers a feature checkpoint only.
-- A refresh that compares with the retained DEV baseline. The refresh guard compares with DEV only,
-  as the feature-release guide documents; see the open decision in `TODO.md`.
-- A type specification re-created while its body is not in the release. The body stays INVALID and no
-  check reports it; see `TODO.md`.
+- The prepare refusal for a replaced specification whose body is not in the release, and cleanup after a
+  superseded reconciled run. Both are covered offline only.
 
 ## The kill check and the database's timing
 
