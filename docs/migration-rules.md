@@ -241,13 +241,14 @@ from complete package sources and one frozen payload for staging and production.
 |---|---|
 | Package specification or body | Feature, one mutable file per unit |
 | View | Feature, `CREATE OR REPLACE VIEW` in the feature's `ddl.sql` |
-| Trigger, procedure, function or type | Dated migration, started with `new-migration --source` |
+| Trigger, procedure, function or type | Feature, one mutable file per unit |
 | DDL that belongs to a feature release | The feature's `ddl.sql` |
 | Seed rows, data fixes, small one-off DDL or DML | Dated migration |
 | Anything that must reach staging and production as one payload | Feature release |
 
-Feature capture reads only packages and package bodies, so triggers, procedures,
-functions and types stay in dated migrations until feature capture supports them.
+Feature capture reads one stored unit per capture: a package or type (specification
+and body), or one trigger, procedure or function. Destructive DDL (`DROP`, `RENAME`,
+`TRUNCATE`) and anything the feature DDL forms refuse stay in dated migrations.
 Feature files have no supported DEV apply path: `feature capture` only reads DEV,
 and `rollout` accepts only staging or production for a feature capsule. Check the
 current state of both in [feature releases](feature-releases.md) before choosing
