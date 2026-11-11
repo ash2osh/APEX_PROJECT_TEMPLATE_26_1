@@ -16,7 +16,7 @@ from unittest.mock import patch
 from fake_sqlcl import environment as fake_environment, install
 from scripts import baseline
 from scripts.db_targets import Target
-from scripts.migrate import MigrationApplyError, _assert_check_identity, _attempt_event, _verify_receipts_and_attempts, apply_batch, apply_folder, main
+from scripts.migrate import MigrationApplyError, _assert_check_identity, _attempt_event, _confirm_from_terminal, _verify_receipts_and_attempts, apply_batch, apply_folder, main
 from scripts.migration_checks import CheckReport, analyze_batch, run_checks
 from scripts.migration_manifest import load_batch, validate_receipt
 from scripts.migration_revision import inspect_migration_lock
@@ -336,6 +336,97 @@ class MigrateCliTests(unittest.TestCase):
         self.assertEqual(prompts, [])
         self.assertFalse(any(call[0] == "apply" for call in fake.calls))
         self.assertFalse((folder / "status.staging.json").exists())
+
+    def test_yes_skips_the_staging_prompt_reads_no_stdin_and_records_the_flag(self):
+        folder = self.add_folder("2026-09-28_yes-staging-r001", {"001-create-table.sql": "CREATE TABLE T (ID NUMBER);\n"})
+        migration = self.load(folder.name)
+        output = io.StringIO()
+        with patch("builtins.input", side_effect=AssertionError("-y must not read stdin")), contextlib.redirect_stdout(output):
+            result, fake = self.apply(
+                migration,
+                self.target("staging"),
+                confirm=lambda prompt: (_ for _ in ()).throw(AssertionError(f"prompt asked: {prompt}")),
+                yes=True,
+            )
+        self.assertEqual(result, 0)
+        self.assertTrue(any(call[0] == "apply" for call in fake.calls))
+        self.assertIn("Confirmed by --yes; the interactive prompt was skipped.", output.getvalue())
+        self.assertIn("Target STAGING:", output.getvalue())
+        recorded = [json.loads(path.read_text(encoding="utf-8")) for path in self.root.rglob("run-manifest.json")]
+        self.assertEqual([(item.get("confirmation"), item.get("confirmedBy")) for item in recorded], [("flag", "--yes")] * len(recorded))
+        self.assertTrue(recorded)
+
+    def test_yes_alone_on_production_is_refused_before_anything_is_read_or_written(self):
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            code = main(["migrations/none", "--env", "prod", "--yes"], environ={}, repo_root=self.root)
+        self.assertEqual(code, 2)
+        self.assertIn("production also needs --confirm-target <db_unique_name>", stderr.getvalue())
+        self.assertFalse((self.root / "scratch").exists())
+
+    def test_yes_alone_on_production_is_refused_by_the_apply_function_too(self):
+        folder = self.add_folder("2026-09-28_yes-prod-direct-r001", {"001-create-table.sql": "CREATE TABLE T (ID NUMBER);\n"})
+        migration = self.load(folder.name)
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            result, fake = self.apply(migration, self.target("prod"), yes=True)
+        self.assertEqual(result, 2)
+        self.assertIn("production also needs --confirm-target <db_unique_name>", stderr.getvalue())
+        self.assertFalse(any(call[0] == "apply" for call in fake.calls))
+        self.assertFalse((folder / "status.prod.json").exists())
+
+    def test_yes_with_matching_confirm_target_proceeds_on_production_and_records_both(self):
+        folder = self.add_folder("2026-09-28_yes-prod-r001", {"001-create-table.sql": "CREATE TABLE T (ID NUMBER);\n"})
+        migration = self.load(folder.name)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            result, fake = self.apply(
+                migration,
+                self.target("prod"),
+                confirm=lambda prompt: (_ for _ in ()).throw(AssertionError(f"prompt asked: {prompt}")),
+                yes=True,
+                confirm_target="PRODDB_UNIQUE",
+            )
+        self.assertEqual(result, 0)
+        self.assertTrue(any(call[0] == "apply" for call in fake.calls))
+        self.assertIn("Confirmed by --yes and --confirm-target PRODDB_UNIQUE; the interactive prompt was skipped.", output.getvalue())
+        recorded = [json.loads(path.read_text(encoding="utf-8")) for path in self.root.rglob("run-manifest.json")]
+        self.assertTrue(recorded)
+        self.assertEqual({item.get("confirmedBy") for item in recorded}, {"--yes --confirm-target"})
+
+    def test_yes_with_a_wrong_confirm_target_refuses_before_any_prompt_or_write(self):
+        folder = self.add_folder("2026-09-28_yes-prod-wrong-r001", {"001-create-table.sql": "CREATE TABLE T (ID NUMBER);\n"})
+        migration = self.load(folder.name)
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            result, fake = self.apply(migration, self.target("prod"), yes=True, confirm_target="WRONGDB_UNIQUE")
+        self.assertEqual(result, 2)
+        self.assertIn("does not match the observed db_unique_name", stderr.getvalue())
+        self.assertFalse(any(call[0] == "apply" for call in fake.calls))
+        self.assertFalse((folder / "status.prod.json").exists())
+
+    def test_redirected_stdin_refuses_the_typed_prompt_without_a_flag(self):
+        folder = self.add_folder("2026-09-28_piped-r001", {"001-create-table.sql": "CREATE TABLE T (ID NUMBER);\n"})
+        migration = self.load(folder.name)
+        stderr = io.StringIO()
+        with patch("scripts.terminal_confirm.stdin_is_terminal", return_value=False), patch("builtins.input", side_effect=AssertionError("piped answer read")), \
+                contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(io.StringIO()):
+            result, fake = self.apply(migration, self.target("staging"), confirm=_confirm_from_terminal)
+        self.assertEqual(result, 1)
+        self.assertIn("piped or redirected answers are not accepted", stderr.getvalue())
+        self.assertIn("--yes", stderr.getvalue())
+        self.assertFalse(any(call[0] == "apply" for call in fake.calls))
+        self.assertFalse((folder / "status.staging.json").exists())
+
+    def test_typed_yes_at_a_terminal_still_confirms_and_records_terminal(self):
+        folder = self.add_folder("2026-09-28_typed-r001", {"001-create-table.sql": "CREATE TABLE T (ID NUMBER);\n"})
+        migration = self.load(folder.name)
+        with patch("scripts.terminal_confirm.stdin_is_terminal", return_value=True), patch("builtins.input", return_value="y"), \
+                contextlib.redirect_stdout(io.StringIO()):
+            result, fake = self.apply(migration, self.target("staging"), confirm=_confirm_from_terminal)
+        self.assertEqual(result, 0)
+        recorded = [json.loads(path.read_text(encoding="utf-8")) for path in self.root.rglob("run-manifest.json")]
+        self.assertEqual({(item.get("confirmation"), item.get("confirmedBy")) for item in recorded}, {("terminal", "terminal")})
 
     def test_no_folder_prints_a_usage_line_with_every_migrate_option(self):
         stderr = io.StringIO()

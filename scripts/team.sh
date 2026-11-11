@@ -32,12 +32,12 @@ Commands:
                                               Start a code migration from the live DEV source
   feature init|capture|diff|doctor|freeze|clean-capsule|reconcile-run|convert-plan ...
                                               Create or review feature releases; convert-plan plans a dated-folder conversion (offline)
-  migrate <folder> [...] --env dev|staging|prod [--verbose] [--rehearse] [--report <file>] [--confirm-target <db_unique_name>]
+  migrate <folder> [...] --env dev|staging|prod [--verbose] [--rehearse] [--report <file>] [--confirm-target <db_unique_name>] [--yes|-y]
                                               Apply, or rehearse DML in one transaction and roll it back
   revise <folder> [--reason TEXT]             Copy to the next migration revision
   revise --check <folder>                     Report whether local attempt/receipt evidence locks a folder
-  archive-migrations <folder> [...] [--schema SCHEMA] [--destination DIR] [--reason TEXT] [--yes]
-  archive-migrations --all [--keep <folder>...] [--schema SCHEMA] [--destination DIR] [--reason TEXT] [--yes]
+  archive-migrations <folder> [...] [--schema SCHEMA] [--destination DIR] [--reason TEXT] [--yes|-y]
+  archive-migrations --all [--keep <folder>...] [--schema SCHEMA] [--destination DIR] [--reason TEXT] [--yes|-y]
                                               Move released folders outside migrations/ (dry run by default)
   verify <folder> [...] --env <env> [--phase pre|post|both] [--only-failed]
          [--format text|json] [--jobs N]     Evaluate migration checks read-only
@@ -45,6 +45,7 @@ Commands:
                                               Run one bounded, conservative SELECT read-only
   rollout <manifest.json> --env <env> [--from-step N] [--dry-run] [--prepare]
          [--capsule DIR] [--stage-report FILE] [--recover ATTEMPT] [--report <file>]
+         [--yes|-y] [--confirm-target <db_unique_name>]
                                               Confirm and execute a frozen deployment manifest
   compare-env --from <env> --to <env> [--section <name>] [...] [--format text|json|markdown]
               [--emit-dba-script <file>]
@@ -65,6 +66,7 @@ Commands:
   backup-db                                   Refresh the table and code mirrors (and ORDS, when configured)
   backup-ords                                 Export ORDS metadata read-only to database/<SCHEMA>/ords/schema.sql
   deploy <app_id> --env <staging|prod> [--manual]
+         [--yes|-y] [--confirm-target <db_unique_name>]
                                               Confirm a promotion or print a DBA runbook
   mcp setup [--choice chrome|firefox|both|none]
                                               Choose browser MCP servers for this checkout
