@@ -605,10 +605,11 @@ are local recovery evidence under `scratch/rollout-receipts/`; resuming with
 target state before resuming after an ambiguous write. Reports may not overlap
 rollout inputs, receipts or recovery evidence. Capsule attempt state is local to
 this checkout, and a capsule's database-object budget covers only its feature
-checkpoints; legacy migration, SQL-script, ORDS and app-deploy time is excluded.
-When database-object work remains outside feature checkpoints, report budget
-coverage as incomplete. The budget detects overruns after an Oracle operation;
-it cannot prevent DDL from committing.
+checkpoints and its migrate steps; SQL-script, ORDS and app-deploy time is excluded.
+When database-object work remains outside feature checkpoints and migrate steps,
+report budget coverage as incomplete. The budget detects overruns after an Oracle operation;
+it cannot prevent DDL from committing. A release made only of migrate steps is a
+migration-only capsule; see [migration-only releases](feature-releases.md#migration-only-releases).
 
 ## Generated baseline migrations
 

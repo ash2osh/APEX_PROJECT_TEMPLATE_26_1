@@ -30,7 +30,8 @@ Commands:
                                               Plan/run retained DEV fixtures or report/clean one saved run
   new-migration <name> --source TYPE:NAME [...] --env dev
                                               Start a code migration from the live DEV source
-  feature init|capture|diff|doctor|freeze|clean-capsule ... Create or review feature releases
+  feature init|capture|diff|doctor|freeze|clean-capsule|reconcile-run|convert-plan ...
+                                              Create or review feature releases; convert-plan plans a dated-folder conversion (offline)
   migrate <folder> [...] --env dev|staging|prod [--verbose] [--rehearse] [--report <file>] [--confirm-target <db_unique_name>]
                                               Apply, or rehearse DML in one transaction and roll it back
   revise <folder> [--reason TEXT]             Copy to the next migration revision
@@ -325,14 +326,14 @@ case "$command_name" in
     exec python3 -m scripts.new_migration "$@"
     ;;
   feature)
-    [ "$#" -ge 1 ] || fail "usage: scripts/team.sh feature <init|capture|diff|doctor|freeze|clean-capsule> [arguments]"
+    [ "$#" -ge 1 ] || fail "usage: scripts/team.sh feature <init|capture|diff|doctor|freeze|clean-capsule|reconcile-run|convert-plan> [arguments]"
     if [ "$1" = --help ] || [ "$1" = -h ]; then
       cd "$REPO_ROOT"
       exec python3 -m scripts.feature_cli --help
     fi
     feature_command="$1"
     case "$feature_command" in
-      init|diff|clean-capsule) ;;
+      init|diff|clean-capsule|reconcile-run|convert-plan) ;;
       freeze|doctor)
         # The comparison with DEV is optional: load the project file only when it exists
         # (and, for doctor, only for --live), so an offline freeze or doctor needs no .env.
@@ -353,7 +354,7 @@ case "$command_name" in
         fi
         ;;
       capture)
-        [ "$#" -ge 2 ] || fail "usage: scripts/team.sh feature capture <slug> --package NAME --schema SCHEMA --env dev [--refresh]"
+        [ "$#" -ge 2 ] || fail "usage: scripts/team.sh feature capture <slug> (--package NAME | --trigger NAME | --procedure NAME | --function NAME | --type NAME) --schema SCHEMA --env dev [--refresh]"
         feature_help=false
         for feature_argument in "$@"; do
           if [ "$feature_argument" = --help ] || [ "$feature_argument" = -h ]; then feature_help=true; fi
@@ -384,7 +385,7 @@ case "$command_name" in
           source "$REPO_ROOT/scripts/load_env.sh" "$PROJECT_ENV_FILE"
         fi
         ;;
-      *) fail "unknown feature command '$feature_command'; use init, capture, diff, doctor, freeze, or clean-capsule" ;;
+      *) fail "unknown feature command '$feature_command'; use init, capture, diff, doctor, freeze, clean-capsule, reconcile-run, or convert-plan" ;;
     esac
     feature_root="$REPO_ROOT"
     case "$(uname -s 2>/dev/null)" in

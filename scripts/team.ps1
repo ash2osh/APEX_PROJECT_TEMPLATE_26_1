@@ -63,7 +63,8 @@ Commands:
                                               Plan/run retained DEV fixtures or report/clean one saved run
   new-migration <name> --source TYPE:NAME [...] --env dev
                                               Start a code migration from the live DEV source
-  feature init|capture|diff|doctor|freeze|clean-capsule ... Create or review feature releases
+  feature init|capture|diff|doctor|freeze|clean-capsule|reconcile-run|convert-plan ...
+                                              Create or review feature releases; convert-plan plans a dated-folder conversion (offline)
   migrate <folder> [...] --env dev|staging|prod [--verbose] [--rehearse] [--report <file>] [--confirm-target <db_unique_name>]
                                               Apply, or rehearse DML in one transaction and roll it back
   revise <folder> [--reason TEXT]             Copy to the next migration revision
@@ -448,10 +449,22 @@ try {
       Invoke-TeamBash -ScriptName "team.sh" -ScriptArguments (@("new-migration") + @($Arguments))
     }
     "feature" {
-      if ($Arguments.Count -lt 1) { Fail "usage: scripts/team.ps1 feature <init|capture|diff|doctor|freeze|clean-capsule> [arguments]" }
+      if ($Arguments.Count -lt 1) { Fail "usage: scripts/team.ps1 feature <init|capture|diff|doctor|freeze|clean-capsule|reconcile-run|convert-plan> [arguments]" }
       $featureArguments = @($Arguments)
       if ($featureArguments[0] -ceq "freeze" -and $featureArguments.Count -gt 1) {
         $featureArguments[1] = ConvertTo-MigrationFolderArgument ([string] $featureArguments[1])
+      }
+      if ($featureArguments[0] -ceq "convert-plan") {
+        # Only positional arguments are folders; the values of --feature and --format stay opaque.
+        $expectsValue = $false
+        for ($featureIndex = 1; $featureIndex -lt $featureArguments.Count; $featureIndex++) {
+          $featureValue = [string] $featureArguments[$featureIndex]
+          if ($expectsValue) { $expectsValue = $false; continue }
+          if ($featureValue -ceq "--feature" -or $featureValue -ceq "--format") { $expectsValue = $true; continue }
+          if (-not $featureValue.StartsWith("-")) {
+            $featureArguments[$featureIndex] = ConvertTo-MigrationFolderArgument $featureValue
+          }
+        }
       }
       Invoke-TeamBash -ScriptName "team.sh" -ScriptArguments (@("feature") + $featureArguments)
     }
