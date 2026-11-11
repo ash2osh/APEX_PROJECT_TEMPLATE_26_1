@@ -937,7 +937,7 @@ class TeamCliTests(unittest.TestCase):
             with self.subTest(entry=command[-1]):
                 help_text = subprocess.run([*command, "--help"], text=True, capture_output=True, check=False, cwd=ROOT)
                 self.assertEqual(help_text.returncode, 0, help_text.stderr)
-                self.assertIn("feature init|capture|diff|doctor|freeze|clean-capsule", help_text.stdout)
+                self.assertIn("feature init|capture|diff|doctor|freeze|clean-capsule|reconcile-run|convert-plan", help_text.stdout)
                 self.assertIn("--stage-report FILE", help_text.stdout)
 
                 invalid_capture = subprocess.run(
@@ -966,6 +966,34 @@ class TeamCliTests(unittest.TestCase):
                     self.assertTrue((ROOT / "features" / slug / "APP_CODE" / "checks.json").is_file())
                 finally:
                     shutil.rmtree(ROOT / "features" / slug, ignore_errors=True)
+
+    def test_feature_convert_plan_routes_through_both_wrappers_offline_in_a_unicode_glob_checkout(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="convert wrapper ") as temporary:
+            root = feature_cli_checkout(Path(temporary))
+            folder = "migrations/APP_CODE/2026-01-05_wrapper-r001"
+            (root / folder).mkdir(parents=True)
+            (root / folder / "001-table.sql").write_text("CREATE TABLE wrapper_t (id NUMBER);\n", encoding="utf-8", newline="\n")
+            checks = {"schemaVersion": 1, "preconditions": [], "postconditions": [{"id": "after", "sql": "SELECT 1 FROM dual", "expected": 1}]}
+            (root / folder / "checks.json").write_text(json.dumps(checks) + "\n", encoding="utf-8", newline="\n")
+            entries = [("team.sh", [BASH, str(root / "scripts" / "team.sh")])]
+            pwsh = _test_subprocess_safety.working_pwsh()
+            if pwsh:
+                entries.append(("team.ps1", [pwsh, "-NoProfile", "-File", str(root / "scripts" / "team.ps1")]))
+            for name, launcher in entries:
+                with self.subTest(wrapper=name):
+                    result = subprocess.run(
+                        [*launcher, "feature", "convert-plan", folder, "--feature", "wrapper-demo", "--format", "json"],
+                        cwd=root,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                        env=dict(os.environ, PROJECT_ENV_FILE="/no/such/team-env"),
+                    )
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    report = json.loads(result.stdout)
+                    self.assertEqual("convertible", report["folders"][0]["verdict"])
+                    self.assertEqual([folder], report["archive"])
+                    self.assertFalse((root / ".env").exists())
 
     def test_feature_init_works_through_both_wrappers_in_a_unicode_glob_checkout(self) -> None:
         with tempfile.TemporaryDirectory(prefix="feature wrapper ") as temporary:
