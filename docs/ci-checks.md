@@ -12,7 +12,7 @@ agreed way to stop that.
 - A branch pushed without a pull request runs nothing: open the pull request to get a result.
 
 The jobs are `offline` (Linux, Python 3.10), `offline (latest Python 3.x)` (Linux, the newest Python 3.x, with the same
-compile and behavioural-test steps, plus the optional Graphify extra so the Graphify pipeline tests run instead of
+compile and behavioural-test steps, plus Graphify (pinned to 0.9.76, the release the setup script can patch) so the Graphify pipeline tests run instead of
 skipping; no lint or other checks), `windows-offline` and `macos-installer`. The full suite takes about 10 minutes on
 Linux and 20 to 30 on Windows.
 

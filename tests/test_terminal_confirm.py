@@ -1,6 +1,7 @@
 import contextlib
 import io
 import os
+import sys
 import unittest
 from unittest.mock import patch
 
@@ -26,7 +27,12 @@ class TerminalConfirmTests(unittest.TestCase):
         self.assertTrue(terminal_confirm.stdin_is_terminal(FakeStream(True)))
         self.assertFalse(terminal_confirm.stdin_is_terminal(FakeStream(False)))
         self.assertFalse(terminal_confirm.stdin_is_terminal(BrokenStream()))
-        self.assertFalse(terminal_confirm.stdin_is_terminal(None))
+        # None means standard input itself. Replace it: on Windows the NUL device a test runner hands
+        # to its children reports itself as a terminal.
+        with patch.object(sys, "stdin", None):
+            self.assertFalse(terminal_confirm.stdin_is_terminal(None))
+        with patch.object(sys, "stdin", FakeStream(False)):
+            self.assertFalse(terminal_confirm.stdin_is_terminal(None))
         self.assertFalse(terminal_confirm.stdin_is_terminal(object()))
 
     def test_yes_gate_refuses_with_the_one_message_that_names_yes(self):
