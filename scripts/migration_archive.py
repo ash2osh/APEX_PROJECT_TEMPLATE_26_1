@@ -218,7 +218,8 @@ def _folder_evidence(
     if lock.status == "unknown" and attempt_states and not (allow_unverified_attempts or preserve_unresolved):
         states = "; ".join(lock.states)
         raise MigrationArchiveError(
-            f"attempt or receipt evidence is unknown for {migration.folder.name}: {states}; {hint or 'inspect the attempt evidence'}"
+            f"attempt or receipt evidence is unknown for {migration.folder.name}: {states}; {hint or 'inspect the attempt evidence'}; "
+            "or archive it as unresolved with --preserve-unresolved"
         )
     evidence.extend(resolution_evidence)
     if attempt_states:

@@ -38,10 +38,11 @@ Commands:
   revise --check <folder>                     Report whether local attempt/receipt evidence locks a folder
   archive-migrations <folder> [...] [--schema SCHEMA] [--destination DIR] [--reason TEXT] [--yes|-y]
   archive-migrations --all [--keep <folder>...] [--schema SCHEMA] [--destination DIR] [--reason TEXT] [--yes|-y]
+           [--preserve-unresolved] [--skip-refused]
+                                              Move released folders outside migrations/ (dry run by default)
   reconcile-migration <folder> --env dev|staging|prod --outcome <outcome> --evidence <file>
            [--attempt <id>] [--superseded-by <folder>]
                                               Record the owner's resolution of a pending attempt (local files only)
-                                              Move released folders outside migrations/ (dry run by default)
   verify <folder> [...] --env <env> [--phase pre|post|both] [--only-failed]
          [--format text|json] [--jobs N]     Evaluate migration checks read-only
   query --env <env> --connection <profile> [--file <path> | SQL]

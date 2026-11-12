@@ -83,6 +83,10 @@ def open_attempt_states(states: Sequence[str]) -> tuple[str, ...]:
         elif state.startswith("attempt:"):
             if not state.startswith(("attempt:apply-not-started:", "attempt:frozen:")):
                 result.append(state)
+        elif state.startswith("attempt-event-no-write-evidence-unavailable:"):
+            # The attempt is closed as apply-not-started and only its retained log is gone. The
+            # command resolves pending attempts, so it has nothing to do here.
+            continue
         elif state.startswith(("attempt-", "scratch-")):
             result.append(state)
     return tuple(result)

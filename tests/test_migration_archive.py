@@ -631,6 +631,10 @@ class NoWriteAndUnknownArchiveTests(unittest.TestCase):
         with self.assertRaises(archive.MigrationArchiveError) as refused:
             archive.archive_migrations(self.root, [self.PENDING, self.VERIFIED, self.NOT_STARTED], preserve_unresolved=False, skip_refused=False)
         self.assertIn("2026-10-14_archive-family-r004", str(refused.exception))
+        # Its attempt is closed, so the refusal must not send the owner to a command that would refuse it.
+        r004 = next(line for line in str(refused.exception).splitlines() if "2026-10-14_archive-family-r004" in line)
+        self.assertNotIn("reconcile-migration", r004)
+        self.assertIn("--preserve-unresolved", r004)
 
     def test_preserve_unresolved_archives_an_unknown_lock_without_calling_it_accepted(self) -> None:
         plan = archive.archive_migrations(self.root, [self.PENDING, self.VERIFIED, self.NOT_STARTED], preserve_unresolved=True)
