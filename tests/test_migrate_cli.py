@@ -1,4 +1,5 @@
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -482,6 +483,42 @@ class MigrateCliTests(unittest.TestCase):
 
                 with self.assertRaisesRegex(MigrationApplyError, "durable receipt/attempt evidence"):
                     _verify_receipts_and_attempts(self.root, (migration,), identity)
+
+    def test_a_resolved_folder_stays_refused_and_the_refusal_names_the_reconcile_command(self):
+        try:
+            from scripts import migration_resolution
+        except ImportError as error:
+            self.fail(f"scripts/migration_resolution.py is not implemented yet: {error}")
+        folder = self.add_folder("2026-10-14_resolved-r001", {"001-create-table.sql": "CREATE TABLE T (ID NUMBER);\n"})
+        migration = self.load(folder.name)[0]
+        target = self.target("dev")
+        identity, events = self.write_attempt_chain(migration, target, "pending")
+        evidence = self.root / "evidence" / "owner-check.txt"
+        evidence.parent.mkdir()
+        evidence.write_bytes(b"Owner check: sanitized output only.\n")
+        record = {
+            "schemaVersion": 1,
+            "environment": "dev",
+            "outcome": "failed-no-target-effect",
+            "attemptId": events[0]["attemptId"],
+            "runId": events[0]["runId"],
+            "payloadDigest": migration.payload_digest,
+            "checksSha256": migration.checks_sha256,
+            "target": {
+                "environment": "dev",
+                "connection": identity["connection"],
+                "expected_user": identity["expected_user"],
+                "current_schema": identity["current_schema"],
+            },
+            "evidence": {"path": "evidence/owner-check.txt", "sha256": hashlib.sha256(evidence.read_bytes()).hexdigest()},
+            "recordedAt": "2026-11-11T10:00:00Z",
+        }
+        migration_resolution.write_resolution(folder / "resolution.dev.json", record)
+
+        with self.assertRaises(MigrationApplyError) as raised:
+            _verify_receipts_and_attempts(self.root, (migration,), identity)
+
+        self.assertIn("scripts/team.sh reconcile-migration", str(raised.exception))
 
     def test_verified_event_in_another_schema_does_not_lock_the_selected_schema(self):
         folder = self.add_folder("2026-10-14_schema-scope-r001", {"001-create-table.sql": "CREATE TABLE T (ID NUMBER);\n"})
