@@ -12,9 +12,14 @@ agreed way to stop that.
 - A branch pushed without a pull request runs nothing: open the pull request to get a result.
 
 The jobs are `offline` (Linux, Python 3.10), `offline (latest Python 3.x)` (Linux, the newest Python 3.x, with the same
-compile and behavioural-test steps, plus Graphify (pinned to 0.9.76, the release the setup script can patch) so the Graphify pipeline tests run instead of
+compile and behavioural-test steps, plus the newest Graphify release (the optional `graph` extra) so the Graphify pipeline tests run instead of
 skipping; no lint or other checks), `windows-offline` and `macos-installer`. The full suite takes about 10 minutes on
 Linux and 20 to 30 on Windows.
+
+The Graphify step is not pinned. When a new Graphify release moves the code `scripts/setup_graphify_apx.py` patches,
+that job fails on every pull request until the script is updated: fix the script (its tests are in
+`tests/test_setup_graphify.py`), or pin the release in the workflow for the time being and say so in `TODO.md`. The
+script is verified with Graphify 0.9.76 and 0.9.106.
 
 The `offline` job also runs these two checks, after the shell syntax check and before its tests:
 
