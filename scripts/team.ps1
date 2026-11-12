@@ -71,6 +71,9 @@ Commands:
   revise --check <folder>                     Report whether local attempt/receipt evidence locks a folder
   archive-migrations <folder> [...] [--schema SCHEMA] [--destination DIR] [--reason TEXT] [--yes|-y]
   archive-migrations --all [--keep <folder>...] [--schema SCHEMA] [--destination DIR] [--reason TEXT] [--yes|-y]
+  reconcile-migration <folder> --env dev|staging|prod --outcome <outcome> --evidence <file>
+           [--attempt <id>] [--superseded-by <folder>]
+                                              Record the owner's resolution of a pending attempt (local files only)
                                               Move released folders outside migrations/ (dry run by default)
   verify <folder> [...] --env <env> [--phase pre|post|both] [--only-failed]
          [--format text|json] [--jobs N]     Evaluate migration checks read-only
@@ -114,7 +117,7 @@ Commands:
   template-status [--format text|json] [--upstream --ref <ref>]
                                               Inspect local template drift; fetch upstream only when requested
 Options:
-  --schema <NAME>                             Run one configured schema (except upgrade-template, verify-local, template-status, migration-plan, archive-migrations, dev-test, skills, mcp and feature)
+  --schema <NAME>                             Run one configured schema (except upgrade-template, verify-local, template-status, migration-plan, archive-migrations, dev-test, skills, mcp, feature and reconcile-migration)
   --help                                      Show this help
 Environment:
   MIGRATION_PREFLIGHT_INVENTORY_RETRIES        Retry changing live catalogs (default 3)
@@ -242,7 +245,7 @@ if ($Command -in @("--help", "-h")) {
 
 # --schema NAME is the one selection channel: strip it and set PROJECT_SCHEMA so
 # every child script's loader narrows to that schema.
-if ($Command -notin @("upgrade-template", "verify-local", "template-status", "migration-plan", "archive-migrations", "dev-test", "skills", "mcp", "feature")) {
+if ($Command -notin @("upgrade-template", "verify-local", "template-status", "migration-plan", "archive-migrations", "dev-test", "skills", "mcp", "feature", "reconcile-migration")) {
   $schemaFiltered = @()
   for ($index = 0; $index -lt $Arguments.Count; $index++) {
     if ($Arguments[$index] -eq "--schema") {
@@ -426,6 +429,23 @@ try {
         }
       }
       Invoke-TeamBash -ScriptName "team.sh" -ScriptArguments (@("archive-migrations") + $archiveArguments)
+    }
+    "reconcile-migration" {
+      if ($Arguments.Count -lt 1) { Fail "usage: scripts/team.ps1 reconcile-migration <folder> --env dev|staging|prod --outcome <outcome> --evidence <file> [--attempt <id>] [--superseded-by <folder>]" }
+      $reconcileArguments = @($Arguments)
+      for ($reconcileIndex = 0; $reconcileIndex -lt $reconcileArguments.Count; $reconcileIndex++) {
+        $reconcileValue = [string] $reconcileArguments[$reconcileIndex]
+        if ($reconcileValue -ceq "--evidence" -and $reconcileIndex + 1 -lt $reconcileArguments.Count) {
+          $reconcileIndex++
+          $reconcileArguments[$reconcileIndex] = ConvertTo-MigrationFolderArgument ([string] $reconcileArguments[$reconcileIndex])
+        } elseif ($reconcileValue.StartsWith("--evidence=", [System.StringComparison]::Ordinal)) {
+          $evidenceValue = $reconcileValue.Substring("--evidence=".Length)
+          $reconcileArguments[$reconcileIndex] = "--evidence=" + (ConvertTo-MigrationFolderArgument $evidenceValue)
+        } elseif (-not $reconcileValue.StartsWith("-") -and $reconcileIndex -eq 0) {
+          $reconcileArguments[$reconcileIndex] = ConvertTo-MigrationFolderArgument $reconcileValue
+        }
+      }
+      Invoke-TeamBash -ScriptName "team.sh" -ScriptArguments (@("reconcile-migration") + $reconcileArguments)
     }
     "dev-test" {
       Invoke-TeamBash -ScriptName "dev_test.sh" -ScriptArguments $Arguments

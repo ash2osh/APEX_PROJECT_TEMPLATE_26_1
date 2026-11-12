@@ -59,7 +59,7 @@ def migration_archive_checkout(parent: Path):
     scripts.mkdir(parents=True)
     names = (
         "team.sh", "team.ps1", "resolve_python.ps1", "__init__.py", "migration_archive.py",
-        "migration_manifest.py", "migration_revision.py", "migration_attempts.py", "path_utils.py",
+        "migration_manifest.py", "migration_revision.py", "migration_attempts.py", "migration_resolution.py", "path_utils.py",
         "validate_migration.py",
     )
     for name in names:
