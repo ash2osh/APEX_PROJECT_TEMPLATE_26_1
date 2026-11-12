@@ -12,7 +12,7 @@ from collections import defaultdict
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from .path_utils import relative_to_root
 
@@ -119,8 +119,10 @@ def _owner_evidence_path_is_safe(path: object) -> bool:
     """A repository-relative file that is neither under migrations/ nor under the ignored scratch/."""
     if not isinstance(path, str) or not path or "\\" in path:
         return False
-    parsed = Path(path)
-    if parsed.is_absolute() or parsed.as_posix() != path or ".." in parsed.parts:
+    # Judge the text as a POSIX path on every platform: on Windows "/etc/x" has no drive, so Path
+    # would not call it absolute. A colon is refused too (a drive letter, and invalid in Windows names).
+    parsed = PurePosixPath(path)
+    if path.startswith("/") or ":" in path or parsed.as_posix() != path or ".." in parsed.parts:
         return False
     return not (path.startswith(("migrations/", "scratch/")) or path in {"migrations", "scratch"})
 

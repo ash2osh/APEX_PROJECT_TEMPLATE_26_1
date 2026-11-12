@@ -24,7 +24,7 @@ import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from .migration_attempts import (
     RESOLUTION_STATES,
@@ -135,8 +135,9 @@ def repository_path_is_safe(value: object) -> bool:
     """Relative, posix, no parent steps, and neither under migrations/ nor under the ignored scratch/."""
     if not isinstance(value, str) or not value or "\\" in value:
         return False
-    parsed = Path(value)
-    if parsed.is_absolute() or parsed.as_posix() != value or ".." in parsed.parts:
+    # Judged as a POSIX path on every platform; see migration_attempts._owner_evidence_path_is_safe.
+    parsed = PurePosixPath(value)
+    if value.startswith("/") or ":" in value or parsed.as_posix() != value or ".." in parsed.parts:
         return False
     return not (value.startswith(("migrations/", "scratch/")) or value in {"migrations", "scratch"})
 

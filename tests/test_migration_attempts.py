@@ -424,6 +424,8 @@ class OwnerResolutionAttemptTests(unittest.TestCase):
             "scratch path": [dict(good, path="scratch/notes.txt")],
             "parent path": [dict(good, path="../notes.txt")],
             "absolute path": [dict(good, path="/etc/notes.txt")],
+            "drive path": [dict(good, path="C:/notes.txt")],
+            "doubled separator": [dict(good, path="evidence//notes.txt")],
             "backslash path": [dict(good, path="evidence\\notes.txt")],
             "uppercase digest": [dict(good, sha256="E" * 64)],
         }
