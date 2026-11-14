@@ -53,6 +53,27 @@ class PublishAppCliTests(unittest.TestCase):
         helper = ROOT / "scripts" / "sqlcl_safe.sh"
         if helper.exists():
             shutil.copy2(helper, scripts / helper.name)
+        (scripts / "application_lifecycle.sql").write_text("-- fixture\n", encoding="utf-8")
+        (scripts / "application_lifecycle.py").write_text(
+            'import sys, json\n'
+            'from pathlib import Path\n'
+            'a = sys.argv\n'
+            'if "--run-dir" in a:\n'
+            '    r = Path(a[a.index("--run-dir") + 1])\n'
+            '    r.mkdir(parents=True, exist_ok=True)\n'
+            '    if a[1] == "capture":\n'
+            '        identity = {"db_unique_name": "FREE", "service_name": "freepdb1", "container_id": "3", "container_name": "FREEPDB1", "edition": "ORA$BASE", "server_host": "docker", "session_user": "DEMO", "current_schema": "DEMO"}\n'
+            '        (r / "lifecycle-snapshot.json").write_text(json.dumps({"identity": identity}), encoding="utf-8")\n'
+            '    elif a[1] == "verify":\n'
+            '        (r / "lifecycle-report.json").write_text("verified", encoding="utf-8")\n'
+            '        if "--summary-path" in a:\n'
+            '            p = Path(a[a.index("--summary-path") + 1])\n'
+            '            if p.exists():\n'
+            '                d = json.loads(p.read_text(encoding="utf-8"))\n'
+            '                d["lifecycleStatus"] = "verified"\n'
+            '                p.write_text(json.dumps(d), encoding="utf-8")\n',
+            encoding="utf-8",
+        )
         shutil.copy2(ROOT / ".env.example", root / ".env")
 
         app = root / "apps" / "DEMO" / "100"
@@ -782,14 +803,14 @@ class PublishAppCliTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             arguments = sql_log.read_text(encoding="utf-8").splitlines()
-            self.assertEqual(arguments[-1], "P.2026-09-26T08:00:00." + b"Release 1.0".hex().upper())
+            self.assertEqual(arguments[-9], "P.2026-09-26T08:00:00." + b"Release 1.0".hex().upper())
 
             forced = subprocess.run(
                 [BASH, str(runner), "100", "--force"], cwd=root, env=environment,
                 text=True, capture_output=True, check=False,
             )
             self.assertEqual(forced.returncode, 0, forced.stdout + forced.stderr)
-            self.assertEqual(sql_log.read_text(encoding="utf-8").splitlines()[-1], "-")
+            self.assertEqual(sql_log.read_text(encoding="utf-8").splitlines()[-9], "-")
 
     def make_unexported_app(self, root: Path, *, app_exists: bool):
         """A stateful fixture whose app was never exported, in a target that has it or not."""
@@ -815,7 +836,7 @@ class PublishAppCliTests(unittest.TestCase):
             self.assertIn("does not exist in the target yet", result.stdout)
             # The import session re-reads the live app before importing, so an app
             # created after the drift check is refused instead of overwritten.
-            self.assertEqual(sql_log.read_text(encoding="utf-8").splitlines()[-1], "ABSENT")
+            self.assertEqual(sql_log.read_text(encoding="utf-8").splitlines()[-9], "ABSENT")
             self.assertTrue((app / "apex-team-export.json").is_file(), "the publish should record the baseline")
 
     def test_publish_of_an_unexported_app_that_exists_in_the_target_is_refused_before_any_import(self) -> None:
@@ -943,7 +964,7 @@ class PublishAppCliTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertEqual(
-                sql_log.read_text(encoding="utf-8").splitlines()[-1],
+                sql_log.read_text(encoding="utf-8").splitlines()[-9],
                 "P.2026-09-26T08:00:00." + b"Release 1.0".hex().upper(),
             )
 
@@ -961,7 +982,7 @@ class PublishAppCliTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertIn("does not exist in the target yet", result.stdout)
-            self.assertEqual(sql_log.read_text(encoding="utf-8").splitlines()[-1], "ABSENT")
+            self.assertEqual(sql_log.read_text(encoding="utf-8").splitlines()[-9], "ABSENT")
             self.assertTrue((app / "apex-team-export.json").is_file(), "the publish should record the baseline")
 
     def test_powershell_import_that_clears_builder_timestamp_publishes(self) -> None:
@@ -1154,6 +1175,27 @@ class PublishAppCliTests(unittest.TestCase):
                     "stamp_publish_version.py",
                 ):
                     shutil.copy2(ROOT / "scripts" / name, scripts / name)
+                (scripts / "application_lifecycle.sql").write_text("-- fixture\n", encoding="utf-8")
+                (scripts / "application_lifecycle.py").write_text(
+                    'import sys, json\n'
+                    'from pathlib import Path\n'
+                    'a = sys.argv\n'
+                    'if "--run-dir" in a:\n'
+                    '    r = Path(a[a.index("--run-dir") + 1])\n'
+                    '    r.mkdir(parents=True, exist_ok=True)\n'
+                    '    if a[1] == "capture":\n'
+                    '        identity = {"db_unique_name": "FREE", "service_name": "freepdb1", "container_id": "3", "container_name": "FREEPDB1", "edition": "ORA$BASE", "server_host": "docker", "session_user": "DEMO", "current_schema": "DEMO"}\n'
+                    '        (r / "lifecycle-snapshot.json").write_text(json.dumps({"identity": identity}), encoding="utf-8")\n'
+                    '    elif a[1] == "verify":\n'
+                    '        (r / "lifecycle-report.json").write_text("verified", encoding="utf-8")\n'
+                    '        if "--summary-path" in a:\n'
+                    '            p = Path(a[a.index("--summary-path") + 1])\n'
+                    '            if p.exists():\n'
+                    '                d = json.loads(p.read_text(encoding="utf-8"))\n'
+                    '                d["lifecycleStatus"] = "verified"\n'
+                    '                p.write_text(json.dumps(d), encoding="utf-8")\n',
+                    encoding="utf-8",
+                )
                 shutil.copy2(ROOT / ".env.example", root / ".env")
                 app = root / "apps" / "DEMO" / "100"
                 deployments = app / "deployments"

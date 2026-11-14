@@ -1,0 +1,1744 @@
+diff --git a/.agents/rules/agent-safety.md b/.agents/rules/agent-safety.md
+index 7c92152..1e85fa3 100644
+--- a/.agents/rules/agent-safety.md
++++ b/.agents/rules/agent-safety.md
+@@ -38 +38 @@
+-  developer typed for the run. An agent never sets `TEAM_ACK_FROM_STDIN`, which only the live tests use.
++  developer typed for the run. An agent never sets `TEAM_ACK_FROM_STDIN`; it does not bypass terminal-only acknowledgments.
+diff --git a/README.md b/README.md
+index 36cdae0..db42963 100644
+--- a/README.md
++++ b/README.md
+@@ -284,2 +284,2 @@ for the privilege and command limits.
+-| `publish <id>` | Requires the app folder, descriptor, and live app parsing schema to agree and be listed, then uses that schema's connection. The drift guard, version stamp, and byte-equality verification remain unchanged. |
+-| `deploy <id> --env staging\|prod` | The descriptor's `parsingSchema` selects the same-named staging or production entry. Confirmation shows the schema and connection. |
++| `publish <id>` | Imports to shared DEV only (`scripts/team.sh publish <id> [--env dev]`). Requires the app folder, descriptor, and live app parsing schema to agree and be listed, then uses that schema's connection. The drift guard, version stamp, and byte-equality verification remain unchanged. Promotion to staging or production uses `deploy`. |
++| `deploy <id> --env staging\|prod` | Confirms promotion to staging or production or prints a DBA runbook (`--manual`). The descriptor's `parsingSchema` selects the same-named staging or production entry. Confirmation shows the schema and connection. |
+@@ -477 +477 @@ between environments, so these settings are explicit and never inferred from
+-DEV. Direct staging and production applies require interactive confirmation, unless the operator passes `--confirm-target <db_unique_name>` with the observed database name. `--confirm-target <db_unique_name>` skips that prompt only when the value equals the observed `db_unique_name` exactly. A mismatch refuses before any write. `-y` / `--yes` accepts the same prompt on DEV and staging; on production it is refused unless `--confirm-target` also matches the observed name. `migrate`, `rollout`, `publish` and `deploy` take these flags. A `[y/N]` prompt is answered at a terminal or by a flag: piped or redirected answers are refused. `-y` never replaces the typed `RECONCILE` and `RECONCILE-RUN` acknowledgments, the `Press Enter` pause, `publish --force` or the browser MCP menu.
++DEV. Direct staging and production applies require interactive confirmation, unless the operator passes `--confirm-target <db_unique_name>` with the observed database name. `--confirm-target <db_unique_name>` skips that prompt only when the value equals the observed `db_unique_name` exactly. A mismatch refuses before any write. `-y` / `--yes` accepts the same prompt on DEV and staging; on production it is refused unless `--confirm-target` also matches the observed name. `migrate`, `rollout`, and `deploy` take these flags (as does the internal `publish_app` helper when called by `deploy`). `scripts/team.sh publish` targets DEV only and skips interactive prompts. A `[y/N]` prompt is answered at a terminal or by a flag: piped or redirected answers are refused. `-y` never replaces the typed `RECONCILE` and `RECONCILE-RUN` acknowledgments, the `Press Enter` pause, `publish --force` or the browser MCP menu.
+diff --git a/docs/GETTING_STARTED.md b/docs/GETTING_STARTED.md
+index 74d3cbd..8d1819f 100644
+--- a/docs/GETTING_STARTED.md
++++ b/docs/GETTING_STARTED.md
+@@ -362 +362 @@ git add apps/ && git commit -m "Change the dashboard title"
+-3. Publish. You do not need to commit first: publish imports the files as
++3. Publish to DEV. `scripts/team.sh publish` targets DEV only (promotions to staging or production use `deploy`). You do not need to commit first: publish imports the files as
+diff --git a/docs/live-feature-tests.md b/docs/live-feature-tests.md
+index 774cbfe..d13d0a2 100644
+--- a/docs/live-feature-tests.md
++++ b/docs/live-feature-tests.md
+@@ -80,3 +80,4 @@ The production profile is the same database as DEV, so one name serves both. If
+-refused by the name rule. The two typed acknowledgments (`RECONCILE` and `RECONCILE-RUN`) read their
+-answers from redirected input only when the child environment sets `TEAM_ACK_FROM_STDIN=1`; only this
+-module sets it. Piped `y` answers are no longer accepted by any prompt.
++refused by the name rule. The two typed acknowledgments (`RECONCILE` and `RECONCILE-RUN`) are terminal-only
++and cannot be bypassed via environment variables or redirected input.
++The two live reconciliation scenarios are skipped by the automated suite; a developer must perform
++those checks manually and type the acknowledgment. Piped `y` answers are no longer accepted by any prompt.
+diff --git a/docs/migration-attempt-resolution.md b/docs/migration-attempt-resolution.md
+index 7fdcea9..8783c18 100644
+--- a/docs/migration-attempt-resolution.md
++++ b/docs/migration-attempt-resolution.md
+@@ -132,2 +132,2 @@ the run as resolved.
+-- It does not accept an acknowledgment from a pipe, a file or an agent, except the test-only
+-  `TEAM_ACK_FROM_STDIN=1` path used by the opt-in live tests.
++- It does not accept an acknowledgment from a pipe, a file, an environment variable or an agent:
++  acknowledgments are terminal-only.
+@@ -156 +156 @@ Nothing is written on any refusal. Each refusal exits 2 and says why:
+-| Pending attempt, no resolution | No: refused, the refusal names the command | With `--preserve-unresolved`: `unresolved (preserved)`. With `--allow-unverified-attempts`: `attempt-without-verified-receipt (accepted)` |
++| Pending attempt, no resolution | Refused unless a verified receipt for the same environment and complete target identity can be matched unambiguously to the attempt | With `--preserve-unresolved`: `unresolved (preserved)`. With `--allow-unverified-attempts`: `attempt-without-verified-receipt (accepted)` |
+diff --git a/docs/publish-rules.md b/docs/publish-rules.md
+index 5b98a79..7117f60 100644
+--- a/docs/publish-rules.md
++++ b/docs/publish-rules.md
+@@ -4 +4,4 @@
+-app folder, committed or not, into the shared DEV app. The shared database is
++app folder, committed or not, into the shared DEV app. The public wrapper command
++`publish` targets DEV only; promotions to staging or production use `scripts/team.sh deploy <id> --env <staging|prod>`.
++The underlying `publish_app.sh`/`publish_app.ps1` script is an internal implementation helper
++used by `publish` for DEV and `deploy` for promotions. The shared database is
+diff --git a/docs/superpowers/plans/2026-11-14-review-safety-fixes.md b/docs/superpowers/plans/2026-11-14-review-safety-fixes.md
+new file mode 100644
+index 0000000..2eaf4ae
+--- /dev/null
++++ b/docs/superpowers/plans/2026-11-14-review-safety-fixes.md
+@@ -0,0 +1,80 @@
++# Review Safety Fixes Implementation Plan
++
++> **For agentic workers:** The user selected an AGY CLI implementer and a separate Codex review. Repository workflow-pack selection is `none`; do not install or enable one. Use the task checkboxes as tracking.
++
++**Goal:** Fix the eight verified review findings at `aa9462e` without weakening the existing publication, migration, and identity guards.
++
++**Architecture:** Bind each approved rollout target to its actual writer, fail closed when publication lifecycle verification is unavailable, evaluate migration evidence per environment and target, and make baseline SQL retargeting lexical and conservative. Remove the acknowledgement bypass and align the public-command documentation with the wrappers.
++
++**Tech stack:** Python, Bash, PowerShell, unittest, Oracle SQL/APEX metadata. The review report in the parent conversation is the specification; the concrete reproductions and acceptance criteria below are authoritative for this handoff.
++
++## Global constraints
++
++- Work only in this checkout. Do not connect to a database, container, SQLcl saved connection, or live target; do not print secrets.
++- Read `AGENTS.md`, `AGENTS.project.md`, `.agents/rules/project.md`, `.agents/rules/agent-safety.md`, and `docs/known-limitations.md`. Do not fix accepted limitations unless the requested issue demonstrably exceeds them.
++- No commits, pushes, PRs, remote actions, changes to `main`, or separate branches; Codex owns review and delivery.
++- Agent never types a real `RECONCILE-MIGRATION` or `RECONCILE-RUN` acknowledgement, and never sets `TEAM_ACK_FROM_STDIN`. Tests must use in-process mocks or synthetic terminal fixtures, not a real acknowledgement or database.
++- Keep existing documented production and DEV safeguards and Bash/PowerShell parity. Never relax assertions, fake test results, skip failing tests, or change known-flaky lists to obtain a pass.
++- No new deployment or DB operation; generated SQL may be examined through offline tests only. Explain any uncertainty rather than claiming a live check passed.
++- Use focused tests first. Leave the complete implementation and test evidence for Codex to review. Prefer preserving existing public APIs and supported behavior; refuse unsafe or unparseable input rather than guessing.
++
++## Review focus
++
++- Alias or service switches between approval, step preflight, and writer session; multi-step and capsule paths.
++- A valid receipt and an unresolved attempt for different environments, and multiple attempts in one environment.
++- Missing, incomplete, or failing lifecycle helpers in both entry points.
++- SQL q-quoted literals, embedded apostrophes, schema-looking literal text, escaped identifiers, comments, and unsupported DDL.
++- Target schema differs from source, including table defaults, view references, bitmap indexes, and unsupported metadata forms.
++
++## Task 1: Bind rollout confirmation to writes
++
++**Files:** `scripts/rollout.py`, `scripts/rollout_capsule.py`, relevant migration helpers and `tests/test_rollout*.py`, `tests/test_release_capsule.py`.
++
++- [x] Add offline regressions for legacy and capsule production rollouts where approval observes `DB_A` and a later preflight or actual writer observes `DB_B` under the same alias/user. SQL-script, ORDS, migration, and app-deploy paths must refuse before the first payload statement. Cover matching identities, multiple targets and missing identity too.
++- [x] Ensure the production name explicitly confirmed at the manifest gate is compared with each actual step's independently observed identity and ultimately in its writer session before executing a payload. Preserve existing stronger complete-identity checks and make the migration child receive/revalidate the approved name or complete approved identity without creating a second misleading confirmation. Do not silently convert a human approval to a different target.
++- [x] Run the relevant focused rollout and identity tests. Record actual results.
++
++## Task 2: Archive per-environment unresolved evidence
++
++**Files:** `scripts/migration_archive.py`, `scripts/migration_revision.py` if needed, `tests/test_migration_archive.py`, relevant archive documentation.
++
++- [x] Add a fixture with a validated DEV receipt and a pending STAGING attempt; default archive must refuse and make no changes. Cover a separate PROD attempt, same-environment matching verified receipt, unresolved and malformed/unknown evidence, and `--preserve-unresolved` retaining the folder and unresolved evidence at its archive destination.
++- [x] Match receipts and terminal attempts to their own environment and target identity. A verified result for one target must never resolve or hide a different target's pending/unknown attempt. Preserve justified same-attempt receipt handling and the existing explicit override semantics.
++- [x] Run archive, resolution, attempt and revision focused tests.
++
++## Task 3: Require lifecycle verification
++
++**Files:** `scripts/publish_app.sh`, `scripts/publish_app.ps1`, `tests/test_publish_lifecycle_gate.py`, `tests/test_publish_cli.py`, `tests/test_publication_identity.py`.
++
++- [x] Add both-shell regressions: missing either lifecycle helper refuses before any import and cannot advance a DEV baseline; failing capture or verification refuses and keeps appropriate recovery evidence. Test staging, DEV and the promotion path using fake SQLcl only.
++- [x] Make both helpers mandatory for an actual import; never bypass lifecycle capture, automation restoration, identity pinning or post-verification merely because files are absent. Keep read-only `--describe` and documented manual paths usable as appropriate, and preserve equivalent errors/exit codes.
++- [x] Replace success fixtures that omit required helpers with realistic fake lifecycle fixtures; do not weaken their assertions. Run publication and lifecycle tests.
++
++## Task 4: Baseline SQL mapping and quoting
++
++**Files:** `scripts/baseline_bundles.py`, `scripts/baseline_sql.py` and focused baseline tests/documentation as needed.
++
++- [x] Test a new target table whose default uses `"DEV"."SEQ".NEXTVAL`, a view referencing `"DEV"."CUSTOMERS"`, and `CREATE BITMAP INDEX "DEV"."IX" ON "DEV"."T"`. Each generated statement must address the selected target schema or generation must refuse with an actionable review message. No executable source-owner reference may leak silently.
++- [x] Test an ALTER CHECK containing `q'[it's DEV.X]'`, paired and unpaired q delimiters, doubled quotes, comments, quoted identifiers and escaped identifier quotes. Literal and comment bytes must remain unchanged while actual schema identifiers are handled safely; unsupported syntax must fail closed.
++- [x] Implement one lexical, quote-aware mapping strategy shared by table statements, indexes and views, or conservatively reject forms that cannot be mapped without changing semantics. Preserve external-schema references and exact stored-source contracts; do not replace text blindly inside PL/SQL literals or comments. Ensure relevant checks detect mismapped output where possible.
++- [x] Run the baseline and SQL-quoting test modules using fake fixtures only.
++
++## Task 5: Make acknowledgments terminal-only
++
++**Files:** `scripts/terminal_confirm.py`, acknowledgment consumers, `tests/test_terminal_confirm.py` and relevant test/live-test documentation.
++
++- [x] Add tests proving redirected input is refused for every acknowledgement even if `TEAM_ACK_FROM_STDIN` is present, while synthetic terminal input works. Ensure yes/no flags do not substitute for acknowledgments.
++- [x] Remove the environment-variable bypass in production code and update tests/docs. If opt-in live tests need a terminal, adapt their harness to use a real pseudo-terminal or document a manual-only limitation; do not run live tests, and do not leave another environment-variable bypass.
++- [x] Run terminal confirmation, migration resolution and feature recovery focused tests.
++
++## Task 6: Public command documentation
++
++**Files:** `README.md`, `docs/publish-rules.md`, `docs/GETTING_STARTED.md`, documentation contract tests.
++
++- [x] Make the public `team.sh`/`team.ps1` contract explicit: `publish` targets DEV; `deploy` targets staging or production. Clarify any internal helper usage and make confirmation flags accurate. Check the reviewed docs against `team.sh --help` and the real parsers.
++- [x] Add or update a documentation contract test for this distinction and run it.
++
++## Handoff verification
++
++- [x] Run focused tests and `python3 scripts/pre_push_check.py --all`; report exit statuses and missing tools. Set an external Python cache path if necessary.
++- [x] Report changed files, tests and known gaps. Do not connect to live systems, commit, push or open a PR. Codex will independently review, run the required pre-push check, commit, push and open the PR.
+diff --git a/scripts/baseline_bundles.py b/scripts/baseline_bundles.py
+index d22e9d5..954fe39 100644
+--- a/scripts/baseline_bundles.py
++++ b/scripts/baseline_bundles.py
+@@ -15 +15 @@ from decimal import Decimal
+-from .baseline_sql import _check, _q_literal, _safe_check_slug, _sql_identifier, _sql_literal
++from .baseline_sql import _check, _q_literal, _safe_check_slug, _sql_identifier, _sql_literal, retarget_sql_identifiers, sql_tokens
+@@ -40,13 +40,3 @@ def _split_ddl_statements(ddl: str) -> list[str]:
+-    start = depth = index = 0
+-    quote = ""
+-    while index < len(text):
+-        character = text[index]
+-        if quote:
+-            if character == quote:
+-                if text[index + 1:index + 2] == quote:
+-                    index += 1
+-                else:
+-                    quote = ""
+-        elif character in "'\"":
+-            quote = character
+-        elif character == "(":
++    start = depth = offset = 0
++    for kind, token in sql_tokens(text):
++        if kind == "symbol" and token == "(":
+@@ -54 +44 @@ def _split_ddl_statements(ddl: str) -> list[str]:
+-        elif character == ")":
++        elif kind == "symbol" and token == ")":
+@@ -56,9 +46,12 @@ def _split_ddl_statements(ddl: str) -> list[str]:
+-        elif character == "\n" and depth <= 0:
+-            following = index + 1
+-            while following < len(text) and text[following] in "\r\n":
+-                following += 1
+-            if following < len(text) and _STATEMENT_START.match(text, following):
+-                statements.append(text[start:index])
+-                start = index = following
+-                continue
+-        index += 1
++        elif (kind == "space" or (kind == "comment" and token.startswith("--"))) and depth <= 0:
++            for position, character in enumerate(token):
++                index = offset + position
++                if character != "\n" or index < start:
++                    continue
++                following = index + 1
++                while following < len(text) and text[following] in "\r\n":
++                    following += 1
++                if following < len(text) and _STATEMENT_START.match(text, following):
++                    statements.append(text[start:index])
++                    start = following
++        offset += len(token)
+@@ -83,0 +77,8 @@ def _wrap_guarded_ddl(exists_query: str, ddl: str) -> str:
++def _matches_schema(ident: str, schema: str) -> bool:
++    if ident == _sql_identifier(schema):
++        return True
++    if re.fullmatch(r"[A-Za-z][A-Za-z0-9_$#]*", schema) and ident.upper() == schema.upper():
++        return True
++    return False
++
++
+@@ -96,5 +97,6 @@ def _replace_create_header(ddl: str, object_type: str, source_schema: str, targe
+-        pattern = re.compile(rf"(?is)(\bCREATE\s+(?:UNIQUE\s+)?INDEX\s+){identifier}\s*\.\s*{identifier}(\s+ON\s+){identifier}\s*\.\s*{identifier}")
+-        return pattern.sub(
+-            lambda match: f'{match.group(1)}{_sql_identifier(target_schema)}.{match.group(3)}{match.group(4)}{_sql_identifier(target_schema)}.{match.group(6)}',
+-            ddl, count=1,
+-        )
++        pattern = re.compile(rf"(?is)(\bCREATE\s+(?:(?:UNIQUE|BITMAP)\s+)?INDEX\s+){identifier}\s*\.\s*{identifier}(\s+ON\s+){identifier}\s*\.\s*{identifier}")
++        def _replace_index(match):
++            idx_owner = _sql_identifier(target_schema) if _matches_schema(match.group(2), source_schema) else match.group(2)
++            tbl_owner = _sql_identifier(target_schema) if _matches_schema(match.group(5), source_schema) else match.group(5)
++            return f'{match.group(1)}{idx_owner}.{match.group(3)}{match.group(4)}{tbl_owner}.{match.group(6)}'
++        return pattern.sub(_replace_index, ddl, count=1)
+@@ -745,12 +747 @@ def _retarget_statement(statement: str, source_schema: str, target_schema: str)
+-    if source_schema == target_schema:
+-        return statement
+-    target_name = _sql_identifier(target_schema)
+-    patterns = _schema_qualifier_patterns(source_schema)
+-    pieces = re.split(r"('(?:[^']|'')*')", statement)  # the odd entries are the string literals
+-    for position in range(0, len(pieces), 2):
+-        for pattern in patterns:
+-            pieces[position] = pattern.sub(lambda match: target_name + match.group(1), pieces[position])
+-    result = "".join(pieces)
+-    if any(pattern.search(piece) for piece in re.split(r"('(?:[^']|'')*')", result)[::2] for pattern in patterns):
+-        raise baseline.BaselineError("a table statement still names the source schema and needs a reviewed migration")
+-    return result
++    return retarget_sql_identifiers(statement, source_schema, target_schema)
+@@ -765 +756,2 @@ def _table_statements(raw_ddl: str, source_schema: str, target_schema: str) -> l
+-    return [header, *(_retarget_statement(statement, source_schema, target_schema) for statement in statements[1:])]
++    header = retarget_sql_identifiers(header, source_schema, target_schema)
++    return [header, *(retarget_sql_identifiers(statement, source_schema, target_schema) for statement in statements[1:])]
+@@ -922,0 +915 @@ def _structure_bundle(config: Mapping, source_schema: str, target_schema: str, s
++        ddl = retarget_sql_identifiers(ddl, source_schema, target_schema)
+@@ -934,0 +928 @@ def _structure_bundle(config: Mapping, source_schema: str, target_schema: str, s
++            ddl = retarget_sql_identifiers(ddl, source_schema, target_schema)
+@@ -1055,0 +1050 @@ def _code_bundle(config: Mapping, source_schema: str, target_schema: str, source
++        mapped_ddl = retarget_sql_identifiers(mapped_ddl, source_schema, target_schema)
+diff --git a/scripts/baseline_sql.py b/scripts/baseline_sql.py
+index 6962bb0..fa4d3f3 100644
+--- a/scripts/baseline_sql.py
++++ b/scripts/baseline_sql.py
+@@ -51,0 +52,107 @@ def _safe_check_slug(value: str) -> str:
++
++
++def sql_tokens(sql: str) -> list[tuple[str, str]]:
++    """Tokenize SQL while retaining exact bytes, including comments and Oracle q quotes."""
++    from . import baseline
++
++    tokens: list[tuple[str, str]] = []
++    i = 0
++    while i < len(sql):
++        start = i
++        char = sql[i]
++        if char.isspace():
++            i += 1
++            while i < len(sql) and sql[i].isspace():
++                i += 1
++            kind = "space"
++        elif sql.startswith("--", i):
++            end = sql.find("\n", i + 2)
++            i = len(sql) if end < 0 else end + 1
++            kind = "comment"
++        elif sql.startswith("/*", i):
++            end = sql.find("*/", i + 2)
++            if end < 0:
++                raise baseline.BaselineError("unclosed block comment in SQL statement")
++            i = end + 2
++            kind = "comment"
++        elif sql[i:i + 2].lower() == "q'" or sql[i:i + 3].lower() == "nq'":
++            prefix = 2 if sql[i:i + 2].lower() == "q'" else 3
++            if i + prefix >= len(sql) or sql[i + prefix].isspace():
++                raise baseline.BaselineError("invalid q-quote delimiter in SQL statement")
++            opening = sql[i + prefix]
++            closing = {"[": "]", "{": "}", "<": ">", "(": ")"}.get(opening, opening)
++            end = sql.find(closing + "'", i + prefix + 1)
++            if end < 0:
++                raise baseline.BaselineError("unclosed q-quote literal in SQL statement")
++            i = end + 2
++            kind = "literal"
++        elif char in "'\"":
++            i += 1
++            while i < len(sql):
++                if sql[i] == char:
++                    if i + 1 < len(sql) and sql[i + 1] == char:
++                        i += 2
++                    else:
++                        i += 1
++                        break
++                else:
++                    i += 1
++            else:
++                raise baseline.BaselineError("unclosed quoted text in SQL statement")
++            kind = "identifier" if char == '"' else "literal"
++        elif char.isalnum() or char in "_$#":
++            i += 1
++            while i < len(sql) and (sql[i].isalnum() or sql[i] in "_$#"):
++                i += 1
++            kind = "word"
++        else:
++            i += 1
++            kind = "symbol"
++        tokens.append((kind, sql[start:i]))
++    return tokens
++
++
++def retarget_sql_identifiers(sql: str, source_schema: str, target_schema: str) -> str:
++    """Map actual source-owner tokens, retaining literal and comment text verbatim.
++
++    A view may use the source schema's name as a table alias. Refuse ambiguous
++    qualified expressions rather than silently rewriting an alias as an owner.
++    """
++    from . import baseline
++
++    if not isinstance(sql, str) or not source_schema or not target_schema:
++        raise baseline.BaselineError("SQL and schema names must be non-empty strings")
++    if source_schema == target_schema:
++        return sql
++    tokens = sql_tokens(sql)
++    significant = [i for i, (kind, _) in enumerate(tokens) if kind not in {"space", "comment"}]
++    words = [tokens[i][1].upper() for i in significant[:8] if tokens[i][0] == "word"]
++    is_view = bool(words and words[0] == "CREATE" and "VIEW" in words)
++    def matches(kind: str, text: str) -> bool:
++        return (kind == "identifier" and text == _sql_identifier(source_schema)) or (
++            kind == "word" and text.upper() == source_schema.upper()
++        )
++
++    if is_view:
++        for pos, index in enumerate(significant):
++            kind, text = tokens[index]
++            if not matches(kind, text):
++                continue
++            previous = tokens[significant[pos - 1]][1] if pos else ""
++            following = tokens[significant[pos + 1]][1] if pos + 1 < len(significant) else ""
++            if previous != "." and following != ".":
++                raise baseline.BaselineError("ambiguous source-schema name in view; review the migration")
++
++    result = list(tokens)
++    for pos, index in enumerate(significant):
++        kind, text = tokens[index]
++        if not matches(kind, text) or pos + 1 >= len(significant):
++            continue
++        previous = tokens[significant[pos - 1]][1] if pos else ""
++        following = tokens[significant[pos + 1]][1]
++        if following != "." or previous in {".", ":"}:
++            continue
++        if is_view and previous.upper() not in {"VIEW", "FROM", "JOIN"}:
++            raise baseline.BaselineError("ambiguous source-schema qualifier in view; review the migration")
++        result[index] = (kind, _sql_identifier(target_schema))
++    return "".join(text for _, text in result)
+diff --git a/scripts/migrate.py b/scripts/migrate.py
+index b37e10f..e74a9a5 100644
+--- a/scripts/migrate.py
++++ b/scripts/migrate.py
+@@ -952,0 +953,2 @@ def apply_batch(
++    expected_db_unique_name: str | None = None,
++    rollout_confirmed_by: str | None = None,
+@@ -1009,0 +1012,3 @@ def apply_batch(
++            if expected_db_unique_name is not None and observed_name != expected_db_unique_name:
++                print("migration error: rollout target changed after confirmation; no writes were attempted.", file=sys.stderr)
++                return 2
+@@ -1029,2 +1034,2 @@ def apply_batch(
+-                run_manifest["confirmation"] = "terminal"
+-                run_manifest["confirmedBy"] = "terminal"
++                run_manifest["confirmation"] = "flag" if rollout_confirmed_by and rollout_confirmed_by != "terminal" else "terminal"
++                run_manifest["confirmedBy"] = rollout_confirmed_by or "terminal"
+@@ -1342,0 +1348,2 @@ def main(
++    expected_db_unique_name: str | None = None,
++    rollout_confirmed_by: str | None = None,
+@@ -1403 +1410,2 @@ def main(
+-    status = apply_batch(Path(repo_root), migrations, target, confirm, verbose=args.verbose, confirm_target=args.confirm_target, yes=args.yes)
++    status = apply_batch(Path(repo_root), migrations, target, confirm, verbose=args.verbose, confirm_target=args.confirm_target,
++                         yes=args.yes, expected_db_unique_name=expected_db_unique_name, rollout_confirmed_by=rollout_confirmed_by)
+diff --git a/scripts/migration_archive.py b/scripts/migration_archive.py
+index 8df6e3a..e2a88b8 100644
+--- a/scripts/migration_archive.py
++++ b/scripts/migration_archive.py
+@@ -14 +14 @@ from pathlib import Path
+-from collections.abc import Sequence
++from collections.abc import Mapping, Sequence
+@@ -25 +25 @@ from .migration_manifest import (
+-from .migration_attempts import RESOLUTION_STATES
++from .migration_attempts import RESOLUTION_STATES, chain_terminals, read_attempt_events
+@@ -37,0 +38,77 @@ class MigrationArchiveError(ValueError):
++def _attempt_matches_receipt_target(root: Path, folder: Path, env: str, receipt_target: Mapping, verified_at: str) -> bool:
++    identity_fields = ("session_user", "current_schema", "db_name", "db_unique_name", "service_name",
++                       "container_id", "container_name", "edition", "database_version")
++    # A receipt that lacks the observed identity cannot establish where a
++    # pending write occurred, even when its environment and schema match.
++    if any(not receipt_target.get(field) for field in identity_fields):
++        return False
++    run_ids: set[str] = set()
++    unresolved_runs: set[str] = set()
++    scratch = root / "scratch"
++    if scratch.is_dir():
++        for attempt_dir in scratch.iterdir():
++            if not attempt_dir.is_dir() or not attempt_dir.name.startswith("migration-attempt-"):
++                continue
++            manifest_path = attempt_dir / "run-manifest.json"
++            if not manifest_path.is_file():
++                continue
++            try:
++                manifest = decode_json(manifest_path.read_bytes(), str(manifest_path))
++            except Exception:
++                continue
++            if not isinstance(manifest, dict):
++                continue
++            target = manifest.get("target")
++            if not isinstance(target, dict) or target.get("environment") != env:
++                continue
++            for rec in manifest.get("migrations", []):
++                if isinstance(rec, dict) and rec.get("folder") == folder.name:
++                    state = rec.get("state")
++                    if state not in {"frozen", "apply-not-started"}:
++                        run_ids.add(attempt_dir.name)
++                        if state != "verified":
++                            unresolved_runs.add(attempt_dir.name)
++                    if any(receipt_target.get(field) and target.get(field) != receipt_target[field] for field in identity_fields):
++                        return False
++    try:
++        events = read_attempt_events(folder)
++    except Exception:
++        return False
++    terminals = chain_terminals(events)
++    relevant = [state for state, environment in terminals.values() if environment == env and state in {"pending", "verified"}]
++    for event in events:
++        terminal = terminals.get(event.get("attemptId"))
++        if terminal and terminal[1] == env and terminal[0] in {"pending", "verified"}:
++            run_ids.add(event["runId"])
++            if terminal[0] == "pending":
++                unresolved_runs.add(event["runId"])
++    # A receipt carries no attempt id, so it cannot establish which of several
++    # attempts it verifies, even when they used the same database and schema.
++    if ("pending" in relevant and len(relevant) > 1) or (unresolved_runs and len(run_ids) > 1):
++        return False
++    for event in events:
++        if not isinstance(event, dict) or event.get("environment") != env:
++            continue
++        if event.get("state") == "pending" and terminals.get(event.get("attemptId")) == ("pending", env):
++            try:
++                started = datetime.fromisoformat(event["recordedAt"].replace("Z", "+00:00"))
++                verified = datetime.fromisoformat(verified_at.replace("Z", "+00:00"))
++                if started >= verified:
++                    return False
++            except (KeyError, TypeError, ValueError):
++                return False
++        ev_target = event.get("target")
++        if isinstance(ev_target, dict):
++            if ev_target.get("current_schema") and receipt_target.get("current_schema"):
++                if ev_target["current_schema"] != receipt_target["current_schema"]:
++                    return False
++            if ev_target.get("db_unique_name") and receipt_target.get("db_unique_name"):
++                if ev_target["db_unique_name"] != receipt_target["db_unique_name"]:
++                    return False
++        ev_identity = event.get("identity")
++        if any(receipt_target.get(field) and (not isinstance(ev_identity, dict) or ev_identity.get(field) != receipt_target[field])
++               for field in identity_fields if field != "current_schema"):
++            return False
++    return True
++
++
+@@ -189,0 +267,3 @@ def _folder_evidence(
++    verified_by_env: dict[str, bool] = {}
++    receipt_targets: dict[str, dict] = {}
++    receipt_times: dict[str, str] = {}
+@@ -199,0 +280,3 @@ def _folder_evidence(
++                verified_by_env[environment] = True
++                receipt_targets[environment] = raw["target"]
++                receipt_times[environment] = raw["verifiedAt"]
+@@ -201,0 +285 @@ def _folder_evidence(
++                verified_by_env[environment] = False
+@@ -203,0 +288 @@ def _folder_evidence(
++            verified_by_env[environment] = False
+@@ -229,10 +314,27 @@ def _folder_evidence(
+-    # An attempt that provably never started its write (apply-not-started with its retained no-write
+-    # evidence, so the folder is unlocked) left nothing to resolve.
+-    no_write_only = (
+-        bool(attempt_states)
+-        and lock.status == "unlocked"
+-        and all(state.startswith("attempt-event:apply-not-started:") for state in attempt_states)
+-    )
+-    if no_write_only and not verified_receipt:
+-        evidence.append("apply-not-started (no write)")
+-    elif attempt_states and not verified_receipt:
++
++    unresolved_attempts = []
++    no_write_states = []
++    for state in attempt_states:
++        if state.startswith("attempt-event:apply-not-started:") and lock.status == "unlocked":
++            no_write_states.append(state)
++            continue
++        if state.startswith(("attempt:", "attempt-event:")):
++            parts = state.split(":")
++            attempt_env = parts[2] if len(parts) >= 3 else None
++        else:
++            attempt_env = None
++
++        if attempt_env not in {"dev", "staging", "prod"}:
++            unresolved_attempts.append(state)
++            continue
++
++        if not verified_by_env.get(attempt_env):
++            unresolved_attempts.append(state)
++            continue
++
++        receipt_target = receipt_targets.get(attempt_env, {})
++        if not _attempt_matches_receipt_target(root, migration.folder, attempt_env, receipt_target, receipt_times[attempt_env]):
++            unresolved_attempts.append(state)
++            continue
++
++    if unresolved_attempts:
+@@ -243,0 +346,5 @@ def _folder_evidence(
++            unresolved_envs = sorted({
++                state.split(":")[2] for state in unresolved_attempts
++                if state.startswith(("attempt:", "attempt-event:")) and len(state.split(":")) >= 3 and state.split(":")[2] in {"dev", "staging", "prod"}
++            })
++            env_desc = f"for {', '.join(unresolved_envs)}" if unresolved_envs else "for any environment"
+@@ -245 +352 @@ def _folder_evidence(
+-                f"attempt record for {migration.folder.name} has no verified receipt for any environment; state unknown; "
++                f"attempt record for {migration.folder.name} has no verified receipt {env_desc}; state unknown; "
+@@ -248,0 +356,2 @@ def _folder_evidence(
++    elif no_write_states and not verified_receipt:
++        evidence.append("apply-not-started (no write)")
+diff --git a/scripts/publish_app.ps1 b/scripts/publish_app.ps1
+index efd08e3..5b1c784 100644
+--- a/scripts/publish_app.ps1
++++ b/scripts/publish_app.ps1
+@@ -387,19 +387,18 @@ try {
+-  $lifecycleEnabled = (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'application_lifecycle.py') -PathType Leaf) -and
+-    (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'application_lifecycle.sql') -PathType Leaf)
+-  $identityValues = @('-', '-', '-', '-', '-', '-', '-', '-')
+-  if ($lifecycleEnabled) {
+-    $lifecyclePython = Resolve-TeamPython
+-    if ($null -eq $lifecyclePython) { throw 'publish error: Python 3.10 or newer is required for lifecycle verification' }
+-    $lifecycleArguments = @('--connection', $sqlclConnection, '--expected-user', $expectedUser, '--schema', $parsingSchema,
+-      '--workspace', [string]$deployment.workspace.name, '--app-id', $AppId, '--environment', $appEnvironment)
+-    & $lifecyclePython.Path @($lifecyclePython.Prefix) (Join-Path $PSScriptRoot 'application_lifecycle.py') capture @lifecycleArguments --run-dir (Join-Path $publishWorkDir 'lifecycle-before')
+-    if ($LASTEXITCODE -ne 0) { throw 'publish error: lifecycle pre-read unavailable; nothing imported' }
+-    $identitySnapshot = Join-Path $publishWorkDir 'lifecycle-before/lifecycle-snapshot.json'
+-    $identityJson = Get-Content -LiteralPath $identitySnapshot -Raw | ConvertFrom-Json
+-    $identityFields = @('db_unique_name','service_name','container_id','container_name','edition','server_host','session_user','current_schema')
+-    $identityValues = @()
+-    foreach ($field in $identityFields) {
+-      $value = [string]$identityJson.identity.$field
+-      if ([string]::IsNullOrEmpty($value)) { throw "publish error: pre-publication identity is incomplete ($field)" }
+-      $identityValues += ([System.BitConverter]::ToString([System.Text.Encoding]::UTF8.GetBytes($value)) -replace '-', '')
+-    }
++  if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'application_lifecycle.py') -PathType Leaf) -or
++      -not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'application_lifecycle.sql') -PathType Leaf)) {
++    throw 'publish error: application lifecycle helpers are unavailable; nothing imported'
++  }
++  $lifecyclePython = Resolve-TeamPython
++  if ($null -eq $lifecyclePython) { throw 'publish error: Python 3.10 or newer is required for lifecycle verification' }
++  $lifecycleArguments = @('--connection', $sqlclConnection, '--expected-user', $expectedUser, '--schema', $parsingSchema,
++    '--workspace', [string]$deployment.workspace.name, '--app-id', $AppId, '--environment', $appEnvironment)
++  & $lifecyclePython.Path @($lifecyclePython.Prefix) (Join-Path $PSScriptRoot 'application_lifecycle.py') capture @lifecycleArguments --run-dir (Join-Path $publishWorkDir 'lifecycle-before')
++  if ($LASTEXITCODE -ne 0) { throw 'publish error: pre-publication lifecycle observation is unavailable; nothing imported' }
++  $identitySnapshot = Join-Path $publishWorkDir 'lifecycle-before/lifecycle-snapshot.json'
++  $identityJson = Get-Content -LiteralPath $identitySnapshot -Raw | ConvertFrom-Json
++  $identityFields = @('db_unique_name','service_name','container_id','container_name','edition','server_host','session_user','current_schema')
++  $identityValues = @()
++  foreach ($field in $identityFields) {
++    $value = [string]$identityJson.identity.$field
++    if ([string]::IsNullOrEmpty($value)) { throw "publish error: pre-publication identity is incomplete ($field)" }
++    $identityValues += ([System.BitConverter]::ToString([System.Text.Encoding]::UTF8.GetBytes($value)) -replace '-', '')
+@@ -408 +407 @@ try {
+-    if (-not $lifecycleEnabled -or [string]::IsNullOrEmpty([string]$identityJson.identity.db_unique_name)) {
++    if ([string]::IsNullOrEmpty([string]$identityJson.identity.db_unique_name)) {
+@@ -469 +468 @@ try {
+-  if ($lifecycleEnabled) { $importArguments += $identityValues }
++  $importArguments += $identityValues
+@@ -490,5 +489,3 @@ try {
+-  if ($lifecycleEnabled) {
+-    & $lifecyclePython.Path @($lifecyclePython.Prefix) (Join-Path $PSScriptRoot 'application_lifecycle.py') restore-automations @lifecycleArguments `
+-      --before (Join-Path $publishWorkDir 'lifecycle-before/lifecycle-snapshot.json') --run-dir (Join-Path $publishWorkDir 'automation-restore')
+-    if ($LASTEXITCODE -ne 0) { throw 'publish error: automation restoration did not verify; baseline and recovery evidence retained' }
+-  }
++  & $lifecyclePython.Path @($lifecyclePython.Prefix) (Join-Path $PSScriptRoot 'application_lifecycle.py') restore-automations @lifecycleArguments `
++    --before (Join-Path $publishWorkDir 'lifecycle-before/lifecycle-snapshot.json') --run-dir (Join-Path $publishWorkDir 'automation-restore')
++  if ($LASTEXITCODE -ne 0) { throw 'publish error: automation restoration did not verify; baseline and recovery evidence retained' }
+@@ -543,6 +540,4 @@ try {
+-  if ($lifecycleEnabled) {
+-    & $lifecyclePython.Path @($lifecyclePython.Prefix) (Join-Path $PSScriptRoot 'application_lifecycle.py') verify @lifecycleArguments `
+-      --before (Join-Path $publishWorkDir 'lifecycle-before/lifecycle-snapshot.json') --run-dir (Join-Path $publishWorkDir 'lifecycle-after') `
+-      --summary-path (Join-Path $publishWorkDir 'publish-verification.json')
+-    if ($LASTEXITCODE -ne 0) { throw 'publish error: application lifecycle verification failed; baseline and recovery evidence retained' }
+-  }
++  & $lifecyclePython.Path @($lifecyclePython.Prefix) (Join-Path $PSScriptRoot 'application_lifecycle.py') verify @lifecycleArguments `
++    --before (Join-Path $publishWorkDir 'lifecycle-before/lifecycle-snapshot.json') --run-dir (Join-Path $publishWorkDir 'lifecycle-after') `
++    --summary-path (Join-Path $publishWorkDir 'publish-verification.json')
++  if ($LASTEXITCODE -ne 0) { throw 'publish error: application lifecycle verification failed; baseline and recovery evidence retained' }
+diff --git a/scripts/publish_app.sh b/scripts/publish_app.sh
+index 4bc19d4..96585cc 100755
+--- a/scripts/publish_app.sh
++++ b/scripts/publish_app.sh
+@@ -409,10 +409,7 @@ expected_live_state="-"
+-lifecycle_enabled=false
+-identity_values=""
+-expected_db_unique_name=-; expected_service_name=-; expected_container_id=-; expected_container_name=-
+-expected_edition=-; expected_server_host=-; expected_session_user=-; expected_current_schema=-
+-if [ -f "$REPO_ROOT/scripts/application_lifecycle.py" ] && [ -f "$REPO_ROOT/scripts/application_lifecycle.sql" ]; then
+-  lifecycle_enabled=true
+-  lifecycle_args=(--connection "$sqlcl_connection" --expected-user "$expected_user" --schema "$parsing_schema"
+-    --workspace "$workspace_name" --app-id "$app_id" --environment "$app_environment")
+-  python3 "$REPO_ROOT/scripts/application_lifecycle.py" capture "${lifecycle_args[@]}" --run-dir "$staging_dir/lifecycle-before" || fail 'pre-publication lifecycle observation is unavailable; nothing imported'
+-  identity_values="$(python3 - "$staging_dir/lifecycle-before/lifecycle-snapshot.json" <<'PY'
++if [ ! -f "$REPO_ROOT/scripts/application_lifecycle.py" ] || [ ! -f "$REPO_ROOT/scripts/application_lifecycle.sql" ]; then
++  fail 'application lifecycle helpers are unavailable; nothing imported'
++fi
++lifecycle_args=(--connection "$sqlcl_connection" --expected-user "$expected_user" --schema "$parsing_schema"
++  --workspace "$workspace_name" --app-id "$app_id" --environment "$app_environment")
++python3 "$REPO_ROOT/scripts/application_lifecycle.py" capture "${lifecycle_args[@]}" --run-dir "$staging_dir/lifecycle-before" || fail 'pre-publication lifecycle observation is unavailable; nothing imported'
++identity_values="$(python3 - "$staging_dir/lifecycle-before/lifecycle-snapshot.json" <<'PY'
+@@ -429,3 +426,2 @@ PY
+-  )"
+-  if [ -z "$identity_values" ]; then fail 'pre-publication database identity is unavailable; nothing imported'; fi
+-fi
++)"
++if [ -z "$identity_values" ]; then fail 'pre-publication database identity is unavailable; nothing imported'; fi
+@@ -505,3 +501,6 @@ import_args=(
+-if [ "$lifecycle_enabled" = true ]; then
+-  import_args+=("$expected_db_unique_name" "$expected_service_name" "$expected_container_id" "$expected_container_name" "$expected_edition" "$expected_server_host" "$expected_session_user" "$expected_current_schema")
+-fi
++import_args+=(
++  "$expected_db_unique_name" "$expected_service_name"
++  "$expected_container_id" "$expected_container_name"
++  "$expected_edition" "$expected_server_host"
++  "$expected_session_user" "$expected_current_schema"
++)
+@@ -541,5 +540,3 @@ import_unverified=true
+-if [ "$lifecycle_enabled" = true ]; then
+-  python3 "$REPO_ROOT/scripts/application_lifecycle.py" restore-automations "${lifecycle_args[@]}" \
+-    --before "$staging_dir/lifecycle-before/lifecycle-snapshot.json" --run-dir "$staging_dir/automation-restore" || \
+-    fail 'automation restoration did not verify; baseline and recovery evidence retained'
+-fi
++python3 "$REPO_ROOT/scripts/application_lifecycle.py" restore-automations "${lifecycle_args[@]}" \
++  --before "$staging_dir/lifecycle-before/lifecycle-snapshot.json" --run-dir "$staging_dir/automation-restore" || \
++  fail 'automation restoration did not verify; baseline and recovery evidence retained'
+@@ -601,6 +598,4 @@ PY_SUMMARY
+-if [ "$lifecycle_enabled" = true ]; then
+-  python3 "$REPO_ROOT/scripts/application_lifecycle.py" verify "${lifecycle_args[@]}" \
+-    --before "$staging_dir/lifecycle-before/lifecycle-snapshot.json" --run-dir "$staging_dir/lifecycle-after" \
+-    --summary-path "$staging_dir/publish-verification.json" || \
+-    fail 'application lifecycle verification failed; baseline and recovery evidence retained'
+-fi
++python3 "$REPO_ROOT/scripts/application_lifecycle.py" verify "${lifecycle_args[@]}" \
++  --before "$staging_dir/lifecycle-before/lifecycle-snapshot.json" --run-dir "$staging_dir/lifecycle-after" \
++  --summary-path "$staging_dir/publish-verification.json" || \
++  fail 'application lifecycle verification failed; baseline and recovery evidence retained'
+diff --git a/scripts/rollout.py b/scripts/rollout.py
+index 0456959..03321ec 100644
+--- a/scripts/rollout.py
++++ b/scripts/rollout.py
+@@ -1059,0 +1060,16 @@ def _assert_confirm_target(root: Path, targets: Sequence[Target], confirm_target
++def _observe_production_target_names(root: Path, targets: Sequence[Target]) -> dict[Target, str]:
++    """Capture each production target's database name before terminal confirmation."""
++    unique_targets = list(dict.fromkeys(targets))
++    if not unique_targets:
++        raise RolloutError("production rollout has no database target to check; no steps were run")
++    scratch = _safe_scratch_root(root)
++    run_dir = Path(tempfile.mkdtemp(prefix="confirm-target-", dir=scratch))
++    try:
++        return {
++            target: _observed_db_unique_name(target, run_dir / f"target-{index:02d}")
++            for index, target in enumerate(unique_targets, start=1)
++        }
++    finally:
++        safe_rmtree(run_dir)
++
++
+@@ -1531,4 +1547,10 @@ def _execute_app_deploy(
+-        child_name = confirm_target
+-        if child_name is None:
+-            child_name = _observed_db_unique_name(_app_step_target(step, repo_root, environment), evidence_dir / "target-identity")
+-        child_flags += ["--confirm-target", child_name]
++        if confirm_target is None:
++            raise RolloutError("production app-deploy requires confirmed target name")
++        observed_name = _observed_db_unique_name(_app_step_target(step, repo_root, environment), evidence_dir / "target-identity")
++        if observed_name != confirm_target:
++            raise RolloutError(
++                f"step application target db_unique_name {observed_name!r} does not match confirmed target {confirm_target!r}"
++            )
++        child_flags += ["--confirm-target", confirm_target]
++    elif confirm_target is not None:
++        child_flags += ["--confirm-target", confirm_target]
+@@ -1580,0 +1603 @@ def execute_step(
++    rollout_confirmed_by: str | None = None,
+@@ -1603,0 +1627,2 @@ def execute_step(
++                    expected_db_unique_name=confirm_target,
++                    rollout_confirmed_by=rollout_confirmed_by,
+@@ -1645,0 +1671,18 @@ def execute_step(
++        target_expected_identity = expected_identity
++        if environment in {"staging", "prod"} or expected_identity is not None:
++            binding = _target_binding(step, repo_root, environment)
++            target = Target(environment, binding["connection"], binding["expectedUser"], binding["schema"], binding["classification"])
++            step_observed = _observe_target_identity(target, evidence_dir / "target-identity")
++            if environment == "prod" or confirm_target is not None:
++                observed_db = step_observed.get("db_unique_name")
++                if not observed_db:
++                    raise RolloutError(f"step {step_number} target database identity has no db_unique_name")
++                if confirm_target is not None and observed_db != confirm_target:
++                    raise RolloutError(
++                        f"step {step_number} target db_unique_name {observed_db!r} does not match confirmed target {confirm_target!r}"
++                    )
++            if expected_identity is not None and step_observed != expected_identity:
++                raise RolloutError(f"step {step_number} target identity changed after preparation")
++            if target_expected_identity is None:
++                target_expected_identity = step_observed
++
+@@ -1654 +1697 @@ def execute_step(
+-            expected_identity=expected_identity,
++            expected_identity=target_expected_identity,
+@@ -1842,0 +1886,2 @@ def _run_legacy_rollout(
++        approved_target_name: str | None = confirm_target
++        approved_target_names: dict[Target, str] = {}
+@@ -1844,2 +1889,13 @@ def _run_legacy_rollout(
+-            if confirm_target is not None:
+-                _assert_confirm_target(root, _plan_targets(plan, root, environment), confirm_target, environment)
++            if environment == "prod":
++                targets = _plan_targets(plan, root, environment)
++                if confirm_target is not None:
++                    _assert_confirm_target(root, targets, confirm_target, environment)
++                    approved_target_name = confirm_target
++                elif targets:
++                    approved_target_names = _observe_production_target_names(root, targets)
++                else:
++                    approved_target_name = None
++            elif confirm_target is not None:
++                targets = _plan_targets(plan, root, environment)
++                _assert_confirm_target(root, targets, confirm_target, environment)
++                approved_target_name = confirm_target
+@@ -1852 +1908,6 @@ def _run_legacy_rollout(
+-                    approved = bool(confirm(_confirmation_text(manifest, plan, environment, from_step)))
++                    prompt = _confirmation_text(manifest, plan, environment, from_step, question=False)
++                    if approved_target_names:
++                        prompt += "\nObserved production targets: " + ", ".join(
++                            f"{target.connection}={name}" for target, name in approved_target_names.items()
++                        )
++                    approved = bool(confirm(prompt + "\nContinue with this rollout? [y/N]"))
+@@ -1889,0 +1951,7 @@ def _run_legacy_rollout(
++                step_target_name = approved_target_name
++                if approved_target_names:
++                    step_targets = _plan_targets([item], root, environment)
++                    if step_targets:
++                        step_target_name = approved_target_names.get(step_targets[0])
++                        if step_target_name is None:
++                            raise RolloutError(f"step {item['number']} target was not confirmed")
+@@ -1899 +1967,2 @@ def _run_legacy_rollout(
+-                    confirm_target=confirm_target,
++                    confirm_target=step_target_name,
++                    rollout_confirmed_by=report["confirmedBy"],
+diff --git a/scripts/rollout_capsule.py b/scripts/rollout_capsule.py
+index 3b2b31c..a4cafcc 100644
+--- a/scripts/rollout_capsule.py
++++ b/scripts/rollout_capsule.py
+@@ -665 +665,17 @@ def _run_capsule_rollout(
+-        if confirm_target is not None:
++        approved_target_name: str | None = confirm_target
++        approved_target_names: dict[str, str] = {}
++        if environment == "prod":
++            targets = _capsule_plan_targets(target_plan, environment)
++            if confirm_target is not None:
++                rollout._assert_confirm_target(root, targets, confirm_target, environment)
++            for key, record in target_plan.targets.items():
++                observed = record.get("observed") if isinstance(record, Mapping) else None
++                prepared_name = observed.get("db_unique_name") if isinstance(observed, Mapping) else None
++                if not isinstance(prepared_name, str) or not prepared_name:
++                    raise rollout.RolloutError(f"prepared target {key} has no production db_unique_name; no steps were run")
++                if confirm_target is not None and prepared_name != confirm_target:
++                    raise rollout.RolloutError(
++                        f"prepared target {key} does not match the confirmed production db_unique_name; no steps were run"
++                    )
++                approved_target_names[key] = prepared_name
++        elif confirm_target is not None:
+@@ -666,0 +683,5 @@ def _run_capsule_rollout(
++            approved_target_name = confirm_target
++            for key, record in target_plan.targets.items():
++                observed = record.get("observed") if isinstance(record, Mapping) else None
++                if not isinstance(observed, Mapping) or observed.get("db_unique_name") != confirm_target:
++                    raise rollout.RolloutError(f"prepared target {key} does not match the confirmed db_unique_name; no steps were run")
+@@ -673 +694,6 @@ def _run_capsule_rollout(
+-                approved = bool(confirm(rollout._confirmation_text(manifest, plan, environment, 1) + capsule_digests))
++                prompt = rollout._confirmation_text(manifest, plan, environment, 1, question=False) + capsule_digests
++                if approved_target_names:
++                    prompt += "\nObserved production targets: " + ", ".join(
++                        f"{key}={name}" for key, name in approved_target_names.items()
++                    )
++                approved = bool(confirm(prompt + "\nContinue with this rollout? [y/N]"))
+@@ -761,0 +788,6 @@ def _run_capsule_rollout(
++                    step_target_name = approved_target_name
++                    if environment == "prod" and step["type"] in {"sql-script", "ords-import", "migrate", "app-deploy"}:
++                        target_key = f"app:{step['appId']}" if step["type"] == "app-deploy" else f"step:{item['number']}"
++                        step_target_name = approved_target_names.get(target_key)
++                        if step_target_name is None:
++                            raise rollout.RolloutError(f"step {item['number']} target was not confirmed")
+@@ -775,0 +808,4 @@ def _run_capsule_rollout(
++                        if environment == "prod" and expected_identity.get("db_unique_name") != step_target_name:
++                            raise rollout.RolloutError(
++                                f"step {item['number']} prepared target {expected_identity.get('db_unique_name')!r} does not match approved production target {step_target_name!r}"
++                            )
+@@ -796,0 +833,4 @@ def _run_capsule_rollout(
++                            if environment == "prod" and observed.get("db_unique_name") != step_target_name:
++                                raise rollout.RolloutError(
++                                    f"step {item['number']} target db_unique_name {observed.get('db_unique_name')!r} does not match approved production target {step_target_name!r}"
++                                )
+@@ -813 +853,2 @@ def _run_capsule_rollout(
+-                                confirm_target=confirm_target,
++                                confirm_target=step_target_name if environment == "prod" else confirm_target,
++                                rollout_confirmed_by=report["confirmedBy"],
+@@ -826 +867,2 @@ def _run_capsule_rollout(
+-                            confirm_target=confirm_target,
++                            confirm_target=step_target_name if environment == "prod" else confirm_target,
++                            rollout_confirmed_by=report["confirmedBy"],
+diff --git a/scripts/terminal_confirm.py b/scripts/terminal_confirm.py
+index 286342f..acfe89b 100644
+--- a/scripts/terminal_confirm.py
++++ b/scripts/terminal_confirm.py
+@@ -11 +10,0 @@ from __future__ import annotations
+-import os
+@@ -21,2 +19,0 @@ ACKNOWLEDGMENT_REFUSAL = "refused: this acknowledgment is typed at a terminal; r
+-ACK_FROM_STDIN_ENV = "TEAM_ACK_FROM_STDIN"
+-ACK_FROM_STDIN_NOTICE = "acknowledgment read from redirected input (TEAM_ACK_FROM_STDIN)"
+@@ -38,4 +35 @@ def may_read_yes_no() -> bool:
+-    """Gate a `[y/N]` prompt. Refuses, printing YES_REFUSAL, unless standard input is a terminal.
+-
+-    TEAM_ACK_FROM_STDIN does not affect this gate: it applies only to typed acknowledgments.
+-    """
++    """Gate a `[y/N]` prompt. Refuses, printing YES_REFUSAL, unless standard input is a terminal."""
+@@ -49,4 +43 @@ def may_read_acknowledgment(environ: Mapping[str, str] | None = None) -> bool:
+-    """Gate a typed acknowledgment. Redirected input is refused unless TEAM_ACK_FROM_STDIN is 1.
+-
+-    The variable exists for the opt-in live tests. An agent never sets it.
+-    """
++    """Gate a typed acknowledgment. Refuses, printing ACKNOWLEDGMENT_REFUSAL, unless standard input is a terminal."""
+@@ -55,4 +45,0 @@ def may_read_acknowledgment(environ: Mapping[str, str] | None = None) -> bool:
+-    values = os.environ if environ is None else environ
+-    if values.get(ACK_FROM_STDIN_ENV) == "1":
+-        print(ACK_FROM_STDIN_NOTICE, file=sys.stderr)
+-        return True
+diff --git a/tests/test_baseline_generated_sql.py b/tests/test_baseline_generated_sql.py
+index f76f5f0..71cdab9 100644
+--- a/tests/test_baseline_generated_sql.py
++++ b/tests/test_baseline_generated_sql.py
+@@ -39,0 +40,13 @@ class DdlStatementSplitTests(unittest.TestCase):
++    def test_alternative_quoted_apostrophe_and_newline_do_not_hide_next_statement(self) -> None:
++        ddl = "CREATE TABLE DEV.T (C VARCHAR2(80) DEFAULT q'[it's\nALTER TABLE XX]')\nALTER TABLE DEV.T ADD PRIMARY KEY (C)"
++        statements = baseline_bundles._split_ddl_statements(ddl)
++        self.assertEqual(2, len(statements))
++        self.assertIn("q'[it's\nALTER TABLE XX]'", statements[0])
++        self.assertTrue(statements[1].startswith("ALTER TABLE DEV.T"))
++
++    def test_a_line_comment_at_the_end_of_a_statement_does_not_hide_the_next(self) -> None:
++        ddl = "CREATE TABLE DEV.T (C NUMBER) -- captured comment\nALTER TABLE DEV.T ADD PRIMARY KEY (C)"
++        statements = baseline_bundles._split_ddl_statements(ddl)
++        self.assertEqual(2, len(statements))
++        self.assertTrue(statements[1].startswith("ALTER TABLE DEV.T"))
++
+@@ -132,0 +146,18 @@ class TableStatementTests(unittest.TestCase):
++    def test_retarget_preserves_quoted_identifiers_and_maps_across_comments(self) -> None:
++        sql = 'CREATE VIEW "APP_STAGE"."V" AS SELECT "PRICE APP_DEV.X" FROM APP_DEV /*keep*/ .T'
++        result = baseline_bundles.retarget_sql_identifiers(sql, "APP_DEV", "APP_STAGE")
++        self.assertIn('"PRICE APP_DEV.X"', result)
++        self.assertIn('FROM "APP_STAGE" /*keep*/ .T', result)
++
++    def test_view_alias_named_as_source_is_not_silently_rewritten(self) -> None:
++        sql = 'CREATE VIEW "APP_STAGE"."V" AS SELECT APP_DEV.ID FROM "APP_DEV"."T" APP_DEV'
++        with self.assertRaisesRegex(baseline.BaselineError, "ambiguous|review"):
++            baseline_bundles.retarget_sql_identifiers(sql, "APP_DEV", "APP_STAGE")
++
++    def test_unbalanced_opening_bracket_inside_q_quote_is_literal(self) -> None:
++        sql = 'ALTER TABLE APP_DEV.T ADD CHECK (C <> q\'[unbalanced [ APP_DEV.X]\')'
++        self.assertEqual(
++            'ALTER TABLE "APP_STAGE".T ADD CHECK (C <> q\'[unbalanced [ APP_DEV.X]\')',
++            baseline_bundles.retarget_sql_identifiers(sql, "APP_DEV", "APP_STAGE"),
++        )
++
+@@ -153,0 +185,61 @@ class TableStatementTests(unittest.TestCase):
++    def test_table_with_default_sequence_retargets_to_target_schema(self) -> None:
++        raw_ddl = 'CREATE TABLE "APP_DEV"."T" ("ID" NUMBER DEFAULT "APP_DEV"."SEQ".NEXTVAL, "NAME" VARCHAR2(100));'
++        statements = baseline_bundles._table_statements(raw_ddl, "APP_DEV", "APP_STAGE")
++        self.assertEqual(len(statements), 1)
++        self.assertIn('CREATE TABLE "APP_STAGE"."T"', statements[0])
++        self.assertIn('DEFAULT "APP_STAGE"."SEQ".NEXTVAL', statements[0])
++        self.assertNotIn('"APP_DEV"', statements[0])
++
++    def test_view_referencing_source_schema_retargets_body(self) -> None:
++        source_ddl = 'CREATE OR REPLACE FORCE EDITIONABLE VIEW "APP_DEV"."CUSTOMERS_V" AS SELECT ID, NAME FROM "APP_DEV"."CUSTOMERS"'
++        mapped_ddl = baseline_bundles._replace_create_header(source_ddl, "VIEW", "APP_DEV", "APP_STAGE")
++        mapped_ddl = baseline_bundles.retarget_sql_identifiers(mapped_ddl, "APP_DEV", "APP_STAGE")
++        self.assertIn('VIEW "APP_STAGE"."CUSTOMERS_V"', mapped_ddl)
++        self.assertIn('FROM "APP_STAGE"."CUSTOMERS"', mapped_ddl)
++        self.assertNotIn('"APP_DEV"', mapped_ddl)
++
++    def test_create_bitmap_index_retargets_to_target_schema(self) -> None:
++        ddl = 'CREATE BITMAP INDEX "APP_DEV"."IX_STATUS" ON "APP_DEV"."T" ("STATUS");'
++        mapped = baseline_bundles._replace_create_header(ddl, "INDEX", "APP_DEV", "APP_STAGE")
++        mapped = baseline_bundles.retarget_sql_identifiers(mapped, "APP_DEV", "APP_STAGE")
++        self.assertIn('CREATE BITMAP INDEX "APP_STAGE"."IX_STATUS" ON "APP_STAGE"."T"', mapped)
++        self.assertNotIn('"APP_DEV"', mapped)
++
++    def test_q_quoted_literals_preserve_bytes_and_delimiters(self) -> None:
++        cases = [
++            'ALTER TABLE "APP_DEV"."T" ADD CONSTRAINT "CK" CHECK ("C" <> q\'[it\'s APP_DEV.X]\')',
++            'ALTER TABLE "APP_DEV"."T" ADD CONSTRAINT "CK" CHECK ("C" <> q\'{it\'s APP_DEV.X}\')',
++            'ALTER TABLE "APP_DEV"."T" ADD CONSTRAINT "CK" CHECK ("C" <> q\'<it\'s APP_DEV.X>\')',
++            'ALTER TABLE "APP_DEV"."T" ADD CONSTRAINT "CK" CHECK ("C" <> q\'(it\'s APP_DEV.X)\')',
++            'ALTER TABLE "APP_DEV"."T" ADD CONSTRAINT "CK" CHECK ("C" <> q\'[nested [brackets] APP_DEV.X]\')',
++            'ALTER TABLE "APP_DEV"."T" ADD CONSTRAINT "CK" CHECK ("C" <> q\'~it\'s APP_DEV.X~\')',
++            'ALTER TABLE "APP_DEV"."T" ADD CONSTRAINT "CK" CHECK ("C" <> q\'!it\'s APP_DEV.X!\')',
++            'ALTER TABLE "APP_DEV"."T" ADD CONSTRAINT "CK" CHECK ("C" <> q\'#it\'s APP_DEV.X#\')',
++            'ALTER TABLE "APP_DEV"."T" ADD CONSTRAINT "CK" CHECK ("C" <> \'it\'\'s APP_DEV.X\')',
++            'ALTER TABLE "APP_DEV"."T" ADD CONSTRAINT "CK" CHECK ("C" > 0) -- APP_DEV.X note\n',
++            'ALTER TABLE "APP_DEV"."T" ADD CONSTRAINT "CK" CHECK ("C" > 0) /* APP_DEV.X block */',
++        ]
++        for statement in cases:
++            with self.subTest(statement=statement):
++                result = baseline_bundles._retarget_statement(statement, "APP_DEV", "APP_STAGE")
++                self.assertIn('"APP_STAGE"."T"', result)
++                # The literal / comment itself must retain the original APP_DEV text verbatim
++                self.assertIn("APP_DEV.X", result)
++
++    def test_external_schema_references_preserved(self) -> None:
++        statement = 'ALTER TABLE "APP_DEV"."T" ADD CONSTRAINT "FK" FOREIGN KEY ("C") REFERENCES "OTHER"."T" ("C")'
++        result = baseline_bundles._retarget_statement(statement, "APP_DEV", "APP_STAGE")
++        self.assertEqual('ALTER TABLE "APP_STAGE"."T" ADD CONSTRAINT "FK" FOREIGN KEY ("C") REFERENCES "OTHER"."T" ("C")', result)
++
++    def test_unclosed_syntax_fails_closed(self) -> None:
++        bad_statements = [
++            'ALTER TABLE "APP_DEV"."T" ADD CONSTRAINT "CK" CHECK ("C" <> q\'[unclosed)',
++            'ALTER TABLE "APP_DEV"."T" ADD CONSTRAINT "CK" CHECK ("C" <> \'unclosed)',
++            'ALTER TABLE "APP_DEV"."T" /* unclosed comment',
++            'ALTER TABLE "APP_DEV"."T" ADD ("C',
++        ]
++        for statement in bad_statements:
++            with self.subTest(statement=statement):
++                with self.assertRaises(baseline.BaselineError):
++                    baseline_bundles._retarget_statement(statement, "APP_DEV", "APP_STAGE")
++
+diff --git a/tests/test_documentation_contract.py b/tests/test_documentation_contract.py
+index 683120b..81a7063 100644
+--- a/tests/test_documentation_contract.py
++++ b/tests/test_documentation_contract.py
+@@ -496,0 +497,18 @@ class GuideContractTests(unittest.TestCase):
++    def test_publish_targets_dev_and_deploy_targets_staging_and_prod(self) -> None:
++        team_sh = (ROOT / "scripts" / "team.sh").read_text(encoding="utf-8")
++        team_ps1 = (ROOT / "scripts" / "team.ps1").read_text(encoding="utf-8")
++        readme = (ROOT / "README.md").read_text(encoding="utf-8")
++        publish_rules = (ROOT / "docs" / "publish-rules.md").read_text(encoding="utf-8")
++        getting_started = (ROOT / "docs" / "GETTING_STARTED.md").read_text(encoding="utf-8")
++
++        for script_text in (team_sh, team_ps1):
++            self.assertIn("publish <app_id> [--env dev] [--force]", script_text)
++            self.assertIn("Drift-check and import to DEV", script_text)
++            self.assertIn("deploy <app_id> --env <staging|prod>", script_text)
++
++        self.assertIn("publish targets DEV only", publish_rules)
++        self.assertIn("scripts/team.sh deploy <id> --env <staging|prod>", publish_rules)
++        self.assertIn("publish_app.sh`/`publish_app.ps1` script is an internal implementation helper", publish_rules)
++        self.assertIn("Imports to shared DEV only", readme)
++        self.assertIn("`scripts/team.sh publish` targets DEV only", getting_started)
++
+diff --git a/tests/test_feature_cli.py b/tests/test_feature_cli.py
+index 8611ab6..fd09eb1 100644
+--- a/tests/test_feature_cli.py
++++ b/tests/test_feature_cli.py
+@@ -333 +333 @@ class FeatureCliTests(unittest.TestCase):
+-        with patch.object(terminal_confirm, "stdin_is_terminal", return_value=False), patch.dict("os.environ", {"TEAM_ACK_FROM_STDIN": "1"}), \
++        with patch.object(terminal_confirm, "stdin_is_terminal", return_value=True), \
+@@ -336 +335,0 @@ class FeatureCliTests(unittest.TestCase):
+-        self.assertIn("acknowledgment read from redirected input (TEAM_ACK_FROM_STDIN)", stderr.getvalue())
+diff --git a/tests/test_feature_rollout.py b/tests/test_feature_rollout.py
+index b7450b3..b1edf0d 100644
+--- a/tests/test_feature_rollout.py
++++ b/tests/test_feature_rollout.py
+@@ -330 +330 @@ class FeatureRolloutTests(unittest.TestCase):
+-        with patch("scripts.terminal_confirm.stdin_is_terminal", return_value=False), patch.dict(os.environ, {"TEAM_ACK_FROM_STDIN": "1"}), patch(
++        with patch("scripts.terminal_confirm.stdin_is_terminal", return_value=True), patch(
+@@ -332 +332 @@ class FeatureRolloutTests(unittest.TestCase):
+-        ), contextlib.redirect_stderr(io.StringIO()) as notice:
++        ), contextlib.redirect_stderr(io.StringIO()):
+@@ -335 +334,0 @@ class FeatureRolloutTests(unittest.TestCase):
+-        self.assertIn("acknowledgment read from redirected input (TEAM_ACK_FROM_STDIN)", notice.getvalue())
+@@ -521,0 +521,36 @@ class FeatureRolloutTests(unittest.TestCase):
++    def test_confirmed_database_must_match_prepared_feature_checkpoint(self) -> None:
++        from scripts import feature_release, release_state
++
++        self._enter(self._patches(environment="prod"))
++        stage_report = self.root / "scratch" / "stage-report.json"
++        stage_report.parent.mkdir(parents=True, exist_ok=True)
++        stage_report.write_text("{}\n", encoding="utf-8")
++        observed = {field: "observed" for field in rollout.OBSERVED_IDENTITY_FIELDS} | {"db_unique_name": "DB_A"}
++        result = SimpleNamespace(exit_code=2, database_state="not-started", object_seconds=0.0,
++                                 session_count=0, evidence_paths=(), message="unexpected checkpoint")
++        with patch.object(release_state, "validate_stage_proof"), \
++                patch.object(rollout, "_observe_target_identity", return_value=observed), \
++                patch.object(feature_release, "execute_checkpoint", return_value=result) as execute, \
++                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
++            status = rollout.run_rollout(
++                self.manifest_path, "prod", repo_root=self.root, capsule_path=self.capsule_path,
++                stage_report_path=stage_report, yes=True, confirm_target="DB_A",
++            )
++        self.assertEqual(status, 2)
++        self.assertEqual(0, execute.call_count, "mismatched prepared target must not run a checkpoint")
++
++    def test_staging_confirmed_database_must_match_prepared_checkpoint(self) -> None:
++        from scripts import feature_release
++
++        self._enter(self._patches(environment="staging"))
++        observed = {field: "observed" for field in rollout.OBSERVED_IDENTITY_FIELDS} | {"db_unique_name": "STAGE_A"}
++        result = SimpleNamespace(exit_code=2, database_state="not-started", object_seconds=0.0,
++                                 session_count=0, evidence_paths=(), message="unexpected checkpoint")
++        with patch.object(rollout, "_observe_target_identity", return_value=observed), \
++                patch.object(feature_release, "execute_checkpoint", return_value=result) as execute, \
++                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
++            status = rollout.run_rollout(self.manifest_path, "staging", repo_root=self.root,
++                                         capsule_path=self.capsule_path, confirm_target="STAGE_A")
++        self.assertEqual(2, status)
++        self.assertEqual(0, execute.call_count)
++
+@@ -574 +609 @@ class FeatureRolloutTests(unittest.TestCase):
+-            db_name = "STAGE" if environment == "staging" else "LIVE"
++            db_name = "STAGE" if environment == "staging" else f"PROD{number}"
+@@ -665,0 +701,3 @@ class FeatureRolloutTests(unittest.TestCase):
++            if environment == "prod":
++                self.assertEqual(["PROD2_UNIQUE", "PROD3_UNIQUE"],
++                                 [call.kwargs["confirm_target"] for call in execute_mock.call_args_list])
+@@ -667,0 +706,104 @@ class FeatureRolloutTests(unittest.TestCase):
++    def test_interactive_capsule_lists_each_distinct_database_at_confirmation(self) -> None:
++        from scripts import release_state
++        stage_report = self.root / "scratch" / "stage.json"
++        stage_report.parent.mkdir(parents=True, exist_ok=True)
++        stage_report.write_text("{}\n", encoding="utf-8")
++        patches = list(self._patches(environment="prod"))
++        patches.append(patch.object(release_state, "validate_stage_proof"))
++        with ExitStack() as stack:
++            mocks = [stack.enter_context(patcher) for patcher in patches]
++            target_plan = mocks[4].return_value
++            target_plan.targets["step:2"] = {
++                "environment": "prod", "operation": "migration", "logicalSchema": "APP_CODE",
++                "connection": "other-conn", "expectedUser": "APP_CODE", "schema": "APP_CODE",
++                "classification": "production",
++                "observed": {
++                    "session_user": "APP_CODE", "current_schema": "APP_CODE",
++                    "db_name": "OTHER", "db_unique_name": "OTHER_UNIQUE",
++                    "service_name": "other.example.invalid", "container_id": "7",
++                    "container_name": "OTHERPDB", "edition": "ORA$BASE",
++                    "database_version": "19.0.0.0",
++                },
++            }
++            prompts = []
++            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
++                status = rollout.run_rollout(
++                    self.manifest_path, "prod", repo_root=self.root,
++                    capsule_path=self.capsule_path,
++                    stage_report_path=stage_report,
++                    confirm=lambda prompt: prompts.append(prompt) or False,
++                )
++            self.assertEqual(status, 1)
++            self.assertIn("PROD_UNIQUE", prompts[0])
++            self.assertIn("OTHER_UNIQUE", prompts[0])
++
++    def test_capsule_target_switch_between_preparation_and_writer_refuses(self) -> None:
++        from scripts import feature_release, release_state
++        stage_report = self.root / "scratch" / "stage.json"
++        stage_report.parent.mkdir(parents=True, exist_ok=True)
++        stage_report.write_text("{}\n", encoding="utf-8")
++        sql_path = self.root / "scripts" / "aux.sql"
++        sql_path.parent.mkdir(parents=True, exist_ok=True)
++        sql_path.write_text("SELECT 1 FROM dual;\n", encoding="utf-8")
++        steps = [
++            dict(self.steps[0]),
++            {"type": "sql-script", "file": "scripts/aux.sql", "schema": "APP_CODE"},
++            dict(self.steps[1]),
++        ]
++        environ = {
++            "PROD_SCHEMA": "APP_CODE",
++            "PROD_SQLCL_CONNECTION": "prod-aux-conn",
++            "PROD_EXPECTED_USER": "APP_CODE",
++        }
++        patches = list(self._patches(environment="prod", steps=steps))
++        patches.extend([
++            patch.dict("os.environ", environ),
++            patch.object(release_state, "validate_stage_proof"),
++        ])
++        with ExitStack() as stack:
++            mocks = [stack.enter_context(patcher) for patcher in patches]
++            plan = mocks[3].return_value
++            aux_hash = hashlib.sha256(sql_path.read_bytes()).hexdigest()
++            plan[1]["phase"] = "data"
++            plan[1]["classificationReason"] = "data"
++            plan[1]["inputHashes"] = [{"path": "scripts/aux.sql", "sha256": aux_hash}]
++            plan[1]["sha256"] = rollout._canonical_hash({"step": plan[1]["step"], "inputHashes": plan[1]["inputHashes"]})
++            target_plan = mocks[4].return_value
++            target_plan.targets["step:2"] = {
++                "environment": "prod", "operation": "migration", "logicalSchema": "APP_CODE",
++                "connection": "prod-aux-conn", "expectedUser": "APP_CODE", "schema": "APP_CODE",
++                "classification": "production",
++                "observed": {
++                    "session_user": "APP_CODE", "current_schema": "APP_CODE",
++                    "db_name": "PROD", "db_unique_name": "PROD_UNIQUE",
++                    "service_name": "prod.example.invalid", "container_id": "7",
++                    "container_name": "PRODPDB", "edition": "ORA$BASE",
++                    "database_version": "19.0.0.0",
++                },
++            }
++            def observe(target, _run_dir):
++                return {
++                    "session_user": "APP_CODE", "current_schema": "APP_CODE",
++                    "db_name": "OTHER", "db_unique_name": "OTHER_UNIQUE",
++                    "service_name": "other.example.invalid", "container_id": "7",
++                    "container_name": "OTHERPDB", "edition": "ORA$BASE",
++                    "database_version": "19.0.0.0",
++                }
++            stack.enter_context(patch.object(rollout, "_observe_target_identity", side_effect=observe))
++            stack.enter_context(patch.object(feature_release, "execute_checkpoint", side_effect=lambda *args, **kwargs: self._fake_checkpoint_result(args, kwargs, object_seconds=1.0, session_count=1)))
++            exec_mock = stack.enter_context(patch.object(rollout, "execute_step"))
++            report_base = self.root / "scratch" / "test-switch"
++            output = io.StringIO()
++            with contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):
++                status = rollout.run_rollout(
++                    self.manifest_path, "prod", repo_root=self.root,
++                    capsule_path=self.capsule_path,
++                    report_path=report_base,
++                    stage_report_path=stage_report,
++                    confirm=lambda _prompt: True,
++                )
++            rep = json.loads(report_base.with_suffix(".json").read_text(encoding="utf-8"))
++            self.assertEqual(status, 2)
++            self.assertIn("target identity changed after preparation", rep["error"])
++            exec_mock.assert_not_called()
++
+diff --git a/tests/test_live_feature_release.py b/tests/test_live_feature_release.py
+index b479de8..4666eea 100644
+--- a/tests/test_live_feature_release.py
++++ b/tests/test_live_feature_release.py
+@@ -223,3 +223,3 @@ class LiveFeatureReleaseTests(unittest.TestCase):
+-    def _ack_env(self) -> dict:
+-        """The typed acknowledgments read redirected input only under this test-only switch; the scripts never set it."""
+-        return {**self.env, "TEAM_ACK_FROM_STDIN": "1"}
++    def _team_ack(self, *args: str, ack: str) -> subprocess.CompletedProcess:
++        """Acknowledgments require a developer at a terminal, not automated input."""
++        raise unittest.SkipTest("live reconciliation requires a developer's terminal acknowledgment")
+@@ -971,0 +972 @@ class LiveFeatureReleaseTests(unittest.TestCase):
++    @unittest.skip("live reconciliation requires a developer's terminal acknowledgment")
+@@ -1011,2 +1012,2 @@ class LiveFeatureReleaseTests(unittest.TestCase):
+-        result = self._team("rollout", "releases/current.json", "--env", "staging", "--prepare",
+-                            "--capsule", capsule, "--recover", attempt, env=self._ack_env(), stdin=f"RECONCILE {attempt}\n")
++        result = self._team_ack("rollout", "releases/current.json", "--env", "staging", "--prepare",
++                                "--capsule", capsule, "--recover", attempt, ack=f"RECONCILE {attempt}\n")
+@@ -1213,0 +1215 @@ class LiveFeatureReleaseTests(unittest.TestCase):
++    @unittest.skip("live reconciliation requires a developer's terminal acknowledgment")
+@@ -1257 +1259 @@ class LiveFeatureReleaseTests(unittest.TestCase):
+-        result = self._team("feature", "reconcile-run", run_id, "--env", "staging", env=self._ack_env(), stdin="RECONCILE-RUN not-this-run\n")
++        result = self._team_ack("feature", "reconcile-run", run_id, "--env", "staging", ack="RECONCILE-RUN not-this-run\n")
+@@ -1262 +1264 @@ class LiveFeatureReleaseTests(unittest.TestCase):
+-        result = self._team("feature", "reconcile-run", run_id, "--env", "staging", env=self._ack_env(), stdin=f"RECONCILE-RUN {run_id}\n")
++        result = self._team_ack("feature", "reconcile-run", run_id, "--env", "staging", ack=f"RECONCILE-RUN {run_id}\n")
+diff --git a/tests/test_migrate_cli.py b/tests/test_migrate_cli.py
+index 26d5ab7..8636c15 100644
+--- a/tests/test_migrate_cli.py
++++ b/tests/test_migrate_cli.py
+@@ -340,0 +341,19 @@ class MigrateCliTests(unittest.TestCase):
++    def test_rollout_binding_refuses_a_changed_target_and_preserves_confirmation_source(self):
++        folder = self.add_folder("2026-09-28_rollout-binding-r001", {"001-create-table.sql": "CREATE TABLE T (ID NUMBER);\n"})
++        migration = self.load(folder.name)
++        prompts = []
++        result, fake = self.apply(migration, self.target("staging"),
++                                  confirm=lambda prompt: prompts.append(prompt) or True,
++                                  expected_db_unique_name="WRONG", rollout_confirmed_by="--confirm-target")
++        self.assertEqual(2, result)
++        self.assertEqual([], prompts)
++        self.assertFalse(any(call[0] == "apply" for call in fake.calls))
++
++        result, fake = self.apply(migration, self.target("staging"),
++                                  confirm=lambda prompt: prompts.append(prompt) or True,
++                                  expected_db_unique_name="STAGINGDB_UNIQUE", rollout_confirmed_by="--confirm-target")
++        self.assertEqual(0, result)
++        self.assertTrue(prompts)
++        records = [json.loads(path.read_text(encoding="utf-8")) for path in self.root.rglob("run-manifest.json")]
++        self.assertIn(("flag", "--confirm-target"), {(row.get("confirmation"), row.get("confirmedBy")) for row in records})
++
+diff --git a/tests/test_migration_archive.py b/tests/test_migration_archive.py
+index aea8e51..01dcfab 100644
+--- a/tests/test_migration_archive.py
++++ b/tests/test_migration_archive.py
+@@ -9 +8,0 @@ import uuid
+-from datetime import datetime, timezone
+@@ -19,0 +19,3 @@ CHECKS = b'{"schemaVersion":1,"preconditions":[],"postconditions":[{"id":"ready"
++IDENTITY = {"session_user": "APP_ONE", "current_schema": "APP_ONE", "db_name": "DB",
++            "db_unique_name": "DB_A", "service_name": "SERVICE", "container_id": "3",
++            "container_name": "PDB_A", "edition": "ORA$BASE", "database_version": "19.0"}
+@@ -30,3 +32,7 @@ def add_folder(root: Path, relative: str) -> Path:
+-def add_attempt(root: Path, folder: Path, *, schema: str = "APP_ONE") -> Path:
+-    attempt = root / "scratch" / "migration-attempt-archive-test"
+-    attempt.mkdir(parents=True)
++def add_attempt(
++    root: Path, folder: Path, *, schema: str = "APP_ONE", environment: str = "dev",
++    run_suffix: str = "archive-test", target: dict | None = None,
++) -> Path:
++    attempt = root / "scratch" / f"migration-attempt-{run_suffix}"
++    attempt.mkdir(parents=True, exist_ok=True)
++    manifest_target = target or {"environment": environment, **IDENTITY, "current_schema": schema}
+@@ -36 +42 @@ def add_attempt(root: Path, folder: Path, *, schema: str = "APP_ONE") -> Path:
+-        "target": {"environment": "dev", "current_schema": schema},
++        "target": manifest_target,
+@@ -39 +45 @@ def add_attempt(root: Path, folder: Path, *, schema: str = "APP_ONE") -> Path:
+-    (attempt / "run-manifest.json").write_text(json.dumps(manifest) + "\n", encoding="utf-8")
++    (attempt / "run-manifest.json").write_text(json.dumps(manifest) + "\n", encoding="utf-8", newline="\n")
+@@ -43 +49,4 @@ def add_attempt(root: Path, folder: Path, *, schema: str = "APP_ONE") -> Path:
+-def verified_receipt(folder: Path, migration, *, schema: str = "APP_ONE") -> dict:
++def verified_receipt(
++    folder: Path, migration, *, schema: str = "APP_ONE", environment: str = "dev", target_identity: dict | None = None,
++) -> dict:
++    target = target_identity or {"environment": environment, **IDENTITY, "current_schema": schema}
+@@ -47 +56 @@ def verified_receipt(folder: Path, migration, *, schema: str = "APP_ONE") -> dic
+-        "environment": "dev",
++        "environment": environment,
+@@ -55 +64 @@ def verified_receipt(folder: Path, migration, *, schema: str = "APP_ONE") -> dic
+-        "target": {"environment": "dev", "current_schema": schema},
++        "target": target,
+@@ -73 +82 @@ def add_attempt_event(folder: Path, relative: str, migration) -> Path:
+-        "recordedAt": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
++        "recordedAt": "2026-10-01T09:59:00Z",
+@@ -77 +86 @@ def add_attempt_event(folder: Path, relative: str, migration) -> Path:
+-        "identity": None,
++        "identity": dict(IDENTITY),
+@@ -100,0 +110,86 @@ class MigrationArchiveTests(unittest.TestCase):
++    def test_receipt_with_unknown_database_does_not_resolve_pending_attempt(self) -> None:
++        api = self.require_archive()
++        relative = "migrations/APP_ONE/2026-10-01_archive-family-r001"
++        folder = add_folder(self.root, relative)
++        migration = api.load_migration(self.root, relative)
++        receipt = verified_receipt(folder, migration, target_identity={"environment": "dev", "current_schema": "APP_ONE"})
++        (folder / "status.dev.json").write_text(json.dumps(receipt) + "\n", encoding="utf-8", newline="\n")
++        add_attempt_event(folder, relative, migration)
++        with self.assertRaises(api.MigrationArchiveError):
++            api.archive_migrations(self.root, [relative])
++        self.assertTrue(folder.is_dir())
++
++    def test_one_receipt_cannot_resolve_two_pending_attempts_on_same_target(self) -> None:
++        api = self.require_archive()
++        relative = "migrations/APP_ONE/2026-10-01_archive-family-r001"
++        folder = add_folder(self.root, relative)
++        migration = api.load_migration(self.root, relative)
++        (folder / "status.dev.json").write_text(
++            json.dumps(verified_receipt(folder, migration)) + "\n", encoding="utf-8", newline="\n"
++        )
++        add_attempt_event(folder, relative, migration)
++        add_attempt_event(folder, relative, migration)
++        with self.assertRaises(api.MigrationArchiveError):
++            api.archive_migrations(self.root, [relative])
++        self.assertTrue(folder.is_dir())
++
++    def test_one_receipt_cannot_resolve_two_scratch_only_attempts(self) -> None:
++        api = self.require_archive()
++        relative = "migrations/APP_ONE/2026-10-01_archive-family-r001"
++        folder = add_folder(self.root, relative)
++        migration = api.load_migration(self.root, relative)
++        (folder / "status.dev.json").write_text(
++            json.dumps(verified_receipt(folder, migration)) + "\n", encoding="utf-8", newline="\n"
++        )
++        add_attempt(self.root, folder, run_suffix="first")
++        add_attempt(self.root, folder, run_suffix="second")
++        with self.assertRaises(api.MigrationArchiveError):
++            api.archive_migrations(self.root, [relative])
++
++    def test_receipt_does_not_cover_a_later_pending_attempt(self) -> None:
++        api = self.require_archive()
++        relative = "migrations/APP_ONE/2026-10-01_archive-family-r001"
++        folder = add_folder(self.root, relative)
++        migration = api.load_migration(self.root, relative)
++        (folder / "status.dev.json").write_text(
++            json.dumps(verified_receipt(folder, migration)) + "\n", encoding="utf-8", newline="\n"
++        )
++        event = add_attempt_event(folder, relative, migration)
++        payload = json.loads(event.read_text(encoding="utf-8"))
++        payload["recordedAt"] = "2026-10-02T10:02:00Z"
++        event.write_text(json.dumps(payload) + "\n", encoding="utf-8", newline="\n")
++        with self.assertRaises(api.MigrationArchiveError):
++            api.archive_migrations(self.root, [relative])
++
++    def test_receipt_with_database_identity_does_not_cover_an_unidentified_attempt(self) -> None:
++        api = self.require_archive()
++        relative = "migrations/APP_ONE/2026-10-01_archive-family-r001"
++        folder = add_folder(self.root, relative)
++        migration = api.load_migration(self.root, relative)
++        target = {"environment": "dev", "current_schema": "APP_ONE", "db_unique_name": "DB_A"}
++        (folder / "status.dev.json").write_text(
++            json.dumps(verified_receipt(folder, migration, target_identity=target)) + "\n", encoding="utf-8", newline="\n"
++        )
++        add_attempt_event(folder, relative, migration)
++        with self.assertRaises(api.MigrationArchiveError):
++            api.archive_migrations(self.root, [relative])
++
++    def test_receipt_does_not_cover_an_attempt_in_another_container(self) -> None:
++        api = self.require_archive()
++        relative = "migrations/APP_ONE/2026-10-01_archive-family-r001"
++        folder = add_folder(self.root, relative)
++        migration = api.load_migration(self.root, relative)
++        identity = {"session_user": "APP_ONE", "current_schema": "APP_ONE", "db_name": "DB",
++                    "db_unique_name": "DB_A", "service_name": "svc", "container_id": "3",
++                    "container_name": "PDB_A", "edition": "ORA$BASE", "database_version": "19.0"}
++        target = {"environment": "dev", **identity}
++        (folder / "status.dev.json").write_text(
++            json.dumps(verified_receipt(folder, migration, target_identity=target)) + "\n", encoding="utf-8", newline="\n"
++        )
++        event = add_attempt_event(folder, relative, migration)
++        payload = json.loads(event.read_text(encoding="utf-8"))
++        payload["identity"] = {**identity, "container_id": "4", "container_name": "PDB_B"}
++        event.write_text(json.dumps(payload) + "\n", encoding="utf-8", newline="\n")
++        with self.assertRaises(api.MigrationArchiveError):
++            api.archive_migrations(self.root, [relative])
++
+@@ -139 +234 @@ class MigrationArchiveTests(unittest.TestCase):
+-        (folder / "status.dev.json").write_text(json.dumps(receipt) + "\n", encoding="utf-8")
++        (folder / "status.dev.json").write_text(json.dumps(receipt) + "\n", encoding="utf-8", newline="\n")
+@@ -172 +267 @@ class MigrationArchiveTests(unittest.TestCase):
+-        (folder / "status.dev.json").write_text(json.dumps(verified_receipt(folder, migration)) + "\n", encoding="utf-8")
++        (folder / "status.dev.json").write_text(json.dumps(verified_receipt(folder, migration)) + "\n", encoding="utf-8", newline="\n")
+@@ -212 +307 @@ class MigrationArchiveTests(unittest.TestCase):
+-        first_index.write_text('{"archived": [], "schemaVersion": 1}\n', encoding="utf-8")
++        first_index.write_text('{"archived": [], "schemaVersion": 1}\n', encoding="utf-8", newline="\n")
+@@ -334 +429 @@ class MigrationArchiveTests(unittest.TestCase):
+-        (folder / "status.dev.json").write_text(json.dumps(receipt) + "\n", encoding="utf-8")
++        (folder / "status.dev.json").write_text(json.dumps(receipt) + "\n", encoding="utf-8", newline="\n")
+@@ -340,0 +436,86 @@ class MigrationArchiveTests(unittest.TestCase):
++    def test_dev_receipt_with_pending_staging_attempt_refuses_default_archive(self) -> None:
++        api = self.require_archive()
++        folder = add_folder(self.root, "migrations/APP_ONE/2026-10-01_archive-family-r001")
++        migration = api.load_migration(self.root, "migrations/APP_ONE/2026-10-01_archive-family-r001")
++        (folder / "status.dev.json").write_text(json.dumps(verified_receipt(folder, migration)) + "\n", encoding="utf-8", newline="\n")
++        add_attempt(self.root, folder, environment="staging", run_suffix="staging-run")
++
++        with self.assertRaisesRegex(api.MigrationArchiveError, "attempt record.*no verified receipt for staging"):
++            api.archive_migrations(self.root, ["migrations/APP_ONE/2026-10-01_archive-family-r001"])
++
++        self.assertTrue(folder.is_dir())
++
++    def test_dev_receipt_with_pending_prod_attempt_refuses_default_archive(self) -> None:
++        api = self.require_archive()
++        folder = add_folder(self.root, "migrations/APP_ONE/2026-10-01_archive-family-r001")
++        migration = api.load_migration(self.root, "migrations/APP_ONE/2026-10-01_archive-family-r001")
++        (folder / "status.dev.json").write_text(json.dumps(verified_receipt(folder, migration)) + "\n", encoding="utf-8", newline="\n")
++        add_attempt(self.root, folder, environment="prod", run_suffix="prod-run")
++
++        with self.assertRaisesRegex(api.MigrationArchiveError, "attempt record.*no verified receipt for prod"):
++            api.archive_migrations(self.root, ["migrations/APP_ONE/2026-10-01_archive-family-r001"])
++
++        self.assertTrue(folder.is_dir())
++
++    def test_staging_attempt_with_staging_verified_receipt_can_be_archived(self) -> None:
++        api = self.require_archive()
++        folder = add_folder(self.root, "migrations/APP_ONE/2026-10-01_archive-family-r001")
++        migration = api.load_migration(self.root, "migrations/APP_ONE/2026-10-01_archive-family-r001")
++        (folder / "status.staging.json").write_text(
++            json.dumps(verified_receipt(folder, migration, environment="staging")) + "\n", encoding="utf-8", newline="\n"
++        )
++        add_attempt(self.root, folder, environment="staging", run_suffix="staging-run")
++
++        result = api.archive_migrations(self.root, ["migrations/APP_ONE/2026-10-01_archive-family-r001"])
++
++        self.assertTrue(any(item.startswith("status.staging.json") for item in result.entries[0].evidence))
++        self.assertTrue(folder.is_dir())
++
++    def test_preserve_unresolved_archives_staging_attempt_with_dev_receipt(self) -> None:
++        api = self.require_archive()
++        folder = add_folder(self.root, "migrations/APP_ONE/2026-10-01_archive-family-r001")
++        migration = api.load_migration(self.root, "migrations/APP_ONE/2026-10-01_archive-family-r001")
++        (folder / "status.dev.json").write_text(json.dumps(verified_receipt(folder, migration)) + "\n", encoding="utf-8", newline="\n")
++        add_attempt(self.root, folder, environment="staging", run_suffix="staging-run")
++
++        plan = api.archive_migrations(
++            self.root,
++            ["migrations/APP_ONE/2026-10-01_archive-family-r001"],
++            preserve_unresolved=True,
++            yes=True,
++        )
++
++        self.assertIn("unresolved (preserved)", plan.entries[0].evidence)
++        self.assertFalse(folder.exists())
++        self.assertTrue((self.root / "migrations-archive/APP_ONE/2026-10-01_archive-family-r001").is_dir())
++
++    def test_dev_receipt_with_attempt_on_different_target_identity_refuses(self) -> None:
++        api = self.require_archive()
++        folder = add_folder(self.root, "migrations/APP_ONE/2026-10-01_archive-family-r001")
++        migration = api.load_migration(self.root, "migrations/APP_ONE/2026-10-01_archive-family-r001")
++        receipt_target = {"environment": "dev", "current_schema": "APP_ONE", "db_unique_name": "DB_A"}
++        (folder / "status.dev.json").write_text(
++            json.dumps(verified_receipt(folder, migration, target_identity=receipt_target)) + "\n", encoding="utf-8", newline="\n"
++        )
++        attempt_target = {"environment": "dev", "current_schema": "APP_ONE", "db_unique_name": "DB_B"}
++        add_attempt(self.root, folder, environment="dev", run_suffix="mismatched-target", target=attempt_target)
++
++        with self.assertRaisesRegex(api.MigrationArchiveError, "attempt record.*no verified receipt.*unknown"):
++            api.archive_migrations(self.root, ["migrations/APP_ONE/2026-10-01_archive-family-r001"])
++
++        self.assertTrue(folder.is_dir())
++
++    def test_malformed_unknown_scratch_evidence_refuses_default_archive(self) -> None:
++        api = self.require_archive()
++        folder = add_folder(self.root, "migrations/APP_ONE/2026-10-01_archive-family-r001")
++        migration = api.load_migration(self.root, "migrations/APP_ONE/2026-10-01_archive-family-r001")
++        (folder / "status.dev.json").write_text(json.dumps(verified_receipt(folder, migration)) + "\n", encoding="utf-8", newline="\n")
++        bad_dir = self.root / "scratch" / "migration-attempt-bad"
++        bad_dir.mkdir(parents=True, exist_ok=True)
++        (bad_dir / "run-manifest.json").write_text("not json!\n", encoding="utf-8", newline="\n")
++
++        with self.assertRaisesRegex(api.MigrationArchiveError, "state unknown"):
++            api.archive_migrations(self.root, ["migrations/APP_ONE/2026-10-01_archive-family-r001"])
++
++        self.assertTrue(folder.is_dir())
++
+@@ -369 +550 @@ class MigrationArchiveTests(unittest.TestCase):
+-        index.write_text('{"schemaVersion":1,"archived":[],"extra":true}\n', encoding="utf-8")
++        index.write_text('{"schemaVersion":1,"archived":[],"extra":true}\n', encoding="utf-8", newline="\n")
+@@ -540 +721 @@ class ResolvedArchiveTests(unittest.TestCase):
+-        (verified / "status.dev.json").write_text(json.dumps(verified_receipt(verified, verified_migration)) + "\n", encoding="utf-8")
++        (verified / "status.dev.json").write_text(json.dumps(verified_receipt(verified, verified_migration)) + "\n", encoding="utf-8", newline="\n")
+@@ -555 +736 @@ class ResolvedArchiveTests(unittest.TestCase):
+-        (later / "status.dev.json").write_text(json.dumps(verified_receipt(later, later_migration)) + "\n", encoding="utf-8")
++        (later / "status.dev.json").write_text(json.dumps(verified_receipt(later, later_migration)) + "\n", encoding="utf-8", newline="\n")
+@@ -574 +755 @@ class ResolvedArchiveTests(unittest.TestCase):
+-        (first / "status.dev.json").write_text(json.dumps(verified_receipt(first, first_migration)) + "\n", encoding="utf-8")
++        (first / "status.dev.json").write_text(json.dumps(verified_receipt(first, first_migration)) + "\n", encoding="utf-8", newline="\n")
+@@ -579 +760 @@ class ResolvedArchiveTests(unittest.TestCase):
+-        (second / "status.dev.json").write_text(json.dumps(verified_receipt(second, second_migration)) + "\n", encoding="utf-8")
++        (second / "status.dev.json").write_text(json.dumps(verified_receipt(second, second_migration)) + "\n", encoding="utf-8", newline="\n")
+diff --git a/tests/test_migration_resolution.py b/tests/test_migration_resolution.py
+index d260a56..1076eef 100644
+--- a/tests/test_migration_resolution.py
++++ b/tests/test_migration_resolution.py
+@@ -349,0 +350,7 @@ class ReconcileCommandTests(ResolutionTestCase):
++        # TEAM_ACK_FROM_STDIN does not bypass the terminal requirement
++        status, _out, _errors = self.reconcile(
++            self.reconcile_args(), ack_variable=True, terminal=False, input_effect=must_not_read,
++        )
++        self.assertEqual(status, 2)
++        self.assertEqual(self.snapshot(), before)
++
+diff --git a/tests/test_publish_cli.py b/tests/test_publish_cli.py
+index 8498593..57e7401 100644
+--- a/tests/test_publish_cli.py
++++ b/tests/test_publish_cli.py
+@@ -55,0 +56,21 @@ class PublishAppCliTests(unittest.TestCase):
++        (scripts / "application_lifecycle.sql").write_text("-- fixture\n", encoding="utf-8")
++        (scripts / "application_lifecycle.py").write_text(
++            'import sys, json\n'
++            'from pathlib import Path\n'
++            'a = sys.argv\n'
++            'if "--run-dir" in a:\n'
++            '    r = Path(a[a.index("--run-dir") + 1])\n'
++            '    r.mkdir(parents=True, exist_ok=True)\n'
++            '    if a[1] == "capture":\n'
++            '        identity = {"db_unique_name": "FREE", "service_name": "freepdb1", "container_id": "3", "container_name": "FREEPDB1", "edition": "ORA$BASE", "server_host": "docker", "session_user": "DEMO", "current_schema": "DEMO"}\n'
++            '        (r / "lifecycle-snapshot.json").write_text(json.dumps({"identity": identity}), encoding="utf-8")\n'
++            '    elif a[1] == "verify":\n'
++            '        (r / "lifecycle-report.json").write_text("verified", encoding="utf-8")\n'
++            '        if "--summary-path" in a:\n'
++            '            p = Path(a[a.index("--summary-path") + 1])\n'
++            '            if p.exists():\n'
++            '                d = json.loads(p.read_text(encoding="utf-8"))\n'
++            '                d["lifecycleStatus"] = "verified"\n'
++            '                p.write_text(json.dumps(d), encoding="utf-8")\n',
++            encoding="utf-8",
++        )
+@@ -785 +806 @@ class PublishAppCliTests(unittest.TestCase):
+-            self.assertEqual(arguments[-1], "P.2026-09-26T08:00:00." + b"Release 1.0".hex().upper())
++            self.assertEqual(arguments[-9], "P.2026-09-26T08:00:00." + b"Release 1.0".hex().upper())
+@@ -792 +813 @@ class PublishAppCliTests(unittest.TestCase):
+-            self.assertEqual(sql_log.read_text(encoding="utf-8").splitlines()[-1], "-")
++            self.assertEqual(sql_log.read_text(encoding="utf-8").splitlines()[-9], "-")
+@@ -818 +839 @@ class PublishAppCliTests(unittest.TestCase):
+-            self.assertEqual(sql_log.read_text(encoding="utf-8").splitlines()[-1], "ABSENT")
++            self.assertEqual(sql_log.read_text(encoding="utf-8").splitlines()[-9], "ABSENT")
+@@ -946 +967 @@ class PublishAppCliTests(unittest.TestCase):
+-                sql_log.read_text(encoding="utf-8").splitlines()[-1],
++                sql_log.read_text(encoding="utf-8").splitlines()[-9],
+@@ -964 +985 @@ class PublishAppCliTests(unittest.TestCase):
+-            self.assertEqual(sql_log.read_text(encoding="utf-8").splitlines()[-1], "ABSENT")
++            self.assertEqual(sql_log.read_text(encoding="utf-8").splitlines()[-9], "ABSENT")
+@@ -1156,0 +1178,21 @@ class PublishAppCliTests(unittest.TestCase):
++                (scripts / "application_lifecycle.sql").write_text("-- fixture\n", encoding="utf-8")
++                (scripts / "application_lifecycle.py").write_text(
++                    'import sys, json\n'
++                    'from pathlib import Path\n'
++                    'a = sys.argv\n'
++                    'if "--run-dir" in a:\n'
++                    '    r = Path(a[a.index("--run-dir") + 1])\n'
++                    '    r.mkdir(parents=True, exist_ok=True)\n'
++                    '    if a[1] == "capture":\n'
++                    '        identity = {"db_unique_name": "FREE", "service_name": "freepdb1", "container_id": "3", "container_name": "FREEPDB1", "edition": "ORA$BASE", "server_host": "docker", "session_user": "DEMO", "current_schema": "DEMO"}\n'
++                    '        (r / "lifecycle-snapshot.json").write_text(json.dumps({"identity": identity}), encoding="utf-8")\n'
++                    '    elif a[1] == "verify":\n'
++                    '        (r / "lifecycle-report.json").write_text("verified", encoding="utf-8")\n'
++                    '        if "--summary-path" in a:\n'
++                    '            p = Path(a[a.index("--summary-path") + 1])\n'
++                    '            if p.exists():\n'
++                    '                d = json.loads(p.read_text(encoding="utf-8"))\n'
++                    '                d["lifecycleStatus"] = "verified"\n'
++                    '                p.write_text(json.dumps(d), encoding="utf-8")\n',
++                    encoding="utf-8",
++                )
+diff --git a/tests/test_publish_lifecycle_gate.py b/tests/test_publish_lifecycle_gate.py
+index c0aa62d..1d1c85f 100644
+--- a/tests/test_publish_lifecycle_gate.py
++++ b/tests/test_publish_lifecycle_gate.py
+@@ -55,0 +56,65 @@ class PublishLifecycleGateTests(unittest.TestCase):
++
++    def test_missing_lifecycle_helper_refuses_before_import_in_both_shells(self):
++        launchers = [('bash', [BASH])]
++        if _test_subprocess_safety.working_pwsh():
++            launchers.append(('pwsh', [_test_subprocess_safety.working_pwsh(), '-NoProfile', '-File']))
++        for engine, launcher in launchers:
++            for missing in ('scripts/application_lifecycle.py', 'scripts/application_lifecycle.sql'):
++                with self.subTest(engine=engine, missing=missing), tempfile.TemporaryDirectory() as temporary:
++                    root = Path(temporary)
++                    fixture = test_publish_cli.PublishAppCliTests()
++                    runner, _, _, environment, app, state = fixture.make_stateful_dev_fixture(root)
++                    environment['PROJECT_ENV_FILE'] = str(root / '.env')
++                    (root / 'scripts/application_lifecycle.sql').write_text('-- fixture\n', encoding='utf-8')
++                    (root / 'scripts/application_lifecycle.py').write_text(fixture.FAKE_LIFECYCLE, encoding='utf-8')
++                    (root / missing).unlink()
++                    original = (app / 'apex-team-export.json').read_bytes()
++                    script = runner if engine == 'bash' else runner.with_suffix('.ps1')
++                    result = subprocess.run([*launcher, str(script), '100'], cwd=root, env=environment,
++                                            text=True, capture_output=True)
++                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
++                    self.assertIn('application lifecycle helpers are unavailable; nothing imported', result.stdout + result.stderr)
++                    self.assertEqual((state / 'import-count.txt').read_text(encoding='utf-8').strip(), '0')
++                    self.assertEqual((app / 'apex-team-export.json').read_bytes(), original,
++                                     'missing lifecycle helpers must not advance the DEV baseline')
++
++    def test_describe_survives_missing_lifecycle_helpers_in_both_shells(self):
++        launchers = [('bash', [BASH])]
++        if _test_subprocess_safety.working_pwsh():
++            launchers.append(('pwsh', [_test_subprocess_safety.working_pwsh(), '-NoProfile', '-File']))
++        for engine, launcher in launchers:
++            with self.subTest(engine=engine), tempfile.TemporaryDirectory() as temporary:
++                root = Path(temporary)
++                fixture = test_publish_cli.PublishAppCliTests()
++                runner, _, _, environment, app, _ = fixture.make_stateful_dev_fixture(root)
++                environment['PROJECT_ENV_FILE'] = str(root / '.env')
++                for helper in (root / 'scripts/application_lifecycle.py', root / 'scripts/application_lifecycle.sql'):
++                    if helper.exists():
++                        helper.unlink()
++                script = runner if engine == 'bash' else runner.with_suffix('.ps1')
++                result = subprocess.run([*launcher, str(script), '100', '--describe'], cwd=root, env=environment,
++                                        text=True, capture_output=True)
++                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
++                self.assertIn('DEMO', result.stdout)
++
++    def test_staging_publish_refuses_when_lifecycle_helpers_missing(self):
++        launchers = [('bash', [BASH])]
++        if _test_subprocess_safety.working_pwsh():
++            launchers.append(('pwsh', [_test_subprocess_safety.working_pwsh(), '-NoProfile', '-File']))
++        for engine, launcher in launchers:
++            with self.subTest(engine=engine), tempfile.TemporaryDirectory() as temporary:
++                root = Path(temporary)
++                fixture = test_publish_cli.PublishAppCliTests()
++                runner, _, environment = fixture.make_promotion_fixture(root, 'staging', lifecycle=False)
++                for helper in (root / 'scripts/application_lifecycle.py', root / 'scripts/application_lifecycle.sql'):
++                    if helper.exists():
++                        helper.unlink()
++                if engine == 'pwsh':
++                    import shutil
++                    for name in ('publish_app.ps1', 'load_env.ps1', 'invoke_sqlcl.ps1', 'resolve_python.ps1', 'check_db_target.ps1', 'normalize_apx.ps1'):
++                        shutil.copy2(ROOT / 'scripts' / name, root / 'scripts' / name)
++                script = runner if engine == 'bash' else runner.with_suffix('.ps1')
++                result = subprocess.run([*launcher, str(script), '100', '--env', 'staging', '-y'], cwd=root, env=environment,
++                                        text=True, capture_output=True)
++                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
++                self.assertIn('application lifecycle helpers are unavailable; nothing imported', result.stdout + result.stderr)
+diff --git a/tests/test_rollout.py b/tests/test_rollout.py
+index ab2810a..a05ddda 100644
+--- a/tests/test_rollout.py
++++ b/tests/test_rollout.py
+@@ -399,0 +400,131 @@ class RolloutManifestTests(unittest.TestCase):
++    def test_production_app_deploy_target_switch_refuses_before_deploy(self) -> None:
++        self.add_app()
++        (self.root / "apps" / "DEMO" / "100" / "deployments" / "prod.json").write_text(
++            json.dumps({"workspace": {"name": "PROD_WS"}, "app": {"id": 100, "databaseSession": {"parsingSchema": "PROD_APP"}}}) + "\n",
++            encoding="utf-8",
++        )
++        manifest = self.write_manifest([{"type": "app-deploy", "appId": 100}])
++        observations = ["PRODDB_UNIQUE", "OTHERDB_UNIQUE"]
++        def observe(target, run_dir):
++            db = observations.pop(0) if observations else "OTHERDB_UNIQUE"
++            return {field: "observed" for field in rollout.OBSERVED_IDENTITY_FIELDS} | {"db_unique_name": db}
++        with patch.dict(os.environ, {"APEX_PARSING_SCHEMA": "PROD_APP", "PROD_SQLCL_CONNECTION": "PRODDB_CONN", "PROD_EXPECTED_USER": "PROD_APP"}, clear=True), patch(
++            "scripts.rollout._observe_target_identity", side_effect=observe
++        ), patch("scripts.rollout.subprocess.run") as run, contextlib.redirect_stdout(io.StringIO()):
++            status = rollout.run_rollout(
++                manifest, "prod", repo_root=self.root, report_path=self.root / "scratch" / "app-prod-switch",
++                confirm=lambda _prompt: True,
++            )
++        self.assertEqual(status, 2)
++        run.assert_not_called()
++
++    def test_production_sql_script_target_switch_refuses_before_payload(self) -> None:
++        manifest = self.write_manifest([self.prod_sql_step()])
++        observations = ["PRODDB_UNIQUE", "OTHERDB_UNIQUE"]
++        def observe(target, run_dir):
++            db = observations.pop(0) if observations else "OTHERDB_UNIQUE"
++            return {field: "observed" for field in rollout.OBSERVED_IDENTITY_FIELDS} | {"db_unique_name": db}
++        with patch("scripts.rollout._observe_target_identity", side_effect=observe), patch(
++            "scripts.rollout._execute_sql_payload"
++        ) as payload_mock, contextlib.redirect_stdout(io.StringIO()):
++            status = rollout.run_rollout(
++                manifest, "prod", repo_root=self.root, report_path=self.root / "scratch" / "sql-switch",
++                confirm=lambda _prompt: True,
++            )
++        self.assertEqual(status, 2)
++        payload_mock.assert_not_called()
++
++    def test_staging_confirmed_name_is_rechecked_before_sql_payload(self) -> None:
++        step = self.prod_sql_step()
++        step.update(connection="STAGE_APP", expectedUser="STAGE_APP", schema="STAGE_APP")
++        manifest = self.write_manifest([step])
++        observations = ["STAGE_A", "STAGE_B"]
++        def observe(target, run_dir):
++            name = observations.pop(0) if observations else "STAGE_B"
++            return {field: "observed" for field in rollout.OBSERVED_IDENTITY_FIELDS} | {"db_unique_name": name}
++        with patch("scripts.rollout._observe_target_identity", side_effect=observe), \
++                patch("scripts.rollout._execute_sql_payload", return_value=rollout.StepResult(0)) as payload, \
++                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
++            status = rollout.run_rollout(manifest, "staging", repo_root=self.root, confirm_target="STAGE_A")
++        self.assertEqual(status, 2)
++        self.assertEqual(0, payload.call_count)
++
++    def test_migration_keeps_manifest_recheck_and_internal_target_binding(self) -> None:
++        step = {"type": "migrate", "folders": ["migrations/2026-10-10_release-r001"]}
++        plan = [{"number": 1, "inputHashes": []}]
++        evidence = self.root / "scratch" / "migration-recheck"
++        evidence.mkdir(parents=True)
++        captured = {}
++        def fake_migrate(arguments, **kwargs):
++            captured["arguments"] = arguments
++            captured["expected"] = kwargs.get("expected_db_unique_name")
++            captured["confirmed"] = kwargs["confirm"]("synthetic prompt")
++            return 0
++        with patch("scripts.rollout.migrate.main", side_effect=fake_migrate), \
++                patch("scripts.rollout._snapshot") as snapshot:
++            result = rollout.execute_step(step, environment="prod", repo_root=self.root, evidence_dir=evidence,
++                                          step_number=1, manifest=self.write_manifest([]), plan=plan,
++                                          manifest_confirmed=True, confirm_target="DB_A")
++        self.assertEqual(0, result.exit_code)
++        self.assertNotIn("--confirm-target", captured["arguments"])
++        self.assertEqual("DB_A", captured["expected"])
++        self.assertTrue(captured["confirmed"])
++        self.assertEqual(1, snapshot.call_count)
++
++    def test_production_ords_import_target_switch_refuses_before_payload(self) -> None:
++        ords_file = self.root / "scripts" / "ords.sql"
++        ords_file.parent.mkdir(parents=True, exist_ok=True)
++        ords_file.write_text(
++            "-- Generated by test\n-- Schema: PROD_APP\nBEGIN\n  ORDS.ENABLE_SCHEMA(p_schema => 'PROD_APP');\n  COMMIT;\nEND;\n/\n",
++            encoding="utf-8",
++        )
++        step = {"type": "ords-import", "file": "scripts/ords.sql", "connection": "PROD_APP", "expectedUser": "PROD_APP", "schema": "PROD_APP", "excludeModules": []}
++        manifest = self.write_manifest([step])
++        observations = ["PRODDB_UNIQUE", "OTHERDB_UNIQUE"]
++        def observe(target, run_dir):
++            db = observations.pop(0) if observations else "OTHERDB_UNIQUE"
++            return {field: "observed" for field in rollout.OBSERVED_IDENTITY_FIELDS} | {"db_unique_name": db}
++        with patch("scripts.rollout._observe_target_identity", side_effect=observe), patch(
++            "scripts.rollout._execute_sql_payload"
++        ) as payload_mock, contextlib.redirect_stdout(io.StringIO()):
++            status = rollout.run_rollout(
++                manifest, "prod", repo_root=self.root, report_path=self.root / "scratch" / "ords-switch",
++                confirm=lambda _prompt: True,
++            )
++        self.assertEqual(status, 2)
++        payload_mock.assert_not_called()
++
++    def test_interactive_production_rollout_binds_each_database_separately(self) -> None:
++        step1 = self.prod_sql_step()
++        script2 = self.root / "scripts" / "step2.sql"
++        script2.write_text("SELECT 2 FROM dual;\n", encoding="utf-8")
++        step2 = {"type": "sql-script", "file": "scripts/step2.sql", "connection": "PROD_OTHER", "expectedUser": "PROD_OTHER", "schema": "PROD_OTHER"}
++        manifest = self.write_manifest([step1, step2])
++        def observe(target, run_dir):
++            db = "PRODDB_A" if target.connection == "PROD_APP" else "PRODDB_B"
++            return {field: "observed" for field in rollout.OBSERVED_IDENTITY_FIELDS} | {"db_unique_name": db}
++        prompts = []
++        with patch("scripts.rollout._observe_target_identity", side_effect=observe), patch(
++            "scripts.rollout.execute_step", return_value=rollout.StepResult(0)
++        ) as exec_mock, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
++            status = rollout.run_rollout(
++                manifest, "prod", repo_root=self.root, confirm=lambda prompt: prompts.append(prompt) or True,
++            )
++        self.assertEqual(status, 0)
++        self.assertEqual(["PRODDB_A", "PRODDB_B"], [call.kwargs["confirm_target"] for call in exec_mock.call_args_list])
++        self.assertIn("PRODDB_A", prompts[0])
++        self.assertIn("PRODDB_B", prompts[0])
++
++    def test_production_target_missing_db_unique_name_refuses_before_payload(self) -> None:
++        manifest = self.write_manifest([self.prod_sql_step()])
++        def observe(target, run_dir):
++            return {field: "observed" for field in rollout.OBSERVED_IDENTITY_FIELDS} | {"db_unique_name": ""}
++        with patch("scripts.rollout._observe_target_identity", side_effect=observe), patch(
++            "scripts.rollout._execute_sql_payload"
++        ) as payload_mock, contextlib.redirect_stderr(io.StringIO()):
++            status = rollout.run_rollout(
++                manifest, "prod", repo_root=self.root, confirm=lambda _prompt: True,
++            )
++        self.assertEqual(status, 2)
++        payload_mock.assert_not_called()
++
+@@ -1012 +1143,2 @@ class RolloutManifestTests(unittest.TestCase):
+-        def fake_migrate_main(arguments, *, environ, repo_root, confirm, expected_input_hashes):
++        def fake_migrate_main(arguments, *, environ, repo_root, confirm, expected_input_hashes,
++                              expected_db_unique_name, rollout_confirmed_by):
+@@ -1015,0 +1148,2 @@ class RolloutManifestTests(unittest.TestCase):
++            self.assertIsNone(expected_db_unique_name)
++            self.assertEqual("terminal", rollout_confirmed_by)
+diff --git a/tests/test_terminal_confirm.py b/tests/test_terminal_confirm.py
+index 385f1a4..a0771eb 100644
+--- a/tests/test_terminal_confirm.py
++++ b/tests/test_terminal_confirm.py
+@@ -45 +45 @@ class TerminalConfirmTests(unittest.TestCase):
+-    def test_the_acknowledgment_switch_never_opens_a_yes_no_prompt(self):
++    def test_redirected_input_refused_for_yes_no_prompt(self):
+@@ -47 +47 @@ class TerminalConfirmTests(unittest.TestCase):
+-        with patch.dict(os.environ, {terminal_confirm.ACK_FROM_STDIN_ENV: "1"}), patch.object(terminal_confirm, "stdin_is_terminal", return_value=False), \
++        with patch.dict(os.environ, {"TEAM_ACK_FROM_STDIN": "1"}), patch.object(terminal_confirm, "stdin_is_terminal", return_value=False), \
+@@ -52 +52 @@ class TerminalConfirmTests(unittest.TestCase):
+-    def test_the_acknowledgment_switch_allows_only_a_redirected_acknowledgment_and_says_so(self):
++    def test_redirected_input_refused_for_acknowledgment_even_with_environment_variable(self):
+@@ -54 +54,2 @@ class TerminalConfirmTests(unittest.TestCase):
+-        with patch.object(terminal_confirm, "stdin_is_terminal", return_value=False), contextlib.redirect_stderr(stderr):
++        with patch.object(terminal_confirm, "stdin_is_terminal", return_value=False), \
++                patch.dict(os.environ, {"TEAM_ACK_FROM_STDIN": "1"}), contextlib.redirect_stderr(stderr):
+@@ -56,3 +57,6 @@ class TerminalConfirmTests(unittest.TestCase):
+-            self.assertTrue(terminal_confirm.may_read_acknowledgment({terminal_confirm.ACK_FROM_STDIN_ENV: "1"}))
+-            self.assertFalse(terminal_confirm.may_read_acknowledgment({terminal_confirm.ACK_FROM_STDIN_ENV: "yes"}))
+-        self.assertEqual(stderr.getvalue().count(terminal_confirm.ACK_FROM_STDIN_NOTICE), 1)
++            self.assertFalse(terminal_confirm.may_read_acknowledgment({"TEAM_ACK_FROM_STDIN": "1"}))
++            self.assertFalse(terminal_confirm.may_read_acknowledgment({"TEAM_ACK_FROM_STDIN": "yes"}))
++        self.assertIn(terminal_confirm.ACKNOWLEDGMENT_REFUSAL, stderr.getvalue())
++
++        with patch.object(terminal_confirm, "stdin_is_terminal", return_value=True):
++            self.assertTrue(terminal_confirm.may_read_acknowledgment())
