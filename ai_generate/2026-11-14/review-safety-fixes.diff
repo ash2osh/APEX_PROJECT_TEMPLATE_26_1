@@ -1503,10 +1503,10 @@ index 8498593..57e7401 100644
 +                    encoding="utf-8",
 +                )
 diff --git a/tests/test_publish_lifecycle_gate.py b/tests/test_publish_lifecycle_gate.py
-index c0aa62d..1d1c85f 100644
+index c0aa62d..3e66915 100644
 --- a/tests/test_publish_lifecycle_gate.py
 +++ b/tests/test_publish_lifecycle_gate.py
-@@ -55,0 +56,65 @@ class PublishLifecycleGateTests(unittest.TestCase):
+@@ -55,0 +56,66 @@ class PublishLifecycleGateTests(unittest.TestCase):
 +
 +    def test_missing_lifecycle_helper_refuses_before_import_in_both_shells(self):
 +        launchers = [('bash', [BASH])]
@@ -1527,7 +1527,7 @@ index c0aa62d..1d1c85f 100644
 +                    result = subprocess.run([*launcher, str(script), '100'], cwd=root, env=environment,
 +                                            text=True, capture_output=True)
 +                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-+                    self.assertIn('application lifecycle helpers are unavailable; nothing imported', result.stdout + result.stderr)
++                    self.assertIn('application lifecycle helpers are unavailable', result.stdout + result.stderr)
 +                    self.assertEqual((state / 'import-count.txt').read_text(encoding='utf-8').strip(), '0')
 +                    self.assertEqual((app / 'apex-team-export.json').read_bytes(), original,
 +                                     'missing lifecycle helpers must not advance the DEV baseline')
@@ -1559,7 +1559,7 @@ index c0aa62d..1d1c85f 100644
 +            with self.subTest(engine=engine), tempfile.TemporaryDirectory() as temporary:
 +                root = Path(temporary)
 +                fixture = test_publish_cli.PublishAppCliTests()
-+                runner, _, environment = fixture.make_promotion_fixture(root, 'staging', lifecycle=False)
++                runner, sql_log, environment = fixture.make_promotion_fixture(root, 'staging', lifecycle=False)
 +                for helper in (root / 'scripts/application_lifecycle.py', root / 'scripts/application_lifecycle.sql'):
 +                    if helper.exists():
 +                        helper.unlink()
@@ -1571,7 +1571,8 @@ index c0aa62d..1d1c85f 100644
 +                result = subprocess.run([*launcher, str(script), '100', '--env', 'staging', '-y'], cwd=root, env=environment,
 +                                        text=True, capture_output=True)
 +                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-+                self.assertIn('application lifecycle helpers are unavailable; nothing imported', result.stdout + result.stderr)
++                self.assertIn('application lifecycle helpers are unavailable', result.stdout + result.stderr)
++                self.assertFalse(sql_log.exists(), 'missing lifecycle helpers must prevent the import')
 diff --git a/tests/test_rollout.py b/tests/test_rollout.py
 index ab2810a..a05ddda 100644
 --- a/tests/test_rollout.py

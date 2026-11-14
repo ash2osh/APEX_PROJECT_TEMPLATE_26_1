@@ -73,7 +73,7 @@ class PublishLifecycleGateTests(unittest.TestCase):
                     result = subprocess.run([*launcher, str(script), '100'], cwd=root, env=environment,
                                             text=True, capture_output=True)
                     self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-                    self.assertIn('application lifecycle helpers are unavailable; nothing imported', result.stdout + result.stderr)
+                    self.assertIn('application lifecycle helpers are unavailable', result.stdout + result.stderr)
                     self.assertEqual((state / 'import-count.txt').read_text(encoding='utf-8').strip(), '0')
                     self.assertEqual((app / 'apex-team-export.json').read_bytes(), original,
                                      'missing lifecycle helpers must not advance the DEV baseline')
@@ -105,7 +105,7 @@ class PublishLifecycleGateTests(unittest.TestCase):
             with self.subTest(engine=engine), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
                 fixture = test_publish_cli.PublishAppCliTests()
-                runner, _, environment = fixture.make_promotion_fixture(root, 'staging', lifecycle=False)
+                runner, sql_log, environment = fixture.make_promotion_fixture(root, 'staging', lifecycle=False)
                 for helper in (root / 'scripts/application_lifecycle.py', root / 'scripts/application_lifecycle.sql'):
                     if helper.exists():
                         helper.unlink()
@@ -117,4 +117,5 @@ class PublishLifecycleGateTests(unittest.TestCase):
                 result = subprocess.run([*launcher, str(script), '100', '--env', 'staging', '-y'], cwd=root, env=environment,
                                         text=True, capture_output=True)
                 self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertIn('application lifecycle helpers are unavailable; nothing imported', result.stdout + result.stderr)
+                self.assertIn('application lifecycle helpers are unavailable', result.stdout + result.stderr)
+                self.assertFalse(sql_log.exists(), 'missing lifecycle helpers must prevent the import')

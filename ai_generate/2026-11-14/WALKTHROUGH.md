@@ -14,3 +14,7 @@ Verification:
 - `git ls-files --eol`: no tracked index entries with CRLF.
 
 No live database, container, saved connection, migration, import, or deployment was requested for verification. An AGY startup briefly launched its configured SQLcl MCP without connection arguments; it was stopped, no database connection was observed, and later runs used an offline SQLcl guard. The two live reconciliation scenarios require a developer to perform them manually and type the acknowledgment.
+
+## Linux CI follow-up
+
+The Linux PowerShell error view wraps and colors the refusal message, so the lifecycle tests now match its stable identifying text and separately assert that no import ran. `python -m unittest discover -s tests -p test_publish_lifecycle_gate.py -v` passed all four tests on Windows, and `python scripts/pre_push_check.py` passed. The full Linux checks need to be rerun on the follow-up commit.
