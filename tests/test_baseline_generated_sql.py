@@ -12,7 +12,11 @@ import sys
 import unittest
 from pathlib import Path
 
-import _no_real_sqlcl  # noqa: F401 (tests must never fall through to installed SQLcl)
+_TESTS_DIR = str(Path(__file__).resolve().parent)
+if _TESTS_DIR not in sys.path:
+    sys.path.insert(0, _TESTS_DIR)
+
+import _no_real_sqlcl  # noqa: F401, E402 (tests must never fall through to installed SQLcl)
 from scripts import baseline, baseline_bundles
 from scripts.schema_catalog import ObjectDefinition, ObjectKey, SchemaSnapshot
 
@@ -153,6 +157,66 @@ class TableStatementTests(unittest.TestCase):
         sql = 'CREATE VIEW "APP_STAGE"."V" AS SELECT APP_DEV.ID FROM "APP_DEV"."T" APP_DEV'
         with self.assertRaisesRegex(baseline.BaselineError, "ambiguous|review"):
             baseline_bundles.retarget_sql_identifiers(sql, "APP_DEV", "APP_STAGE")
+
+    def test_view_comma_join_retargets_all_tables(self) -> None:
+        sql = 'CREATE OR REPLACE VIEW "DEV"."V" AS SELECT a.x FROM "DEV"."A" a, "DEV"."B" b WHERE a.id = b.id'
+        expected = (
+            'CREATE OR REPLACE VIEW "STAGE"."V" AS SELECT a.x FROM "STAGE"."A" a, "STAGE"."B" b WHERE a.id = b.id'
+        )
+        self.assertEqual(expected, baseline_bundles.retarget_sql_identifiers(sql, "DEV", "STAGE"))
+
+        sql_unquoted = "CREATE OR REPLACE VIEW DEV.V AS SELECT a.x FROM DEV.A a, DEV.B b WHERE a.id = b.id"
+        expected_unquoted = (
+            'CREATE OR REPLACE VIEW "STAGE".V AS SELECT a.x FROM "STAGE".A a, "STAGE".B b WHERE a.id = b.id'
+        )
+        self.assertEqual(expected_unquoted, baseline_bundles.retarget_sql_identifiers(sql_unquoted, "DEV", "STAGE"))
+
+    def test_view_three_part_column_retargets_body(self) -> None:
+        sql = 'CREATE OR REPLACE VIEW "DEV"."V" AS SELECT "DEV"."T"."C" AS c FROM "DEV"."T"'
+        expected = 'CREATE OR REPLACE VIEW "STAGE"."V" AS SELECT "STAGE"."T"."C" AS c FROM "STAGE"."T"'
+        self.assertEqual(expected, baseline_bundles.retarget_sql_identifiers(sql, "DEV", "STAGE"))
+
+        sql_unquoted = "CREATE OR REPLACE VIEW DEV.V AS SELECT DEV.T.C AS c FROM DEV.T"
+        expected_unquoted = 'CREATE OR REPLACE VIEW "STAGE".V AS SELECT "STAGE".T.C AS c FROM "STAGE".T'
+        self.assertEqual(expected_unquoted, baseline_bundles.retarget_sql_identifiers(sql_unquoted, "DEV", "STAGE"))
+
+    def test_view_sequence_expression_retargets_body(self) -> None:
+        sql = 'CREATE OR REPLACE VIEW "DEV"."V" AS SELECT "DEV"."SEQ".NEXTVAL AS n FROM dual'
+        expected = 'CREATE OR REPLACE VIEW "STAGE"."V" AS SELECT "STAGE"."SEQ".NEXTVAL AS n FROM dual'
+        self.assertEqual(expected, baseline_bundles.retarget_sql_identifiers(sql, "DEV", "STAGE"))
+
+        sql_unquoted = "CREATE OR REPLACE VIEW DEV.V AS SELECT DEV.SEQ.NEXTVAL AS n FROM dual"
+        expected_unquoted = 'CREATE OR REPLACE VIEW "STAGE".V AS SELECT "STAGE".SEQ.NEXTVAL AS n FROM dual'
+        self.assertEqual(expected_unquoted, baseline_bundles.retarget_sql_identifiers(sql_unquoted, "DEV", "STAGE"))
+
+    def test_view_alias_style_reference_in_expression_is_refused(self) -> None:
+        bad_views = [
+            'CREATE OR REPLACE VIEW "DEV"."V" AS SELECT "DEV".ID FROM "DEV"."T"',
+            'CREATE OR REPLACE VIEW "DEV"."V" AS SELECT a.x, "DEV".ID FROM "DEV"."T" a',
+            'CREATE OR REPLACE VIEW "DEV"."V" AS SELECT a.x FROM "DEV"."T" a WHERE "DEV".ID = 1',
+        ]
+        for view_sql in bad_views:
+            with self.subTest(sql=view_sql):
+                with self.assertRaisesRegex(baseline.BaselineError, "ambiguous.*qualifier"):
+                    baseline_bundles.retarget_sql_identifiers(view_sql, "DEV", "STAGE")
+
+    def test_view_retargeting_preserves_literals_and_comments(self) -> None:
+        sql = (
+            'CREATE OR REPLACE VIEW "DEV"."V" AS SELECT a.x, \'DEV.X\' AS c1, q\'[it\'s DEV.X]\' AS c2 '
+            'FROM "DEV"."A" a, "DEV"."B" b -- DEV.Y\n'
+            'WHERE a.id = b.id /* "DEV".Z */'
+        )
+        expected = (
+            'CREATE OR REPLACE VIEW "STAGE"."V" AS SELECT a.x, \'DEV.X\' AS c1, q\'[it\'s DEV.X]\' AS c2 '
+            'FROM "STAGE"."A" a, "STAGE"."B" b -- DEV.Y\n'
+            'WHERE a.id = b.id /* "DEV".Z */'
+        )
+        result = baseline_bundles.retarget_sql_identifiers(sql, "DEV", "STAGE")
+        self.assertEqual(expected, result)
+        self.assertIn("'DEV.X'", result)
+        self.assertIn("q'[it's DEV.X]'", result)
+        self.assertIn("-- DEV.Y", result)
+        self.assertIn('/* "DEV".Z */', result)
 
     def test_unbalanced_opening_bracket_inside_q_quote_is_literal(self) -> None:
         sql = 'ALTER TABLE APP_DEV.T ADD CHECK (C <> q\'[unbalanced [ APP_DEV.X]\')'

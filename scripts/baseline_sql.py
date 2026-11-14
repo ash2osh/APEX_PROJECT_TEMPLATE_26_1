@@ -133,7 +133,34 @@ def retarget_sql_identifiers(sql: str, source_schema: str, target_schema: str) -
             kind == "word" and text.upper() == source_schema.upper()
         )
 
+    clause_at: dict[int, str] = {}
     if is_view:
+        clause_stack: list[str] = []
+        current_clause = ""
+        clause_keywords = {
+            "SELECT", "FROM", "WHERE", "GROUP", "HAVING", "ORDER",
+            "CONNECT", "START", "WITH", "SET", "VALUES",
+            "UNION", "INTERSECT", "MINUS",
+        }
+        for index in significant:
+            _kind, text = tokens[index]
+            upper = text.upper()
+            if text == "(":
+                clause_stack.append(current_clause)
+                current_clause = ""
+            elif text == ")":
+                if clause_stack:
+                    current_clause = clause_stack.pop()
+            elif upper in clause_keywords:
+                current_clause = upper
+            elif upper == "JOIN":
+                current_clause = "JOIN"
+            elif upper == "ON":
+                current_clause = "ON"
+            elif text == "," and current_clause == "ON":
+                current_clause = "FROM"
+            clause_at[index] = current_clause
+
         for pos, index in enumerate(significant):
             kind, text = tokens[index]
             if not matches(kind, text):
@@ -152,7 +179,16 @@ def retarget_sql_identifiers(sql: str, source_schema: str, target_schema: str) -
         following = tokens[significant[pos + 1]][1]
         if following != "." or previous in {".", ":"}:
             continue
-        if is_view and previous.upper() not in {"VIEW", "FROM", "JOIN"}:
-            raise baseline.BaselineError("ambiguous source-schema qualifier in view; review the migration")
+        if is_view:
+            is_three_part = (
+                pos + 3 < len(significant)
+                and tokens[significant[pos + 2]][0] in {"identifier", "word"}
+                and tokens[significant[pos + 3]][1] == "."
+            )
+            in_table_pos = previous.upper() in {"VIEW", "FROM", "JOIN"} or (
+                previous == "," and clause_at.get(index) == "FROM"
+            )
+            if not (is_three_part or in_table_pos):
+                raise baseline.BaselineError("ambiguous source-schema qualifier in view; review the migration")
         result[index] = (kind, _sql_identifier(target_schema))
     return "".join(text for _, text in result)
