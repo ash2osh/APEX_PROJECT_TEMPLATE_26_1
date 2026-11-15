@@ -79,7 +79,10 @@ def prompt_choice() -> str:
     for number, label in enumerate(labels, start=1):
         print(f"  {number}. {label}")
     while True:
-        answer = input("Choice [1-4, default 4]: ").strip().lower()
+        try:
+            answer = input("Choice [1-4, default 4]: ").strip().lower()
+        except EOFError as exc:
+            raise SetupError("choose --choice chrome|firefox|both|none when stdin is not interactive") from exc
         if not answer:
             return "none"
         mapping = {"1": "chrome", "2": "firefox", "3": "both", "4": "none"}

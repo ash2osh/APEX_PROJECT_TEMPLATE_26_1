@@ -289,6 +289,40 @@ class BrowserMcpTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertIn("choose --choice chrome|firefox|both|none when stdin is not interactive", result.stderr)
 
+    def test_setup_eof_when_isatty_true_fails_cleanly_without_writes(self) -> None:
+        spec = importlib.util.spec_from_file_location("browser_mcp_eof_test", SCRIPT)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        repo = self.make_repo("eof-isatty-true")
+
+        with patch("sys.stdin.isatty", return_value=True), patch(
+            "builtins.input", side_effect=EOFError("EOF when reading a line")
+        ):
+            with self.assertRaises(module.SetupError) as context:
+                module.setup(repo, None)
+        self.assertIn(
+            "choose --choice chrome|firefox|both|none when stdin is not interactive",
+            str(context.exception),
+        )
+        self.assertFalse((repo / ".mcp.json").exists())
+        self.assertFalse((repo / ".codex/config.toml").exists())
+        self.assertFalse((repo / ".browser-mcp-selection.json").exists())
+
+        stderr = io.StringIO()
+        with patch("sys.stdin.isatty", return_value=True), patch(
+            "builtins.input", side_effect=EOFError("EOF when reading a line")
+        ), patch("sys.stderr", stderr):
+            code = module.main(["--repo-root", str(repo), "setup"])
+        self.assertEqual(code, 2)
+        self.assertIn(
+            "choose --choice chrome|firefox|both|none when stdin is not interactive",
+            stderr.getvalue(),
+        )
+        self.assertFalse((repo / ".mcp.json").exists())
+        self.assertFalse((repo / ".codex/config.toml").exists())
+        self.assertFalse((repo / ".browser-mcp-selection.json").exists())
+
     def test_team_shell_mcp_setup_and_status_dispatch(self) -> None:
         repo = self.make_repo()
         scripts = repo / "scripts"
