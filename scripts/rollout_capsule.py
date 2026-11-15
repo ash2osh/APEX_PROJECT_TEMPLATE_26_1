@@ -524,15 +524,25 @@ def _run_capsule_rollout(
 
         if prepare_only:
             terminal_ack = None
-            if recovery_attempt is not None and recovery_confirm is not None:
-                try:
-                    prompt = release_state.recovery_prompt(root, capsule, environment, recovery_attempt)
+            acknowledged_by = None
+            if recovery_attempt is not None:
+                if yes or recovery_confirm is not None:
+                    try:
+                        prompt = release_state.recovery_prompt(root, capsule, environment, recovery_attempt)
+                    except release_state.ReleaseStateError as error:
+                        raise rollout.RolloutError(f"recovery acknowledgment refused: {error}") from error
+                if yes:
+                    # The same evidence a person would read is printed, then the exact acknowledgment is supplied.
+                    print(prompt, file=sys.stderr)
+                    print("Acknowledged by --yes; the acknowledgment was not typed.", file=sys.stderr)
+                    terminal_ack = f"RECONCILE {recovery_attempt}"
+                    acknowledged_by = "--yes"
+                elif recovery_confirm is not None:
                     terminal_ack = recovery_confirm(prompt)
-                except release_state.ReleaseStateError as error:
-                    raise rollout.RolloutError(f"recovery acknowledgment refused: {error}") from error
+                    acknowledged_by = "terminal"
             target_plan = feature_release.prepare_target(
                 root, capsule, environment, environ=os.environ, recovery_attempt=recovery_attempt,
-                terminal_ack=terminal_ack,
+                terminal_ack=terminal_ack, acknowledged_by=acknowledged_by,
             )
         else:
             target_plan = feature_release.load_target_plan(root, capsule, environment)

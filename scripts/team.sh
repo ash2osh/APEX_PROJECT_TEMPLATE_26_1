@@ -41,7 +41,7 @@ Commands:
            [--preserve-unresolved] [--skip-refused]
                                               Move released folders outside migrations/ (dry run by default)
   reconcile-migration <folder> --env dev|staging|prod --outcome <outcome> --evidence <file>
-           [--attempt <id>] [--superseded-by <folder>]
+           [--attempt <id>] [--superseded-by <folder>] [--yes|-y]
                                               Record the owner's resolution of a pending attempt (local files only)
   verify <folder> [...] --env <env> [--phase pre|post|both] [--only-failed]
          [--format text|json] [--jobs N]     Evaluate migration checks read-only
