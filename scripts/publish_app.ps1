@@ -384,28 +384,27 @@ function Invoke-SwapIfUnchanged([string]$Target, [string]$Expected, [string]$Rep
 }
 $publishedVersion = ""
 try {
-  $lifecycleEnabled = (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'application_lifecycle.py') -PathType Leaf) -and
-    (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'application_lifecycle.sql') -PathType Leaf)
-  $identityValues = @('-', '-', '-', '-', '-', '-', '-', '-')
-  if ($lifecycleEnabled) {
-    $lifecyclePython = Resolve-TeamPython
-    if ($null -eq $lifecyclePython) { throw 'publish error: Python 3.10 or newer is required for lifecycle verification' }
-    $lifecycleArguments = @('--connection', $sqlclConnection, '--expected-user', $expectedUser, '--schema', $parsingSchema,
-      '--workspace', [string]$deployment.workspace.name, '--app-id', $AppId, '--environment', $appEnvironment)
-    & $lifecyclePython.Path @($lifecyclePython.Prefix) (Join-Path $PSScriptRoot 'application_lifecycle.py') capture @lifecycleArguments --run-dir (Join-Path $publishWorkDir 'lifecycle-before')
-    if ($LASTEXITCODE -ne 0) { throw 'publish error: lifecycle pre-read unavailable; nothing imported' }
-    $identitySnapshot = Join-Path $publishWorkDir 'lifecycle-before/lifecycle-snapshot.json'
-    $identityJson = Get-Content -LiteralPath $identitySnapshot -Raw | ConvertFrom-Json
-    $identityFields = @('db_unique_name','service_name','container_id','container_name','edition','server_host','session_user','current_schema')
-    $identityValues = @()
-    foreach ($field in $identityFields) {
-      $value = [string]$identityJson.identity.$field
-      if ([string]::IsNullOrEmpty($value)) { throw "publish error: pre-publication identity is incomplete ($field)" }
-      $identityValues += ([System.BitConverter]::ToString([System.Text.Encoding]::UTF8.GetBytes($value)) -replace '-', '')
-    }
+  if (-not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'application_lifecycle.py') -PathType Leaf) -or
+      -not (Test-Path -LiteralPath (Join-Path $PSScriptRoot 'application_lifecycle.sql') -PathType Leaf)) {
+    throw 'publish error: application lifecycle helpers are unavailable; nothing imported'
+  }
+  $lifecyclePython = Resolve-TeamPython
+  if ($null -eq $lifecyclePython) { throw 'publish error: Python 3.10 or newer is required for lifecycle verification' }
+  $lifecycleArguments = @('--connection', $sqlclConnection, '--expected-user', $expectedUser, '--schema', $parsingSchema,
+    '--workspace', [string]$deployment.workspace.name, '--app-id', $AppId, '--environment', $appEnvironment)
+  & $lifecyclePython.Path @($lifecyclePython.Prefix) (Join-Path $PSScriptRoot 'application_lifecycle.py') capture @lifecycleArguments --run-dir (Join-Path $publishWorkDir 'lifecycle-before')
+  if ($LASTEXITCODE -ne 0) { throw 'publish error: pre-publication lifecycle observation is unavailable; nothing imported' }
+  $identitySnapshot = Join-Path $publishWorkDir 'lifecycle-before/lifecycle-snapshot.json'
+  $identityJson = Get-Content -LiteralPath $identitySnapshot -Raw | ConvertFrom-Json
+  $identityFields = @('db_unique_name','service_name','container_id','container_name','edition','server_host','session_user','current_schema')
+  $identityValues = @()
+  foreach ($field in $identityFields) {
+    $value = [string]$identityJson.identity.$field
+    if ([string]::IsNullOrEmpty($value)) { throw "publish error: pre-publication identity is incomplete ($field)" }
+    $identityValues += ([System.BitConverter]::ToString([System.Text.Encoding]::UTF8.GetBytes($value)) -replace '-', '')
   }
   if ($appEnvironment -ne "dev" -and $confirmTargetGiven) {
-    if (-not $lifecycleEnabled -or [string]::IsNullOrEmpty([string]$identityJson.identity.db_unique_name)) {
+    if ([string]::IsNullOrEmpty([string]$identityJson.identity.db_unique_name)) {
       throw "publish error: --confirm-target: the observed db_unique_name is unavailable; nothing imported"
     }
     $observedDbUniqueName = [string]$identityJson.identity.db_unique_name
@@ -466,7 +465,7 @@ try {
     $parsingSchema, $targetEnvironment, $expectedUser,
     $applicationInput, $deploymentFile, $AppId, $expectedLiveState
   )
-  if ($lifecycleEnabled) { $importArguments += $identityValues }
+  $importArguments += $identityValues
   $sqlclExit = Invoke-Sqlcl -WorkingDirectory $publishWorkDir -StdInFile $stdinFile -Arguments $importArguments -TranscriptFile $transcriptFile
   $importRunning = $false
   $sqlclOutput = [System.IO.File]::ReadAllText($transcriptFile)
@@ -487,11 +486,9 @@ try {
   $restoreUnstamped = $false
   $importUnverified = $true
 
-  if ($lifecycleEnabled) {
-    & $lifecyclePython.Path @($lifecyclePython.Prefix) (Join-Path $PSScriptRoot 'application_lifecycle.py') restore-automations @lifecycleArguments `
-      --before (Join-Path $publishWorkDir 'lifecycle-before/lifecycle-snapshot.json') --run-dir (Join-Path $publishWorkDir 'automation-restore')
-    if ($LASTEXITCODE -ne 0) { throw 'publish error: automation restoration did not verify; baseline and recovery evidence retained' }
-  }
+  & $lifecyclePython.Path @($lifecyclePython.Prefix) (Join-Path $PSScriptRoot 'application_lifecycle.py') restore-automations @lifecycleArguments `
+    --before (Join-Path $publishWorkDir 'lifecycle-before/lifecycle-snapshot.json') --run-dir (Join-Path $publishWorkDir 'automation-restore')
+  if ($LASTEXITCODE -ne 0) { throw 'publish error: automation restoration did not verify; baseline and recovery evidence retained' }
 
   # Re-export the selected target and compare exact APEXlang bytes before
   # reporting success. Only a DEV publish updates the local DEV drift marker.
@@ -540,12 +537,10 @@ try {
   $summary = Get-Content -LiteralPath $verificationSummary -Raw | ConvertFrom-Json
   $summary.sourceVerified = $true
   [System.IO.File]::WriteAllText($verificationSummary, ($summary | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding($false)))
-  if ($lifecycleEnabled) {
-    & $lifecyclePython.Path @($lifecyclePython.Prefix) (Join-Path $PSScriptRoot 'application_lifecycle.py') verify @lifecycleArguments `
-      --before (Join-Path $publishWorkDir 'lifecycle-before/lifecycle-snapshot.json') --run-dir (Join-Path $publishWorkDir 'lifecycle-after') `
-      --summary-path (Join-Path $publishWorkDir 'publish-verification.json')
-    if ($LASTEXITCODE -ne 0) { throw 'publish error: application lifecycle verification failed; baseline and recovery evidence retained' }
-  }
+  & $lifecyclePython.Path @($lifecyclePython.Prefix) (Join-Path $PSScriptRoot 'application_lifecycle.py') verify @lifecycleArguments `
+    --before (Join-Path $publishWorkDir 'lifecycle-before/lifecycle-snapshot.json') --run-dir (Join-Path $publishWorkDir 'lifecycle-after') `
+    --summary-path (Join-Path $publishWorkDir 'publish-verification.json')
+  if ($LASTEXITCODE -ne 0) { throw 'publish error: application lifecycle verification failed; baseline and recovery evidence retained' }
   if ($appEnvironment -eq "dev") {
     & $python.Path @($python.Prefix) @verifyArgs --record-baseline
     if ($LASTEXITCODE -ne 0) { throw "DEV baseline recording failed with exit code $LASTEXITCODE; recovery evidence retained" }

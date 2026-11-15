@@ -53,3 +53,69 @@ class PublishLifecycleGateTests(unittest.TestCase):
                     summary = json.loads((retained[0] / 'publish-verification.json').read_text())
                     self.assertEqual(summary['sourceVerified'], mode == 'post-attention')
                     self.assertEqual(summary['lifecycleStatus'], 'attention' if mode == 'post-attention' else 'unavailable')
+
+    def test_missing_lifecycle_helper_refuses_before_import_in_both_shells(self):
+        launchers = [('bash', [BASH])]
+        if _test_subprocess_safety.working_pwsh():
+            launchers.append(('pwsh', [_test_subprocess_safety.working_pwsh(), '-NoProfile', '-File']))
+        for engine, launcher in launchers:
+            for missing in ('scripts/application_lifecycle.py', 'scripts/application_lifecycle.sql'):
+                with self.subTest(engine=engine, missing=missing), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    fixture = test_publish_cli.PublishAppCliTests()
+                    runner, _, _, environment, app, state = fixture.make_stateful_dev_fixture(root)
+                    environment['PROJECT_ENV_FILE'] = str(root / '.env')
+                    (root / 'scripts/application_lifecycle.sql').write_text('-- fixture\n', encoding='utf-8')
+                    (root / 'scripts/application_lifecycle.py').write_text(fixture.FAKE_LIFECYCLE, encoding='utf-8')
+                    (root / missing).unlink()
+                    original = (app / 'apex-team-export.json').read_bytes()
+                    script = runner if engine == 'bash' else runner.with_suffix('.ps1')
+                    result = subprocess.run([*launcher, str(script), '100'], cwd=root, env=environment,
+                                            text=True, capture_output=True)
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn('application lifecycle helpers are unavailable', result.stdout + result.stderr)
+                    self.assertEqual((state / 'import-count.txt').read_text(encoding='utf-8').strip(), '0')
+                    self.assertEqual((app / 'apex-team-export.json').read_bytes(), original,
+                                     'missing lifecycle helpers must not advance the DEV baseline')
+
+    def test_describe_survives_missing_lifecycle_helpers_in_both_shells(self):
+        launchers = [('bash', [BASH])]
+        if _test_subprocess_safety.working_pwsh():
+            launchers.append(('pwsh', [_test_subprocess_safety.working_pwsh(), '-NoProfile', '-File']))
+        for engine, launcher in launchers:
+            with self.subTest(engine=engine), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                fixture = test_publish_cli.PublishAppCliTests()
+                runner, _, _, environment, app, _ = fixture.make_stateful_dev_fixture(root)
+                environment['PROJECT_ENV_FILE'] = str(root / '.env')
+                for helper in (root / 'scripts/application_lifecycle.py', root / 'scripts/application_lifecycle.sql'):
+                    if helper.exists():
+                        helper.unlink()
+                script = runner if engine == 'bash' else runner.with_suffix('.ps1')
+                result = subprocess.run([*launcher, str(script), '100', '--describe'], cwd=root, env=environment,
+                                        text=True, capture_output=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('DEMO', result.stdout)
+
+    def test_staging_publish_refuses_when_lifecycle_helpers_missing(self):
+        launchers = [('bash', [BASH])]
+        if _test_subprocess_safety.working_pwsh():
+            launchers.append(('pwsh', [_test_subprocess_safety.working_pwsh(), '-NoProfile', '-File']))
+        for engine, launcher in launchers:
+            with self.subTest(engine=engine), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                fixture = test_publish_cli.PublishAppCliTests()
+                runner, sql_log, environment = fixture.make_promotion_fixture(root, 'staging', lifecycle=False)
+                for helper in (root / 'scripts/application_lifecycle.py', root / 'scripts/application_lifecycle.sql'):
+                    if helper.exists():
+                        helper.unlink()
+                if engine == 'pwsh':
+                    import shutil
+                    for name in ('publish_app.ps1', 'load_env.ps1', 'invoke_sqlcl.ps1', 'resolve_python.ps1', 'check_db_target.ps1', 'normalize_apx.ps1'):
+                        shutil.copy2(ROOT / 'scripts' / name, root / 'scripts' / name)
+                script = runner if engine == 'bash' else runner.with_suffix('.ps1')
+                result = subprocess.run([*launcher, str(script), '100', '--env', 'staging', '-y'], cwd=root, env=environment,
+                                        text=True, capture_output=True)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('application lifecycle helpers are unavailable', result.stdout + result.stderr)
+                self.assertFalse(sql_log.exists(), 'missing lifecycle helpers must prevent the import')
