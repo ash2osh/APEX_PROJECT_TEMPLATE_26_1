@@ -74,7 +74,7 @@ Commands:
            [--preserve-unresolved] [--skip-refused]
                                               Move released folders outside migrations/ (dry run by default)
   reconcile-migration <folder> --env dev|staging|prod --outcome <outcome> --evidence <file>
-           [--attempt <id>] [--superseded-by <folder>]
+           [--attempt <id>] [--superseded-by <folder>] [--yes|-y]
                                               Record the owner's resolution of a pending attempt (local files only)
   verify <folder> [...] --env <env> [--phase pre|post|both] [--only-failed]
          [--format text|json] [--jobs N]     Evaluate migration checks read-only
@@ -105,7 +105,7 @@ Commands:
   deploy <app_id> --env <staging|prod> [--manual]
          [--yes|-y] [--confirm-target <db_unique_name>]
                                               Confirm a promotion or print a DBA runbook
-  mcp setup [--choice chrome|firefox|both|none]
+  mcp setup [--choice chrome|firefox|both|none] [--yes|-y]
                                               Choose browser MCP servers for this checkout
   mcp status                                  Show the saved browser MCP choice
   upgrade-template [--source <url|path>] [--ref <ref>] [--dry-run]
@@ -432,7 +432,7 @@ try {
       Invoke-TeamBash -ScriptName "team.sh" -ScriptArguments (@("archive-migrations") + $archiveArguments)
     }
     "reconcile-migration" {
-      if ($Arguments.Count -lt 1) { Fail "usage: scripts/team.ps1 reconcile-migration <folder> --env dev|staging|prod --outcome <outcome> --evidence <file> [--attempt <id>] [--superseded-by <folder>]" }
+      if ($Arguments.Count -lt 1) { Fail "usage: scripts/team.ps1 reconcile-migration <folder> --env dev|staging|prod --outcome <outcome> --evidence <file> [--attempt <id>] [--superseded-by <folder>] [--yes|-y]" }
       $reconcileArguments = @($Arguments)
       for ($reconcileIndex = 0; $reconcileIndex -lt $reconcileArguments.Count; $reconcileIndex++) {
         $reconcileValue = [string] $reconcileArguments[$reconcileIndex]

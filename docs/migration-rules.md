@@ -341,8 +341,9 @@ evidence and returns 2 because its target folder cannot be established.
 
 When an apply ends with a pending or unknown attempt, the owner records what happened
 with `scripts/team.sh reconcile-migration <folder> --env <env> --outcome <outcome>
---evidence <file>`. The outcome is `failed-no-target-effect`,
-`failed-target-effect-unknown` or `superseded`. The command writes a committed
+--evidence <file> [--yes|-y]`. The outcome is `failed-no-target-effect`,
+`failed-target-effect-unknown` or `superseded`. An agent may pass `--yes` to record the
+acknowledgment without typing, recording `acknowledgedBy: --yes`. The command writes a committed
 `resolution.<env>.json` beside the receipts and a local closing attempt event. A resolved
 folder stays locked for `migrate`: it is never applied again, and the next revision carries
 the fix. The three outcomes, their evidence and the limits are in
@@ -617,7 +618,7 @@ symbolic links or generated `scratch/` state. Supported step types are:
 | `sql-script` | `file`, `connection`, `expectedUser`, `schema` | Runs a reviewed DBA SQL file after checking the session and database identity. |
 | `ords-import` | `file`, `connection`, `expectedUser`, `schema` | Validates a generated ORDS export and uses the guarded SQL script path. |
 | `app-deploy` | `appId` | Runs the existing deployment command and explicit environment descriptor; staging and production only. |
-| `pause` | `message` | Prints the message and waits for Enter before continuing. |
+| `pause` | `message` | Prints the message and waits for Enter before continuing; `--yes` accepts it without waiting and the report records that no person confirmed the manual step. |
 
 Every input is hashed before execution and checked again around each step. A
 staging or production run has one manifest-level confirmation listing the
