@@ -617,7 +617,7 @@ symbolic links or generated `scratch/` state. Supported step types are:
 | `sql-script` | `file`, `connection`, `expectedUser`, `schema` | Runs a reviewed DBA SQL file after checking the session and database identity. |
 | `ords-import` | `file`, `connection`, `expectedUser`, `schema` | Validates a generated ORDS export and uses the guarded SQL script path. |
 | `app-deploy` | `appId` | Runs the existing deployment command and explicit environment descriptor; staging and production only. |
-| `pause` | `message` | Prints the message and waits for Enter before continuing. |
+| `pause` | `message` | Prints the message and waits for Enter before continuing; `--yes` accepts it without waiting and the report records that no person confirmed the manual step. |
 
 Every input is hashed before execution and checked again around each step. A
 staging or production run has one manifest-level confirmation listing the

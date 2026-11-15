@@ -319,8 +319,9 @@ differs from the observed `db_unique_name` of any database the rollout writes to
 first write (the check only reads). `--confirm-target` alone is accepted too, as it is for `migrate`.
 `--yes` and `--confirm-target` do not apply to `--dry-run` or `--prepare`, and piped input is refused.
 The rollout report and `rollout-confirmation.json` record `confirmedBy`. An app-deploy step runs
-`deploy.sh` with `--yes` and, on production, the name; it never receives a piped answer. `-y` does
-not cover the typed `RECONCILE` acknowledgments, the `Press Enter` pause, or `--recover`.
+`deploy.sh` with `--yes` and, on production, the name; it never receives a piped answer. `-y` accepts
+rollout `pause` steps without waiting, recording in the report that no person confirmed the manual step.
+`-y` does not cover the typed `RECONCILE` acknowledgments or `--recover`.
 
 ## Closing a run that has no checkpoint to recover
 

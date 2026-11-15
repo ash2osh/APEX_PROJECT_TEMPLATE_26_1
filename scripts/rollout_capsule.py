@@ -852,6 +852,7 @@ def _run_capsule_rollout(
                                 expected_identity=expected_identity,
                                 confirm_target=step_target_name if environment == "prod" else confirm_target,
                                 rollout_confirmed_by=report["confirmedBy"],
+                                accept_pauses=yes,
                             )
                     else:
                         result = rollout.execute_step(
@@ -866,6 +867,7 @@ def _run_capsule_rollout(
                             expected_identity=expected_identity,
                             confirm_target=step_target_name if environment == "prod" else confirm_target,
                             rollout_confirmed_by=report["confirmedBy"],
+                            accept_pauses=yes,
                         )
                     rollout._snapshot(manifest, plan, f"after step {item['number']}", environment)
                     if step["type"] in {"sql-script", "ords-import"} and step_report.get("phase") == "uncovered-object":

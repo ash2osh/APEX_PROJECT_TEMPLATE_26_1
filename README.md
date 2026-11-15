@@ -474,7 +474,7 @@ rejected before connecting.
 For staging or production, configure the existing connection and expected
 user plus `STAGING_SCHEMA` or `PROD_SCHEMA`. The migration schema can differ
 between environments, so these settings are explicit and never inferred from
-DEV. Direct staging and production applies require interactive confirmation, unless the operator passes `--confirm-target <db_unique_name>` with the observed database name. `--confirm-target <db_unique_name>` skips that prompt only when the value equals the observed `db_unique_name` exactly. A mismatch refuses before any write. `-y` / `--yes` accepts the same prompt on DEV and staging; on production it is refused unless `--confirm-target` also matches the observed name. `migrate`, `rollout`, and `deploy` take these flags (as does the internal `publish_app` helper when called by `deploy`). `scripts/team.sh publish` targets DEV only and skips interactive prompts. A `[y/N]` prompt is answered at a terminal or by a flag: piped or redirected answers are refused. `-y` never replaces the typed `RECONCILE` and `RECONCILE-RUN` acknowledgments, the `Press Enter` pause, `publish --force` or the browser MCP menu.
+DEV. Direct staging and production applies require interactive confirmation, unless the operator passes `--confirm-target <db_unique_name>` with the observed database name. `--confirm-target <db_unique_name>` skips that prompt only when the value equals the observed `db_unique_name` exactly. A mismatch refuses before any write. `-y` / `--yes` accepts the same prompt on DEV and staging; on production it is refused unless `--confirm-target` also matches the observed name. `migrate`, `rollout`, and `deploy` take these flags (as does the internal `publish_app` helper when called by `deploy`). `scripts/team.sh publish` targets DEV only and skips interactive prompts. A `[y/N]` prompt is answered at a terminal or by a flag: piped or redirected answers are refused. `-y` also accepts rollout `pause` steps without waiting (recording that no person confirmed the manual step) and `mcp setup` (accepting `none`). `-y` never replaces the typed `RECONCILE` and `RECONCILE-RUN` acknowledgments or `publish --force`.
 
 Compare selected live object names or prefixes with `compare-schema`:
 
@@ -800,7 +800,7 @@ unknown. Version and compatibility do not prove feature privileges or availabili
 | `scripts/team.sh template-status --upstream --ref <ref>` | Explicitly compare local files with a branch, tag or commit from the manifest's upstream repository. |
 | `scripts/team.sh skills setup none\|superpowers\|mattpocock\|both [--primary superpowers\|mattpocock]` | Set up optional, pinned workflow packs locally. |
 | `scripts/team.sh skills status [--format text\|json]` | Inspect repository-managed packs offline. |
-| `scripts/team.sh mcp setup [--choice chrome\|firefox\|both\|none]` | Select checkout-local Chrome and Firefox MCP servers; setup writes ignored client configuration only. |
+| `scripts/team.sh mcp setup [--choice chrome\|firefox\|both\|none] [--yes\|-y]` | Select checkout-local Chrome and Firefox MCP servers; setup writes ignored client configuration only. |
 | `scripts/team.sh mcp status` | Show the saved browser MCP choice for this checkout. |
 
 `verify` uses read-only check sessions, confirms the target identity for every

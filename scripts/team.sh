@@ -72,7 +72,7 @@ Commands:
   deploy <app_id> --env <staging|prod> [--manual]
          [--yes|-y] [--confirm-target <db_unique_name>]
                                               Confirm a promotion or print a DBA runbook
-  mcp setup [--choice chrome|firefox|both|none]
+  mcp setup [--choice chrome|firefox|both|none] [--yes|-y]
                                               Choose browser MCP servers for this checkout
   mcp status                                  Show the saved browser MCP choice
   upgrade-template [--source <url|path>] [--ref <ref>] [--dry-run]

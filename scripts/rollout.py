@@ -1601,6 +1601,7 @@ def execute_step(
     expected_identity: Mapping[str, str] | None = None,
     confirm_target: str | None = None,
     rollout_confirmed_by: str | None = None,
+    accept_pauses: bool = False,
 ) -> StepResult:
     """Execute one step using existing command or SQLcl paths."""
     kind = step["type"]
@@ -1711,6 +1712,12 @@ def execute_step(
         )
     if kind == "pause":
         print(step["message"])
+        if accept_pauses:
+            return StepResult(
+                0,
+                (),
+                "pause accepted by --yes without waiting; the manual step it describes was not confirmed by a person",
+            )
         try:
             input("Press Enter to continue the rollout...")
         except (EOFError, OSError):
@@ -1966,6 +1973,7 @@ def _run_legacy_rollout(
                     manifest_confirmed=manifest_confirmed,
                     confirm_target=step_target_name,
                     rollout_confirmed_by=report["confirmedBy"],
+                    accept_pauses=yes,
                 )
                 if not isinstance(result, StepResult):
                     raise RolloutError("rollout step executor returned an invalid result")
