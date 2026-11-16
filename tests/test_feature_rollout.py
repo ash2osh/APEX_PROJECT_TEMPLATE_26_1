@@ -1388,6 +1388,30 @@ class FeatureRolloutTests(unittest.TestCase):
         self.assertEqual(report["databaseState"], "unknown")
         self.assertEqual(report["steps"][0]["status"], "failed")
 
+    def test_capsule_rerun_refuses_an_occupied_receipt_before_any_checkpoint(self) -> None:
+        from scripts import feature_release
+
+        self._enter(self._patches())
+        receipt_path = rollout._receipt_path(self.root, self.manifest.sha256, "staging", 1)
+        receipt_path.parent.mkdir(parents=True)
+        receipt_bytes = b"receipt from an earlier run; preserve it\n"
+        receipt_path.write_bytes(receipt_bytes)
+        report_base = self.root / "scratch" / "capsule-occupied-receipt"
+        with patch.object(feature_release, "execute_checkpoint") as execute, \
+                patch.object(rollout, "_write_receipt") as write_receipt, \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            status = rollout.run_rollout(
+                self.manifest_path, "staging", repo_root=self.root, capsule_path=self.capsule_path,
+                report_path=report_base, confirm=lambda _prompt: True,
+            )
+
+        self.assertEqual(status, 2)
+        execute.assert_not_called()
+        write_receipt.assert_not_called()
+        self.assertEqual(receipt_path.read_bytes(), receipt_bytes)
+        report = json.loads(report_base.with_suffix(".json").read_text(encoding="utf-8"))
+        self.assertIn("receipt path is already occupied and will not be replaced", report["error"])
+
     def test_verified_staging_proof_is_required_and_production_uses_prepared_prod_plan(self) -> None:
         from scripts import feature_release, release_state
 

@@ -51,7 +51,7 @@ Set up packs only when requested, using `scripts/team.sh skills setup <selection
 controls repository-managed copies, not global skills or enabled app plugins;
 report those separately when they affect a request to use neither.
 
-The 12 template-authored domain/setup skills remain
+The 13 template-authored domain/setup skills remain
 independent of optional workflow packs. After installing Matt's pack, invoke
 `/setup-matt-pocock-skills` when requested and put its project guidance in
 `AGENTS.project.md`, preserving existing instructions, instead of template-owned
@@ -139,7 +139,7 @@ owner-only commands retain their owner-login checks. See
   to the existing connection and expected-user settings. Staging and production
   applies ask `[y/N]` at the terminal. `--confirm-target <db_unique_name>` skips that
   prompt only when the value equals the observed `db_unique_name`; an agent must
-  never supply it unless the developer typed that exact name for the run. `-y` / `--yes` (migrate, rollout, publish, deploy, archive-migrations, feature clean-capsule, the rollout `pause` step, `mcp setup`) replaces a `[y/N]` prompt; an agent passes it for staging or production only when the developer asked in this conversation for that run to be unattended, and production also needs the typed name. An agent never sets `TEAM_ACK_FROM_STDIN`. Receipts are written
+  never supply it unless the developer typed that exact name for the run. `-y` / `--yes` (migrate, rollout, publish, deploy, archive-migrations, feature clean-capsule, the rollout `pause` step, `mcp setup`) replaces a `[y/N]` prompt; an agent passes it for staging or production only when the developer asked in this conversation for that run to be unattended, and production also needs the typed name. `TEAM_ACK_FROM_STDIN` is retired and ignored; piped or redirected acknowledgments stay refused, and `--yes` is the recorded route. Receipts are written
   only after a verified apply. Multi-schema projects use
   `migrations/<SCHEMA>/…`; one migration changes one schema. See
   [docs/migration-rules.md](docs/migration-rules.md) for naming, ordering,
