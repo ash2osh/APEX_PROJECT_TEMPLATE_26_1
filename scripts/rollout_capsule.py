@@ -743,6 +743,10 @@ def _run_capsule_rollout(
 
         run_id = release_state.start_rollout(root, capsule, target_plan)
         report["localRunId"] = run_id
+        # Rollout receipts are never replaced. Refuse before any write when a step of this manifest already has
+        # one for this environment, as a schema-version 1 rollout does. This comes after start_rollout so that
+        # an unresolved earlier run is reported first; the run then ends failed with nothing started.
+        rollout._assert_unreceipted_execution_range(root, manifest, environment, plan, 1)
 
         included_checkpoints: list[int] = []
         included_migration_steps: list[int] = []

@@ -674,12 +674,13 @@ class RolloutManifestTests(unittest.TestCase):
         calls: list[int] = []
         manifest = self.write_manifest(self.pause_steps(3))
         report_base = self.root / "scratch" / "first"
-        with patch("scripts.rollout.execute_step", side_effect=self.fake_executor(calls)):
+        # Step 3 fails so that it has no receipt yet; a resume may only run a step without one.
+        with patch("scripts.rollout.execute_step", side_effect=self.fake_executor(calls, fail_at=3)):
             first_status = rollout.run_rollout(
                 manifest, "dev", repo_root=self.root, report_path=report_base,
                 confirm=lambda _prompt: True,
             )
-        self.assertEqual(first_status, 0)
+        self.assertEqual(first_status, 2)
         self.assertEqual(calls, [1, 2, 3])
 
         calls.clear()
@@ -705,6 +706,196 @@ class RolloutManifestTests(unittest.TestCase):
             )
         self.assertEqual(rejected_status, 2)
         self.assertEqual(calls, [])
+
+    def test_rerun_preserves_original_receipt_without_executing(self) -> None:
+        payload = self.root / "scripts" / "prerequisite.sql"
+        payload.write_text("CREATE TABLE APP.PRECHECK (ID NUMBER);\n", encoding="utf-8")
+        fake_bin = self.root / "fake-bin"
+        calls = self.root / "fake-sqlcl-calls.log"
+        install_fake_sqlcl(
+            fake_bin,
+            'printf "invoked\\n" >> "$FAKE_CALL_LOG"\n'
+            'printf "ROLLOUT_IDENTITY:OPS:APP\\nROLLOUT_TARGET:DEVDB:DEVDB:DEVSERVICE\\nROLLOUT_SCRIPT_COMPLETED:0001\\n"\n',
+        )
+        manifest = self.write_manifest([{
+            "type": "sql-script", "file": "scripts/prerequisite.sql",
+            "connection": "OPS", "expectedUser": "OPS", "schema": "APP",
+        }])
+        environment = fake_environment(fake_bin, FAKE_CALL_LOG=str(calls), DB_ENVIRONMENT="development")
+        report_base = self.root / "scratch" / "first-sql-run"
+        with patch.dict(os.environ, environment):
+            first_status = rollout.run_rollout(
+                manifest, "dev", repo_root=self.root, report_path=report_base,
+                confirm=lambda _prompt: self.fail("DEV must not ask for a rollout confirmation"),
+            )
+        self.assertEqual(first_status, 0)
+        self.assertEqual(calls.read_text(encoding="utf-8"), "invoked\n")
+
+        manifest_hash = hashlib.sha256(manifest.read_bytes()).hexdigest()
+        receipt_path = rollout._receipt_path(self.root, manifest_hash, "dev", 1)
+        original_receipt = receipt_path.read_bytes()
+        report_base = self.root / "scratch" / "rerun-sql-step"
+        with patch.dict(os.environ, environment):
+            rerun_status = rollout.run_rollout(
+                manifest, "dev", from_step=1, repo_root=self.root, report_path=report_base,
+                confirm=lambda _prompt: self.fail("DEV must not ask for a rollout confirmation"),
+            )
+
+        self.assertEqual(rerun_status, 2)
+        self.assertEqual(calls.read_text(encoding="utf-8"), "invoked\n", "the successful SQL script must not run again")
+        self.assertEqual(receipt_path.read_bytes(), original_receipt)
+        report = json.loads(report_base.with_suffix(".json").read_text(encoding="utf-8"))
+        self.assertEqual(report["status"], "failed")
+        self.assertIn("receipt", report["error"].casefold())
+        self.assertTrue(any(word in report["error"].casefold() for word in ("preserv", "reconcil", "review", "continuation")))
+
+    def test_rerun_from_step_one_with_pause_steps_executes_nothing_and_keeps_receipts(self) -> None:
+        calls: list[int] = []
+        manifest = self.write_manifest(self.pause_steps(2))
+        with patch("scripts.rollout.execute_step", side_effect=self.fake_executor(calls)):
+            self.assertEqual(rollout.run_rollout(
+                manifest, "dev", repo_root=self.root, report_path=self.root / "scratch" / "pause-first",
+                confirm=lambda _prompt: True,
+            ), 0)
+        self.assertEqual(calls, [1, 2])
+        manifest_hash = hashlib.sha256(manifest.read_bytes()).hexdigest()
+        receipt_bytes = {
+            step: rollout._receipt_path(self.root, manifest_hash, "dev", step).read_bytes() for step in (1, 2)
+        }
+        calls.clear()
+
+        with patch("scripts.rollout.execute_step", side_effect=self.fake_executor(calls)):
+            status = rollout.run_rollout(
+                manifest, "dev", repo_root=self.root, report_path=self.root / "scratch" / "pause-rerun",
+                confirm=lambda _prompt: True,
+            )
+
+        self.assertEqual(status, 2)
+        self.assertEqual(calls, [])
+        for step, original in receipt_bytes.items():
+            self.assertEqual(rollout._receipt_path(self.root, manifest_hash, "dev", step).read_bytes(), original)
+
+    def test_malformed_and_symlink_receipts_are_refused_without_mutation(self) -> None:
+        manifest = self.write_manifest(self.pause_steps(1))
+        manifest_hash = hashlib.sha256(manifest.read_bytes()).hexdigest()
+        receipt_path = rollout._receipt_path(self.root, manifest_hash, "dev", 1)
+        receipt_path.parent.mkdir(parents=True)
+        malformed = b"{this is deliberately not valid JSON\n"
+        receipt_path.write_bytes(malformed)
+        calls: list[int] = []
+        with patch("scripts.rollout.execute_step", side_effect=self.fake_executor(calls)):
+            malformed_status = rollout.run_rollout(
+                manifest, "dev", repo_root=self.root, report_path=self.root / "scratch" / "malformed-receipt",
+                confirm=lambda _prompt: True,
+            )
+        self.assertEqual(malformed_status, 2)
+        self.assertEqual(receipt_path.read_bytes(), malformed)
+        self.assertEqual(calls, [])
+
+        linked_manifest = self.write_manifest([{"type": "pause", "message": "different manifest"}])
+        linked_hash = hashlib.sha256(linked_manifest.read_bytes()).hexdigest()
+        linked_receipt = rollout._receipt_path(self.root, linked_hash, "dev", 1)
+        linked_receipt.parent.mkdir(parents=True)
+        target = self.root / "receipt-link-target.json"
+        target_bytes = b"keep symlink target bytes\n"
+        target.write_bytes(target_bytes)
+        try:
+            linked_receipt.symlink_to(target)
+        except (OSError, NotImplementedError) as error:
+            self.skipTest(f"symbolic links are unavailable on this platform: {error}")
+        with patch("scripts.rollout.execute_step", side_effect=self.fake_executor(calls)):
+            symlink_status = rollout.run_rollout(
+                linked_manifest, "dev", repo_root=self.root, report_path=self.root / "scratch" / "symlink-receipt",
+                confirm=lambda _prompt: True,
+            )
+        self.assertEqual(symlink_status, 2)
+        self.assertTrue(linked_receipt.is_symlink())
+        self.assertEqual(target.read_bytes(), target_bytes)
+        self.assertEqual(calls, [])
+
+    def test_resume_refuses_receipted_step_in_selected_range(self) -> None:
+        calls: list[int] = []
+        manifest = self.write_manifest(self.pause_steps(2))
+        with patch("scripts.rollout.execute_step", side_effect=self.fake_executor(calls)):
+            first_status = rollout.run_rollout(
+                manifest, "dev", repo_root=self.root, report_path=self.root / "scratch" / "range-first",
+                confirm=lambda _prompt: True,
+            )
+        self.assertEqual(first_status, 0)
+        manifest_hash = hashlib.sha256(manifest.read_bytes()).hexdigest()
+        receipt_bytes = {
+            step: rollout._receipt_path(self.root, manifest_hash, "dev", step).read_bytes() for step in (1, 2)
+        }
+        calls.clear()
+
+        with patch("scripts.rollout.execute_step", side_effect=self.fake_executor(calls)):
+            status = rollout.run_rollout(
+                manifest, "dev", from_step=2, repo_root=self.root,
+                report_path=self.root / "scratch" / "range-resume", confirm=lambda _prompt: True,
+            )
+
+        self.assertEqual(status, 2)
+        self.assertEqual(calls, [])
+        report = json.loads((self.root / "scratch" / "range-resume.json").read_text(encoding="utf-8"))
+        self.assertIn("receipt", report["error"].casefold())
+        for step, original in receipt_bytes.items():
+            self.assertEqual(rollout._receipt_path(self.root, manifest_hash, "dev", step).read_bytes(), original)
+
+    def test_dry_run_refuses_receipted_step_in_selected_range_without_source_mutation(self) -> None:
+        source = self.root / "scripts" / "pre.sql"
+        source.write_text("SELECT 1 FROM dual;\n", encoding="utf-8")
+        manifest = self.write_manifest([{
+            "type": "sql-script", "file": "scripts/pre.sql",
+            "connection": "OPS", "expectedUser": "OPS", "schema": "APP",
+        }])
+        manifest_hash = hashlib.sha256(manifest.read_bytes()).hexdigest()
+        receipt_path = rollout._receipt_path(self.root, manifest_hash, "dev", 1)
+        receipt_path.parent.mkdir(parents=True)
+        receipt_bytes = b"malformed existing receipt\n"
+        receipt_path.write_bytes(receipt_bytes)
+        original_source = source.read_bytes()
+        with patch("scripts.rollout.execute_step") as execute:
+            status = rollout.run_rollout(
+                manifest, "dev", from_step=1, dry_run=True, repo_root=self.root,
+                report_path=self.root / "scratch" / "dry-run-occupied", confirm=lambda _prompt: True,
+            )
+
+        self.assertEqual(status, 2)
+        execute.assert_not_called()
+        self.assertEqual(receipt_path.read_bytes(), receipt_bytes)
+        self.assertEqual(source.read_bytes(), original_source)
+        report = json.loads((self.root / "scratch" / "dry-run-occupied.json").read_text(encoding="utf-8"))
+        self.assertIn("receipt", report["error"].casefold())
+
+    def test_receipt_install_race_preserves_existing_bytes(self) -> None:
+        manifest = self.write_manifest(self.pause_steps(1))
+        manifest_hash = hashlib.sha256(manifest.read_bytes()).hexdigest()
+        receipt_path = rollout._receipt_path(self.root, manifest_hash, "dev", 1)
+        calls: list[int] = []
+        original_installer = getattr(rollout, "_install_rollout_receipt", None)
+        racing_bytes = b"receipt appeared after preflight; preserve it\n"
+
+        def race_install(path: Path, receipt: dict) -> None:
+            path.write_bytes(racing_bytes)
+            if original_installer is None:
+                raise AssertionError("rollout receipt installer has not been implemented")
+            original_installer(path, receipt)
+
+        with patch("scripts.rollout.execute_step", side_effect=self.fake_executor(calls)), patch(
+            "scripts.rollout._install_rollout_receipt", side_effect=race_install, create=True,
+        ) as installer:
+            status = rollout.run_rollout(
+                manifest, "dev", repo_root=self.root, report_path=self.root / "scratch" / "receipt-race",
+                confirm=lambda _prompt: True,
+            )
+
+        self.assertEqual(status, 2)
+        self.assertEqual(calls, [1])
+        installer.assert_called_once()
+        self.assertEqual(receipt_path.read_bytes(), racing_bytes)
+        report = json.loads((self.root / "scratch" / "receipt-race.json").read_text(encoding="utf-8"))
+        self.assertIn("may have completed", report["error"])
+        self.assertIn("receipt was not installed", report["error"])
 
     def test_file_change_during_a_step_aborts_before_the_next_step(self) -> None:
         payload = self.root / "scripts" / "second.sql"

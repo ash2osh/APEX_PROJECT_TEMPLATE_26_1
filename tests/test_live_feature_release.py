@@ -1276,8 +1276,24 @@ class LiveFeatureReleaseTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(self._count(f"select count(*) from {log} where msg = 'ran'", CONNECTION), 0)
 
-        # The target is free again: the blocker goes, staging prepares and succeeds.
+        # The target is free again once the blocker goes. Rollout receipts are never replaced, and step 1 of the
+        # first manifest already has one for staging, so that capsule is refused before any write.
         self._sql(STAGING_DB, f"delete from {log} where id = 1;\ncommit;\n")
+        result, _ = self._rollout("staging", capsule=capsule, prepare=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        result, _ = self._rollout("staging", capsule=capsule)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("receipt path is already occupied", result.stdout + result.stderr)
+        self.assertEqual(self._count(f"select count(*) from {log}", STAGING_DB), 0)
+
+        # A reviewed continuation manifest (a new script file, so a new manifest digest) prepares and succeeds.
+        script = self._script("reconcile-continued.sql", f"insert into {log} (id, msg) values (1, 'ran');\ncommit;\n")
+        self._manifest([
+            {"type": "feature-migrate", "schema": SCHEMA, "inputs": captured},
+            {"type": "sql-script", "file": script, "schema": SCHEMA},
+        ])
+        _commit(self.project, "live checks: continuation manifest after reconciliation")
+        capsule = self._freeze()
         result, _ = self._rollout("staging", capsule=capsule, prepare=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         result, staging = self._rollout("staging", capsule=capsule)
