@@ -31,6 +31,7 @@ from scripts.migration_manifest import MigrationManifestError, assert_single_lay
 from scripts.ords_export import OrdsExportError, check_no_oauth, check_structure, mask_sql
 from scripts.path_utils import relative_to_root
 from scripts.sqlcl_session import ALIAS_RE, SqlclError, run_sqlcl, safe_rmtree
+from scripts.sqlcl_transport import generated_clob_assembly, lint_sqlcl_transport
 from scripts.validate_app_source import validate_app_source
 from scripts.validate_migration import FIRST_WORD, mask_comments_and_literals, statement_spans, validate_sql_only
 
@@ -985,9 +986,27 @@ def _install_rollout_receipt(path: Path, receipt: dict) -> None:
                 pass
 
 
+def _validate_evidence_paths(paths: object, root: Path, step_number: int) -> list[str]:
+    if not isinstance(paths, list) or any(not isinstance(item, str) for item in paths):
+        raise RolloutError(f"step {step_number} receipt has invalid evidence paths")
+    for item in paths:
+        components = item.split("/")
+        if not item or "\\" in item or any(part in {"", ".", ".."} for part in components) or PurePosixPath(item).is_absolute():
+            raise RolloutError(f"step {step_number} receipt has invalid evidence paths")
+        evidence_path = root.joinpath(*components)
+        try:
+            _assert_no_symlink(evidence_path, root)
+        except RolloutError as error:
+            raise RolloutError(f"step {step_number} receipt evidence path is unsafe: {item}") from error
+        if not evidence_path.exists():
+            raise RolloutError(f"step {step_number} receipt evidence path is missing: {item}")
+    return paths
+
+
 def _write_receipt(root: Path, environment: str, manifest: RolloutManifest, plan_item: dict, step_report: dict) -> Path:
     path = _receipt_path(root, manifest.sha256, environment, plan_item["number"])
     try:
+        _validate_evidence_paths(step_report["evidencePaths"], root, plan_item["number"])
         _safe_scratch_root(root)
         _safe_directory(path.parent, root)
         receipt = {
@@ -1048,13 +1067,7 @@ def _verify_receipt(root: Path, manifest: RolloutManifest, environment: str, pla
     duration = receipt["durationSeconds"]
     if type(duration) not in (int, float) or not math.isfinite(duration) or duration < 0:
         raise RolloutError(f"step {plan_item['number']} receipt has an invalid duration")
-    evidence_paths = receipt["evidencePaths"]
-    if not isinstance(evidence_paths, list) or any(not isinstance(item, str) for item in evidence_paths):
-        raise RolloutError(f"step {plan_item['number']} receipt has invalid evidence paths")
-    for item in evidence_paths:
-        components = item.split("/")
-        if not item or "\\" in item or any(part in {"", ".", ".."} for part in components) or PurePosixPath(item).is_absolute():
-            raise RolloutError(f"step {plan_item['number']} receipt has invalid evidence paths")
+    _validate_evidence_paths(receipt["evidencePaths"], root, plan_item["number"])
     return receipt, path
 
 
@@ -1468,6 +1481,17 @@ def _execute_sql_payload(
         step_number=step_number,
         expected_identity=expected_identity,
     )
+    mode = "assembled" if generated_clob_assembly(source) else "direct"
+    for finding in lint_sqlcl_transport(source, mode):
+        message = f"payload.sql:{finding.line} ({finding.code}): {finding.message}"
+        if finding.severity == "error":
+            return StepResult(2, _relative_paths((driver, evidence_dir / "payload.sql"), repo_root), f"SQLcl transport preflight refused: {message}")
+        print(f"rollout warning: SQLcl transport review: {message}", file=sys.stderr)
+    for finding in lint_sqlcl_transport(driver.read_text(encoding="utf-8"), "direct"):
+        message = f"rollout.sql:{finding.line} ({finding.code}): {finding.message}"
+        if finding.severity == "error":
+            return StepResult(2, _relative_paths((driver, evidence_dir / "payload.sql"), repo_root), f"SQLcl transport preflight refused: {message}")
+        print(f"rollout warning: SQLcl transport review: {message}", file=sys.stderr)
     target = Target(environment, step["connection"], step["expectedUser"], step["schema"], env_classification)
     try:
         result = run_sqlcl(target, driver, evidence_dir, phase="apply")

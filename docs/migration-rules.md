@@ -629,7 +629,12 @@ checks the capsule and selected local source hashes offline; `--prepare` is a
 separate guarded, read-only target operation. JSON and Markdown reports
 include step status, timing, hashes and evidence paths. Successful receipts
 are local recovery evidence under `scratch/rollout-receipts/`; resuming with
-`--from-step N` requires matching receipts for every earlier step. Inspect
+`--from-step N` requires matching receipts for every earlier step, and each receipt's evidence paths must
+still exist inside the checkout without symbolic links; a receipt whose evidence was deleted refuses the resume.
+A receipt is written only when the step's evidence paths pass the same check. Before SQLcl starts, a SQL step's
+payload and generated driver pass the SQLcl transport preflight: an error-level finding (for example a quoted
+trailing hyphen that SQLcl would read as a continuation) refuses the step with exit 2, and review findings are
+printed as warnings. Inspect
 target state before resuming after an ambiguous write. Reports may not overlap
 rollout inputs, receipts or recovery evidence. Capsule attempt state is local to
 this checkout, and a capsule's database-object budget covers only its feature
