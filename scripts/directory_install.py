@@ -57,6 +57,10 @@ def _is_reparse_point(metadata: os.stat_result) -> bool:
     return bool(attributes & _WINDOWS_FILE_ATTRIBUTE_REPARSE_POINT)
 
 
+def _is_symlink_or_reparse(metadata: os.stat_result) -> bool:
+    return stat.S_ISLNK(getattr(metadata, "st_mode", 0)) or _is_reparse_point(metadata)
+
+
 @dataclass
 class _PinnedEntry:
     path: Path

@@ -2,6 +2,7 @@ import io
 import json
 import re
 import subprocess
+import _test_subprocess_safety  # noqa: F401
 import sys
 import tempfile
 import unittest
@@ -39,14 +40,14 @@ class LoginDiffersFromSchemaTests(unittest.TestCase):
     def test_doc_describes_the_proxy_alternative(self) -> None:
         contents = (ROOT / "docs" / "login-acts-as-schema.md").read_text(encoding="utf-8")
 
-        for phrase in (
+        for required_text in (
             "Proxy login alternative",
             "APP_LOGIN[APP_STAGE]",
             "CONNECT THROUGH",
             "STAGING_EXPECTED_USER=APP_STAGE",
         ):
-            with self.subTest(phrase=phrase):
-                self.assertIn(phrase, contents)
+            with self.subTest(required_text=required_text):
+                self.assertIn(required_text, contents)
 
     def test_doc_records_live_proxy_and_metadata_privilege_results(self) -> None:
         contents = (ROOT / "docs" / "login-acts-as-schema.md").read_text(encoding="utf-8")
