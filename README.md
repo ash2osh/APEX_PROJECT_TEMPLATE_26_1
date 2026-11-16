@@ -50,17 +50,17 @@ project-specific tests and the operational scripts, `.env`, manifest and lock.
 | Safety built in | Every connection is identity-checked, production-looking names are caught, production is read-only, file installs are all-or-nothing, and your uncommitted work is never overwritten. |
 | Template upgrades | `upgrade-template` updates the template's own files and never touches your apps, migrations, database copy or `.env`. |
 | Knowledge graph | Optional Graphify index that links each app's pages, regions and processes to the tables and packages they use. |
-| AI-assistant support | Repository rules, 12 skills, optional workflow packs, SQLcl MCP, per-checkout Chrome/Firefox MCP selection, and an optional Chrome daemon. |
+| AI-assistant support | Repository rules, 13 skills, optional workflow packs, SQLcl MCP, per-checkout Chrome/Firefox MCP selection, and an optional Chrome daemon. |
 | Bash and PowerShell | `scripts/team.sh` and `scripts/team.ps1` expose the same commands. |
 
 ## Skills and agent support
 
 AI coding assistants read [AGENTS.md](AGENTS.md) (Claude Code loads it through
 `CLAUDE.md`) for the rules and load a skill on their own when a task matches
-its description. The same 12 skills for APEX and project setup are listed in `.agents/skills/` (for agents
+its description. The same 13 skills for APEX and project setup are listed in `.agents/skills/` (for agents
 that follow the `AGENTS.md` convention) and `.claude/skills/` (for Claude Code).
-Four Claude Code entries (`chrome-devtools-mcp`, `firefox-devtools-mcp`, `safeguarding-apexlang-text-messages`
-and `sqlcl-mcp-r0`) are short pointers to the full `.agents/skills/` copy.
+Five Claude Code entries (`building-apex-template-components`, `chrome-devtools-mcp`, `firefox-devtools-mcp`,
+`safeguarding-apexlang-text-messages` and `sqlcl-mcp-r0`) are short pointers to the full `.agents/skills/` copy.
 You do not have to call them by name.
 
 Agents also load a conversation style at the start of each conversation: set `AGENT_STYLE` in
@@ -76,6 +76,7 @@ Agents also load a conversation style at the start of each conversation: set `AG
 | `apex-session-context` | SQL or PL/SQL outside a page request reads task or workflow views or calls workflow APIs (SQLcl, schedulers). |
 | `apex-workflow-lifecycle` | Importing or moving an app that has live workflow or task instances, or diagnosing a missing schedule. |
 | `apexlang-export-debugging` | An APEXlang export fails with `ORA-01403` in `WWV_META_META_DATA`. |
+| `building-apex-template-components` | Creating, changing, translating or debugging an Oracle APEX template component (report type) in an APEXlang app. |
 | `optimizing-apex-task-inboxes` | Task inboxes are slow from repeated task API or view calls. |
 | `safeguarding-apexlang-text-messages` | Localizing or repairing `textMessages` without breaking substitutions or tokens. |
 | `sqlcl-mcp-r0` | An assistant operates SQLcl through MCP at restriction level 0. |

@@ -51,7 +51,7 @@ Set up packs only when requested, using `scripts/team.sh skills setup <selection
 controls repository-managed copies, not global skills or enabled app plugins;
 report those separately when they affect a request to use neither.
 
-The 12 template-authored domain/setup skills remain
+The 13 template-authored domain/setup skills remain
 independent of optional workflow packs. After installing Matt's pack, invoke
 `/setup-matt-pocock-skills` when requested and put its project guidance in
 `AGENTS.project.md`, preserving existing instructions, instead of template-owned

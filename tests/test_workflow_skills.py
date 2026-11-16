@@ -292,5 +292,14 @@ class WorkflowSkillsTests(unittest.TestCase):
                 self.assertEqual(json.loads(result.stdout)["selection"], "none")
 
 
+class CoreSkillListTests(unittest.TestCase):
+    def test_core_skill_list_names_every_template_skill_folder(self):
+        folders = {path.name for path in (ROOT / ".agents" / "skills").iterdir() if path.is_dir()}
+        mirrored = {path.name for path in (ROOT / ".claude" / "skills").iterdir() if path.is_dir()}
+        self.assertEqual(folders, mirrored)
+        self.assertEqual(workflow_skills.CORE_SKILLS, folders, "CORE_SKILLS must list every template-authored skill")
+        self.assertIn("building-apex-template-components", workflow_skills.CORE_SKILLS)
+
+
 if __name__ == "__main__":
     unittest.main()
