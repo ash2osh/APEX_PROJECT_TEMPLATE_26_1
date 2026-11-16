@@ -70,3 +70,8 @@ Commands run in this session, from the 26.1 checkout, with results:
 - The copied `anatomy.md` still tells the reader to export a skeleton "in a throwaway worktree". Worktrees are against the owner's working style; wording to be decided.
 - Whether the legacy dry-run should refuse on existing receipts (as 26.2 does) or allow it. Current behaviour: refuses.
 - Not ported: the 26.2 write-time evidence-path check `_validate_evidence_paths`.
+
+## Live reconciliation scenarios run again
+
+- `tests/test_live_feature_release.py`: `test_abrupt_termination_mid_apply_is_recovered_after_reconciliation` and `test_unknown_run_without_a_checkpoint_is_reconciled_then_frees_the_target` were permanently skipped because they typed an acknowledgment. They now supply it with `--yes` (`rollout --prepare --recover --yes`, `feature reconcile-run --yes`), assert `acknowledgedBy: --yes`, and first assert that a piped acknowledgment, even the exact text, is refused. `docs/live-feature-tests.md` describes this.
+- Live results are in the pull request description.
