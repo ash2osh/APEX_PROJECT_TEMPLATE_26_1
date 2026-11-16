@@ -986,9 +986,27 @@ def _install_rollout_receipt(path: Path, receipt: dict) -> None:
                 pass
 
 
+def _validate_evidence_paths(paths: object, root: Path, step_number: int) -> list[str]:
+    if not isinstance(paths, list) or any(not isinstance(item, str) for item in paths):
+        raise RolloutError(f"step {step_number} receipt has invalid evidence paths")
+    for item in paths:
+        components = item.split("/")
+        if not item or "\\" in item or any(part in {"", ".", ".."} for part in components) or PurePosixPath(item).is_absolute():
+            raise RolloutError(f"step {step_number} receipt has invalid evidence paths")
+        evidence_path = root.joinpath(*components)
+        try:
+            _assert_no_symlink(evidence_path, root)
+        except RolloutError as error:
+            raise RolloutError(f"step {step_number} receipt evidence path is unsafe: {item}") from error
+        if not evidence_path.exists():
+            raise RolloutError(f"step {step_number} receipt evidence path is missing: {item}")
+    return paths
+
+
 def _write_receipt(root: Path, environment: str, manifest: RolloutManifest, plan_item: dict, step_report: dict) -> Path:
     path = _receipt_path(root, manifest.sha256, environment, plan_item["number"])
     try:
+        _validate_evidence_paths(step_report["evidencePaths"], root, plan_item["number"])
         _safe_scratch_root(root)
         _safe_directory(path.parent, root)
         receipt = {
@@ -1049,13 +1067,7 @@ def _verify_receipt(root: Path, manifest: RolloutManifest, environment: str, pla
     duration = receipt["durationSeconds"]
     if type(duration) not in (int, float) or not math.isfinite(duration) or duration < 0:
         raise RolloutError(f"step {plan_item['number']} receipt has an invalid duration")
-    evidence_paths = receipt["evidencePaths"]
-    if not isinstance(evidence_paths, list) or any(not isinstance(item, str) for item in evidence_paths):
-        raise RolloutError(f"step {plan_item['number']} receipt has invalid evidence paths")
-    for item in evidence_paths:
-        components = item.split("/")
-        if not item or "\\" in item or any(part in {"", ".", ".."} for part in components) or PurePosixPath(item).is_absolute():
-            raise RolloutError(f"step {plan_item['number']} receipt has invalid evidence paths")
+    _validate_evidence_paths(receipt["evidencePaths"], root, plan_item["number"])
     return receipt, path
 
 

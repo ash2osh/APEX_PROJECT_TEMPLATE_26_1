@@ -1292,6 +1292,78 @@ class RolloutManifestTests(unittest.TestCase):
         self.assertIn("rollout warning: SQLcl transport review", stderr.getvalue())
         self.assertIn("quoted-trailing-hyphen", stderr.getvalue())
 
+    def test_validate_evidence_paths_refuses_unsafe_syntax_missing_and_linked_paths(self) -> None:
+        (self.root / "scratch").mkdir(exist_ok=True)
+        (self.root / "scratch" / "present.log").write_text("ok\n", encoding="utf-8")
+        outside = self.root / "outside.log"
+        outside.write_text("outside\n", encoding="utf-8")
+        (self.root / "scratch" / "linked.log").symlink_to(outside)
+
+        self.assertEqual(rollout._validate_evidence_paths(["scratch/present.log"], self.root, 1), ["scratch/present.log"])
+        for bad in ([""], ["../outside.log"], ["scratch\\present.log"], ["/tmp/outside.log"], ["scratch//present.log"], ["./scratch/present.log"], [7]):
+            with self.subTest(paths=bad), self.assertRaisesRegex(rollout.RolloutError, "invalid evidence paths"):
+                rollout._validate_evidence_paths(bad, self.root, 1)
+        with self.assertRaisesRegex(rollout.RolloutError, "evidence path is missing"):
+            rollout._validate_evidence_paths(["scratch/absent.log"], self.root, 1)
+        with self.assertRaisesRegex(rollout.RolloutError, "evidence path is unsafe"):
+            rollout._validate_evidence_paths(["scratch/linked.log"], self.root, 1)
+
+    def test_receipt_is_not_installed_when_a_step_reports_missing_evidence(self) -> None:
+        calls: list[int] = []
+        manifest = self.write_manifest(self.pause_steps(1))
+
+        def execute(step, **context):
+            calls.append(context["step_number"])
+            return rollout.StepResult(0, ("scratch/never-written.log",), "simulated")
+
+        with patch("scripts.rollout.execute_step", side_effect=execute), patch("sys.stderr", new_callable=io.StringIO):
+            status = rollout.run_rollout(
+                manifest, "dev", repo_root=self.root, report_path=self.root / "scratch" / "missing-evidence",
+            )
+
+        self.assertEqual(status, 2)
+        self.assertEqual(calls, [1])
+        loaded = rollout.load_manifest(manifest, self.root)
+        self.assertFalse(rollout._receipt_path(self.root, loaded.sha256, "dev", 1).exists())
+
+    def test_resume_refuses_a_receipt_whose_evidence_was_removed_or_replaced_by_a_link(self) -> None:
+        manifest = self.write_manifest(self.pause_steps(2))
+        calls: list[int] = []
+        with patch("scripts.rollout.execute_step", side_effect=self.fake_executor(calls, fail_at=2)), \
+             patch("sys.stdout"), patch("sys.stderr"):
+            first = rollout.run_rollout(
+                manifest, "dev", repo_root=self.root, report_path=self.root / "scratch" / "evidence-first",
+                confirm=lambda _prompt: True,
+            )
+        self.assertEqual(first, 2)
+        loaded = rollout.load_manifest(manifest, self.root)
+        receipt = json.loads(rollout._receipt_path(self.root, loaded.sha256, "dev", 1).read_text(encoding="utf-8"))
+        evidence = self.root / receipt["evidencePaths"][0]
+        original = evidence.read_bytes()
+
+        calls.clear()
+        evidence.unlink()
+        with patch("scripts.rollout.execute_step", side_effect=self.fake_executor(calls)), \
+             patch("sys.stdout"), patch("sys.stderr"):
+            missing = rollout.run_rollout(
+                manifest, "dev", from_step=2, repo_root=self.root,
+                report_path=self.root / "scratch" / "evidence-missing", confirm=lambda _prompt: True,
+            )
+        self.assertEqual(missing, 2)
+        self.assertEqual(calls, [])
+
+        outside = self.root / "outside-evidence.log"
+        outside.write_bytes(original)
+        evidence.symlink_to(outside)
+        with patch("scripts.rollout.execute_step", side_effect=self.fake_executor(calls)), \
+             patch("sys.stdout"), patch("sys.stderr"):
+            linked = rollout.run_rollout(
+                manifest, "dev", from_step=2, repo_root=self.root,
+                report_path=self.root / "scratch" / "evidence-linked", confirm=lambda _prompt: True,
+            )
+        self.assertEqual(linked, 2)
+        self.assertEqual(calls, [])
+
     def test_sql_script_runs_through_fake_sqlcl_with_identity_and_failure_guards(self) -> None:
         payload = self.root / "scripts" / "prerequisite.sql"
         payload.write_text("CREATE TABLE APP.PRECHECK (ID NUMBER);\n", encoding="utf-8")
@@ -1540,6 +1612,7 @@ class RolloutManifestTests(unittest.TestCase):
                 expected_input_hashes[f"{folder}/checks.json"],
                 hashlib.sha256((self.root / folder / "checks.json").read_bytes()).hexdigest(),
             )
+            (self.root / "scratch" / "check-evidence").mkdir(parents=True, exist_ok=True)
             print(json.dumps({"schemaVersion": 1, "evidenceDir": "scratch/check-evidence"}))
             return 0
 
