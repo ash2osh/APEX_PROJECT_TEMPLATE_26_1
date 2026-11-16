@@ -323,6 +323,19 @@ class BrowserMcpTests(unittest.TestCase):
         self.assertFalse((repo / ".codex/config.toml").exists())
         self.assertFalse((repo / ".browser-mcp-selection.json").exists())
 
+    def test_validate_target_path_refuses_a_path_that_escapes_the_checkout(self) -> None:
+        spec = importlib.util.spec_from_file_location("browser_mcp_escape_test", SCRIPT)
+        assert spec and spec.loader
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        repo = self.make_repo("escape")
+
+        with self.assertRaises(module.SetupError) as context:
+            module.validate_target_path(repo, "../outside.json")
+        self.assertIn("escapes the checkout", str(context.exception))
+        self.assertFalse((repo.parent / "outside.json").exists())
+        self.assertEqual(module.validate_target_path(repo, ".mcp.json"), repo / ".mcp.json")
+
     def test_team_shell_mcp_setup_and_status_dispatch(self) -> None:
         repo = self.make_repo()
         scripts = repo / "scripts"
