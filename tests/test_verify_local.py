@@ -191,6 +191,39 @@ APEX_EXPECTED_USER=DEMO
         self.assertEqual(lock_check["status"], "fail")
         self.assertIn("templateRef", lock_check["message"])
 
+    def test_missing_locked_command_requires_attention(self) -> None:
+        self.write_valid_env()
+        self.create_valid_app()
+        lock_path = self.write_valid_lock()
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        lock["files"]["scripts/team.sh"] = hashlib.sha256(b"#!/bin/sh\n").hexdigest()
+        lock_path.write_text(json.dumps(lock), encoding="utf-8")
+        from scripts.local_config import read_project_env
+
+        report = build_report(self.repo, read_project_env(self.repo / ".env"))
+        check = next(c for c in report["checks"] if c["check"] == "template_drift")
+        self.assertEqual(check["status"], "attention")
+        self.assertIn("1 missing", check["message"])
+        self.assertEqual(report["exitCode"], 1)
+
+    def test_customized_locked_command_remains_ready(self) -> None:
+        self.write_valid_env()
+        self.create_valid_app()
+        lock_path = self.write_valid_lock()
+        lock = json.loads(lock_path.read_text(encoding="utf-8"))
+        lock["files"]["scripts/team.sh"] = hashlib.sha256(b"#!/bin/sh\n").hexdigest()
+        lock_path.write_text(json.dumps(lock), encoding="utf-8")
+        script = self.repo / "scripts" / "team.sh"
+        script.parent.mkdir()
+        script.write_text("#!/bin/sh\necho custom\n", encoding="utf-8")
+        from scripts.local_config import read_project_env
+
+        report = build_report(self.repo, read_project_env(self.repo / ".env"))
+        check = next(c for c in report["checks"] if c["check"] == "template_drift")
+        self.assertEqual(check["status"], "pass")
+        self.assertIn("1 customized", check["message"])
+        self.assertEqual(report["exitCode"], 0)
+
     def test_missing_dev_descriptor_fails(self) -> None:
         self.write_valid_env()
         self.write_valid_lock()
