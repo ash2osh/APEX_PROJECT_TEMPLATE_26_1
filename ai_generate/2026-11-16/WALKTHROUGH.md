@@ -86,3 +86,9 @@ Commands run in this session, from the 26.1 checkout, with results:
 
 - `scripts/backup_db.sh`: the EXIT trap now keeps the run's status; under errexit a failed scratch cleanup used to turn a refusal (2) or a finished backup (0) into 1. A cleanup failure is reported as a warning. `run_ords_scope` exits 2 directly on each refusal and is called without `||`, so errexit stays on inside it (26.2 had it off). The file is now identical in both templates.
 - The Windows known-flaky entry (refusal printed, exit 0) is not explained by this; the leading candidate is `exec` in `scripts/team.sh` under Git Bash, which needs a Windows probe. The entry stays until then.
+
+## Parity ports into 26.1
+
+- `scripts/rollout.py` (schema-version 1): SQL steps run the SQLcl transport preflight on the payload and the generated driver before SQLcl starts; receipt evidence paths are checked (inside the checkout, no symbolic links, present) when a receipt is written and when a run resumes. Both match 26.2.
+- `scripts/verify_local.py`: a template-locked file that is missing makes the drift check `attention` instead of `pass`, as in 26.2.
+- Not ported: the 26.2 app-deploy target identity and child-configuration bindings. 26.1 resolves app-deploy connections with `_app_target_details`; `resolve_target` refuses configurations 26.1 accepts today (for example a staging profile without `STAGING_SCHEMA` in a single-schema project), so porting would break working setups.
