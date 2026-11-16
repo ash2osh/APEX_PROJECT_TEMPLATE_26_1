@@ -50,6 +50,9 @@ class PublishAppCliTests(unittest.TestCase):
             "stamp_publish_version.py",
         ):
             shutil.copy2(ROOT / "scripts" / name, scripts / name)
+        shutil.copy2(ROOT / "template-manifest.json", root / "template-manifest.json")
+        if (ROOT / "scripts" / "template_release.ps1").exists():
+            shutil.copy2(ROOT / "scripts" / "template_release.ps1", scripts / "template_release.ps1")
         helper = ROOT / "scripts" / "sqlcl_safe.sh"
         if helper.exists():
             shutil.copy2(helper, scripts / helper.name)
@@ -191,6 +194,9 @@ class PublishAppCliTests(unittest.TestCase):
             "check_db_target.ps1",
         ):
             shutil.copy2(ROOT / "scripts" / name, scripts / name)
+        shutil.copy2(ROOT / "template-manifest.json", root / "template-manifest.json")
+        if (ROOT / "scripts" / "template_release.ps1").exists():
+            shutil.copy2(ROOT / "scripts" / "template_release.ps1", scripts / "template_release.ps1")
         app = root / "apps" / "DEMO" / "100"
         (app / "apex-team-export.json").write_text(
             json.dumps(
@@ -1207,6 +1213,9 @@ class PublishAppCliTests(unittest.TestCase):
                     "stamp_publish_version.py",
                 ):
                     shutil.copy2(ROOT / "scripts" / name, scripts / name)
+                shutil.copy2(ROOT / "template-manifest.json", root / "template-manifest.json")
+                if (ROOT / "scripts" / "template_release.ps1").exists():
+                    shutil.copy2(ROOT / "scripts" / "template_release.ps1", scripts / "template_release.ps1")
                 (scripts / "application_lifecycle.sql").write_text("-- fixture\n", encoding="utf-8")
                 (scripts / "application_lifecycle.py").write_text(
                     'import sys, json\n'
@@ -1429,6 +1438,9 @@ class PublishAppCliTests(unittest.TestCase):
         scripts = runner.parent
         for name in self.POWERSHELL_HELPERS:
             shutil.copy2(ROOT / "scripts" / name, scripts / name)
+        shutil.copy2(ROOT / "template-manifest.json", root / "template-manifest.json")
+        if (ROOT / "scripts" / "template_release.ps1").exists():
+            shutil.copy2(ROOT / "scripts" / "template_release.ps1", scripts / "template_release.ps1")
         return subprocess.run(
             [pwsh, "-NoProfile", "-File", str(scripts / "publish_app.ps1"), "100", *args],
             cwd=root,

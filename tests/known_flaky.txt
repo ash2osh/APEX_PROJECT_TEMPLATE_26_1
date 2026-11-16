@@ -4,3 +4,5 @@
 test_team_cli.TeamCliTests.test_powershell_exits_130_when_interrupted_while_a_helper_runs  # pwsh crashes with exit -6 instead of 130 on the Linux runner; 3 runs, 2026-10-16 to 2026-10-18
 test_doctor_database_info.DoctorDatabaseInfoTests.test_detected_version_is_reported_per_target_without_configuration  # "Broken pipe" when the PowerShell wrapper closes its pipe early; 2 runs, 2026-10-18
 test_backup_ords_cli.BackupOrdsTests.test_every_untrustworthy_export_is_refused_and_the_previous_mirror_kept  # Windows, bash scenario; failed once after a merge, the same code passed in the PR run, 2026-10-19
+test_team_cli.TeamCliTests.test_powershell_ends_the_whole_sqlcl_tree_when_sqlcl_ignores_ctrl_c  # 60 s timeout on the PowerShell SIGINT path (pwsh 7 on Linux); 2 of 4 isolated runs fail on unchanged code, 2 full runs on this PC errored, 2026-11-16
+test_team_cli.TeamCliTests.test_powershell_passes_on_the_status_a_helper_chose_when_it_was_interrupted  # one failure in 9 isolated runs on the fix branch and one in full runs, 2026-11-16
