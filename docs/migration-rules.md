@@ -639,6 +639,17 @@ report budget coverage as incomplete. The budget detects overruns after an Oracl
 it cannot prevent DDL from committing. A release made only of migrate steps is a
 migration-only capsule; see [migration-only releases](feature-releases.md#migration-only-releases).
 
+Rollout receipts are never replaced. Before execution, the rollout checks every selected step's canonical receipt
+path under `scratch/rollout-receipts/<manifest-sha256>/<env>/` and refuses any existing file, directory, malformed
+receipt, or symbolic link: it exits 2 and runs no step. `--dry-run` applies the same refusal. A manifest whose steps
+already succeeded for an environment therefore cannot run again from step 1. Keep the original receipts and report,
+inspect the target, and use a separately reviewed continuation manifest (a changed manifest with a new digest) for
+further writes. Successful receipts are installed with an atomic no-overwrite link. If a receipt appears after
+preflight or the filesystem cannot install it, the step may have completed without a receipt: preserve the report and
+SQLcl evidence, inspect the target independently, and use only a separately reviewed continuation manifest for further
+writes. This receipt check does not serialize cross-process runs or database writes; two processes can both pass
+preflight before either installs its receipt.
+
 ## Generated baseline migrations
 
 `scripts/team.sh baseline build --to <env> [--from <env>] [--data]`

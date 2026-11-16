@@ -293,7 +293,8 @@ them as prepared checkpoints, as in a mixed release. It has no feature checkpoin
 - The target scopes come from the migration bindings only.
 - `--recover` is refused, because there is no checkpoint attempt to recover. A
   migration step that refused before its write leaves the target free: once the cause
-  is fixed and the target is prepared again, the same capsule can be run again. A
+  is fixed and the target is prepared again, the same capsule can be run again, provided no step of it has a
+  rollout receipt for that environment yet (receipts are never replaced; see below). A
   migration step whose outcome is unknown is reconciled live as
   [migration rules](migration-rules.md) describe. The run is then closed with
   `feature reconcile-run` (see below), the interrupted folder stays locked by the
@@ -366,6 +367,13 @@ ineligible for cleanup until a later verified run of the same environment supers
 
 Exit codes: 0 reconciled; 1 declined, or the acknowledgment was wrong; 2 refused or an
 error.
+
+Rollout receipts are never replaced. When an earlier step of the closed run succeeded, it
+has a receipt under `scratch/rollout-receipts/<manifest-sha256>/<env>/`, and a new run of
+the same capsule on that environment is refused before any
+write. Keep the receipts and evidence, inspect the target, and continue with a reviewed
+continuation manifest (a changed manifest, frozen as a new capsule), as
+[migration rules](migration-rules.md) describe for rollout receipts.
 
 ## Timing, attempts, and cleanup
 

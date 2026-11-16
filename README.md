@@ -807,7 +807,10 @@ unknown. Version and compatibility do not prove feature privileges or availabili
 session and never applies migration SQL. Schema-version 1 `rollout` hashes all
 referenced input files before execution, stops at the first failed step and
 records private receipts under `scratch/`; a resume requires matching receipts
-for the same manifest, environment and source hashes. Schema-version 2 uses a
+for the same manifest, environment and source hashes. Receipts are never
+replaced: a manifest whose selected steps already have receipts for that
+environment is refused before any step runs, so a rerun needs a reviewed
+continuation manifest. Schema-version 2 uses a
 frozen capsule, target-specific plans, and local checkpoint attempts; see the
 [rollout rules and manifest schema](docs/migration-rules.md#rollout), the
 [schema-version 1 example](docs/rollout-manifest.example.json), and the
