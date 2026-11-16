@@ -294,8 +294,12 @@ class WorkflowSkillsTests(unittest.TestCase):
 
 class CoreSkillListTests(unittest.TestCase):
     def test_core_skill_list_names_every_template_skill_folder(self):
-        folders = {path.name for path in (ROOT / ".agents" / "skills").iterdir() if path.is_dir()}
-        mirrored = {path.name for path in (ROOT / ".claude" / "skills").iterdir() if path.is_dir()}
+        # Workflow-pack skills share these folders; the lock lists them, and they are not template-authored.
+        lock_path = ROOT / workflow_skills.LOCK
+        lock = json.loads(lock_path.read_text(encoding="utf-8")) if lock_path.is_file() else {}
+        pack_skills = {name for pack in lock.get("packs", {}).values() for name in pack.get("skills", [])}
+        folders = {path.name for path in (ROOT / ".agents" / "skills").iterdir() if path.is_dir()} - pack_skills
+        mirrored = {path.name for path in (ROOT / ".claude" / "skills").iterdir() if path.is_dir()} - pack_skills
         self.assertEqual(folders, mirrored)
         self.assertEqual(workflow_skills.CORE_SKILLS, folders, "CORE_SKILLS must list every template-authored skill")
         self.assertIn("building-apex-template-components", workflow_skills.CORE_SKILLS)
