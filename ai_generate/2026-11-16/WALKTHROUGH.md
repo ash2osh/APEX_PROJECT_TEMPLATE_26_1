@@ -35,7 +35,7 @@ No code reads the variable any more. AGENTS.md and `.agents/rules/agent-safety.m
 
 - `docs/superpowers/specs/2026-10-15-confirmed-review-remediation.md`: the absolute home-directory path is now `scratch/review-2026-10-15/REVIEW.md`.
 - The two agent-conversation-style documents: the downstream project names are replaced by "a downstream project" and the table row is generic.
-- `tests/test_feature_ddl_adversarial.py` and `tests/test_feature_ddl_forms.py`: the grantee name is `BATCH_USER` instead of the downstream name, so the grep requirement holds.
+- `tests/test_feature_ddl_adversarial.py` and `tests/test_feature_ddl_forms.py`: the grantee name is `SERVICE_USER` instead of the downstream name (the same bytes as 26.2), so the grep requirement holds.
 - the privacy grep (the deny-list pattern, see the verification section) now hits only `tests/test_agent_styles.py`.
 
 ### Daily change record for 2026-11-15 (`2a77e26`)

@@ -49,9 +49,9 @@ class TerminalConfirmTests(unittest.TestCase):
             self.assertFalse(migrate._confirm_from_terminal("Migrating to PROD. Proceed? [y/N]"))
         self.assertIn("refused", stderr.getvalue())
 
-    def test_redirected_input_refused_for_acknowledgment_even_with_environment_variable(self):
+    def test_redirected_input_refused_for_acknowledgment_even_with_retired_environment_variable(self):
+        # TEAM_ACK_FROM_STDIN is retired: no code reads it, so setting it changes nothing.
         stderr = io.StringIO()
-        # The retired TEAM_ACK_FROM_STDIN variable is ignored: no code reads it, so it cannot open the gate.
         with patch.object(terminal_confirm, "stdin_is_terminal", return_value=False), \
                 patch.dict(os.environ, {"TEAM_ACK_FROM_STDIN": "1"}), contextlib.redirect_stderr(stderr):
             self.assertFalse(terminal_confirm.may_read_acknowledgment())
