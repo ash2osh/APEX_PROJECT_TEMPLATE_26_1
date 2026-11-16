@@ -426,6 +426,35 @@ class BackupDbWithOrdsTests(OrdsCliTestCase):
             with self.subTest(scenario=scenario):
                 self.each_shell(body, config={"ords": {"REST_API": {"scenario": scenario}}})
 
+    def test_a_refusal_keeps_exit_2_when_the_staging_directory_cannot_be_removed(self) -> None:
+        # The EXIT trap's rm ran under errexit: a failed rm replaced a refusal's 2 with 1 and a finished backup's 0 with 1.
+        # A scratch directory that cannot be removed is reported and never changes the run's status.
+        if os.name == "nt":
+            self.skipTest("the rm stand-in is a Bash script, which PATH lookup does not start under Git Bash")
+        real_rm = shutil.which("rm")
+        cases = (("backup-ords", "drift-counts", 2), ("backup-db", "drift-counts", 2), ("backup-db", "ok", 0))
+        for command, scenario, expected in cases:
+            with self.subTest(command=command, scenario=scenario), tempfile.TemporaryDirectory() as temporary:
+                project = Project(Path(temporary), "bash", config={"ords": {"REST_API": {"scenario": scenario}}})
+                stand_in = project.root / "stand-in"
+                stand_in.mkdir()
+                rm = stand_in / "rm"
+                rm.write_text(
+                    "#!/usr/bin/env bash\n"
+                    "case \"$*\" in *db-backup*) echo 'rm: cannot remove the staging directory' >&2; exit 1;; esac\n"
+                    f"exec '{real_rm}' \"$@\"\n",
+                    encoding="utf-8", newline="\n",
+                )
+                rm.chmod(0o755)
+                project.environment["PATH"] = f"{stand_in}{os.pathsep}{project.environment['PATH']}"
+                before = tree(project.root)
+                result = project.run(command)
+                self.assertEqual(expected, result.returncode, plain(result.stdout + result.stderr))
+                if expected == 0:
+                    self.assertNotEqual(before, tree(project.root), "the backup completed, so the mirror was installed")
+                else:
+                    self.assertEqual(before, tree(project.root), "a refusal installs nothing")
+
     def test_a_table_or_code_failure_means_no_ords_session_and_no_installation(self) -> None:
         for scope in ("tables", "code"):
             def body(project: Project) -> None:
