@@ -81,3 +81,8 @@ Commands run in this session, from the 26.1 checkout, with results:
 - The 202 files under `scripts/`, `tools/` and `tests/` that are identical in both templates now come from the new public repository `ash2osh/APEX_TEMPLATE_CORE` through `scripts/sync_core.py`. `.core-stamp.json` (template-only, not shipped downstream) lists each file with its SHA-256 and the core commit.
 - `scripts/pre_push_check.py` runs `scripts/sync_core.py check .` when the stamp exists; the `offline` CI job runs `check --core` against a clone of the core. `docs/ci-checks.md` describes the fix-in-core workflow.
 - Phase 2 (merging the 104 differing files behind an `apexRelease` switch) is next; see the core README.
+
+## backup-db keeps its exit status
+
+- `scripts/backup_db.sh`: the EXIT trap now keeps the run's status; under errexit a failed scratch cleanup used to turn a refusal (2) or a finished backup (0) into 1. A cleanup failure is reported as a warning. `run_ords_scope` exits 2 directly on each refusal and is called without `||`, so errexit stays on inside it (26.2 had it off). The file is now identical in both templates.
+- The Windows known-flaky entry (refusal printed, exit 0) is not explained by this; the leading candidate is `exec` in `scripts/team.sh` under Git Bash, which needs a Windows probe. The entry stays until then.
