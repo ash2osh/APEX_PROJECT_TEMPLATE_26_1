@@ -20,6 +20,7 @@ from pathlib import Path
 
 from . import migration_runtime
 from .db_targets import Target, TargetResolutionError, resolve_target
+from .template_release import is_apex_26_2
 from .schema_catalog import (
     CatalogError,
     ObjectDefinition,
@@ -46,6 +47,9 @@ EXACT_IDENTIFIER_RE = re.compile(r"[A-Za-z][A-Za-z0-9_$#]*\Z", re.ASCII)
 TYPE_RE = re.compile(r"[A-Za-z][A-Za-z0-9_$#]*(?:\s+[A-Za-z0-9_$#]+)*\Z", re.ASCII)
 PATTERN_CHARS_RE = re.compile(r"[A-Za-z0-9_$#*]+\Z", re.ASCII)
 SCOPE_IDENTITY_FIELDS = ("db_unique_name", "container_id", "container_name", "current_schema", "edition")
+# Phase 2 release switch (apexRelease in template-manifest.json, absent is 26.1). The two releases list the
+# same column fields in different orders, and the field order shows in the report, so each keeps its own.
+APEX_26_2 = is_apex_26_2(Path(__file__).resolve().parents[1])
 
 
 COMPARE_ENV_SECTIONS = (
@@ -76,12 +80,17 @@ COMPARE_ENV_NOT_COMPARED = (
     "ORDS metadata beyond schema mapping/status/auth, module status/prefix/page size, template URI/priority, and handler method/source/MIME/page size is not compared.",
     "In the inspected ORDS 26.3 dictionaries, module type and handler format columns are absent; other ORDS releases with different metadata require separate qualification.",
 )
+_COLUMN_FIELDS_26_1 = (
+    "data_type", "data_type_mod", "data_type_owner", "data_length", "data_precision", "data_scale",
+    "char_used", "char_length", "nullable", "hidden", "virtual", "column_position", "user_generated",
+)
+_COLUMN_FIELDS_26_2 = (
+    "column_position", "data_type", "data_type_mod", "data_type_owner", "data_length", "data_precision", "data_scale",
+    "char_used", "char_length", "nullable", "hidden", "user_generated", "virtual",
+)
 COMPARE_ENV_FIELDS = {
     "tables": ("temporary", "partitioned", "iot_type", "nested", "secondary", "compression", "logging"),
-    "columns": (
-        "data_type", "data_type_mod", "data_type_owner", "data_length", "data_precision", "data_scale",
-        "char_used", "char_length", "nullable", "hidden", "virtual", "column_position", "user_generated",
-    ),
+    "columns": _COLUMN_FIELDS_26_2 if APEX_26_2 else _COLUMN_FIELDS_26_1,
     "constraints": ("constraint_type", "columns", "referenced_table", "referenced_columns", "condition", "condition_truncated", "status", "validated", "delete_rule", "deferrable", "deferred", "rely"),
     "indexes": ("table_name", "uniqueness", "columns", "index_type", "visibility", "status"),
     # ASHARIF 2026-10-28: compare ALL_OBJECTS validity separately from the trigger enablement flag.
@@ -1268,7 +1277,10 @@ def _environment_driver(
     scope_names: Sequence[str] = (),
 ) -> Path:
     selected = _validate_compare_env_sections(sections, allow_baseline_internal=baseline_capture)
-    if not baseline_capture and (baseline_prefixes or baseline_excluded or baseline_data_tables or baseline_names):
+    if APEX_26_2:
+        if not baseline_capture and (baseline_prefixes or baseline_excluded or baseline_data_tables or baseline_names or scope_names):
+            raise CatalogError("baseline filters and exact-name scope require the private baseline capture mode")
+    elif not baseline_capture and (baseline_prefixes or baseline_excluded or baseline_data_tables or baseline_names):
         raise CatalogError("baseline filters and data tables require the private baseline capture mode")
     sql_source = Path(__file__).with_name("compare_env_catalog.sql")
     if not sql_source.is_file():
@@ -1470,11 +1482,13 @@ def main_compare_env(
         print(f"compare-env error: {error}", file=sys.stderr)
         return 2
 
-    try:
-        migration_runtime.require_migration_sqlcl_version()
-    except RuntimeError as error:
-        print(f"compare-env error: {error}", file=sys.stderr)
-        return 2
+    # 26.1 refuses compare-env below the SQLcl 26.3 migration floor. The 26.2 template has no call here and keeps none.
+    if not APEX_26_2:
+        try:
+            migration_runtime.require_migration_sqlcl_version()
+        except RuntimeError as error:
+            print(f"compare-env error: {error}", file=sys.stderr)
+            return 2
 
     own_run_dir = run_dir is None
     if own_run_dir:

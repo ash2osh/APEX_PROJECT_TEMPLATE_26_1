@@ -6,10 +6,15 @@ import tempfile
 import unittest
 from fake_sqlcl import BASH
 from pathlib import Path
+from unittest.mock import patch
+
+from scripts.template_release import is_apex_26_2
 
 
 ROOT = Path(__file__).resolve().parents[1]
 PWSH = _test_subprocess_safety.working_pwsh()
+# Phase 2 release switch: the uc-apx settings are retired on 26.2 only (apexRelease in template-manifest.json).
+APEX_26_2 = is_apex_26_2(ROOT)
 
 
 def plain(text: str) -> str:
@@ -59,11 +64,74 @@ def load(env_path: Path, probe: str = PROBE, project_schema: str | None = None) 
     )
 
 
+RETIRED_UC_ERROR = "project environment error: uc-apx settings are retired; remove INSTALL_UC_APX and UC_APX_SKILLS_AGENT from .env"
+GREEK_USERNAME = "".join(
+    chr(codepoint) for codepoint in (0x0394, 0x0397, 0x039C, 0x0397, 0x03A4, 0x03A1, 0x0397, 0x03A3)
+)
+
+
+def write_without_uc(directory: Path, extra: str = "") -> Path:
+    path = write_env(directory, {})
+    text = "\n".join(line for line in path.read_text().splitlines()
+                     if not line.startswith(("INSTALL_UC_APX=", "UC_APX_SKILLS_AGENT=")))
+    path.write_text(text + "\n" + extra, encoding="utf-8")
+    return path
+
+
+def write_without_workspace_username(directory: Path, extra: str = "") -> Path:
+    path = write_env(directory, {})
+    lines = [line for line in path.read_text().splitlines() if not line.startswith("APEX_WORKSPACE_USERNAME=")]
+    path.write_text("\n".join(lines) + "\n" + extra, encoding="utf-8")
+    return path
+
+
 class BashEnvironmentListTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.directory = Path(self.temporary.name)
+
+    def test_workspace_developer_is_independent_literal_optional_text(self) -> None:
+        for username in ("dev@example.com", "o'neil", GREEK_USERNAME, "demo"):
+            with self.subTest(username=username):
+                path = write_without_workspace_username(self.directory, 'APEX_WORKSPACE_USERNAME="' + username + '"\n')
+                probe = (
+                    'printf "%s|%s|%s" "$APEX_WORKSPACE_USERNAME" "$DEVELOPER_NAME" "$APEX_EXPECTED_USER" '
+                    "| od -An -tx1 | tr -d '[:space:]'"
+                )
+                result = load(path, probe)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                expected = (username + "|ALICE|DEMO").encode("utf-8").hex()
+                self.assertEqual(result.stdout.strip().lower(), expected)
+
+    def test_missing_workspace_developer_does_not_inherit_or_fall_back(self) -> None:
+        path = write_without_workspace_username(self.directory)
+        with patch.dict(os.environ, {"APEX_WORKSPACE_USERNAME": "INHERITED"}):
+            result = load(path, 'printf "%s" "${APEX_WORKSPACE_USERNAME:-}"')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "")
+
+    @unittest.skipIf(APEX_26_2, "26.2 retired the uc-apx settings")
+    def test_fresh_config_exports_the_26_1_uc_defaults(self) -> None:
+        result = load(write_without_uc(self.directory), 'printf "%s|%s" "$INSTALL_UC_APX" "$UC_APX_SKILLS_AGENT"')
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("false|universal", result.stdout)
+
+    @unittest.skipUnless(APEX_26_2, "26.1 keeps the uc-apx settings")
+    def test_fresh_config_does_not_export_retired_uc_settings(self) -> None:
+        result = load(write_without_uc(self.directory),
+                      'printf "%s|%s" "${INSTALL_UC_APX+set}" "${UC_APX_SKILLS_AGENT+set}"')
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual("|", result.stdout)
+
+    @unittest.skipUnless(APEX_26_2, "26.1 keeps the uc-apx settings")
+    def test_retired_uc_keys_require_explicit_config_cleanup(self) -> None:
+        for setting in ("INSTALL_UC_APX=false", "INSTALL_UC_APX=true", "UC_APX_SKILLS_AGENT=universal"):
+            with self.subTest(setting=setting):
+                result = load(write_without_uc(self.directory, setting + "\n"), "echo LOADED")
+                self.assertNotEqual(0, result.returncode)
+                self.assertEqual(RETIRED_UC_ERROR, result.stderr.strip())
+                self.assertNotIn("LOADED", result.stdout)
 
     def test_single_values_load_exactly_as_before(self) -> None:
         result = load(write_env(self.directory, {}))
@@ -251,6 +319,7 @@ class BashEnvironmentListTests(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual("file-stage-dba\n", result.stdout)
 
+    @unittest.skipIf(APEX_26_2, "26.2 wording is covered by test_dba_sqlcl_connection_refusals_26_2")
     def test_dba_sqlcl_connection_refusals(self) -> None:
         # File blank
         env_path = write_env(self.directory, {}, "\nDEV_DBA_SQLCL_CONNECTION=\n")
@@ -274,6 +343,19 @@ class BashEnvironmentListTests(unittest.TestCase):
         )
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual("unset\n", result.stdout)
+
+    @unittest.skipUnless(APEX_26_2, "26.1 wording is covered by test_dba_sqlcl_connection_refusals")
+    def test_dba_sqlcl_connection_refusals_26_2(self) -> None:
+        # 26.2 wording: one saved SQLcl alias, checked as an alias list.
+        env_path = write_env(self.directory, {}, "\nDEV_DBA_SQLCL_CONNECTION=\n")
+        result = load(env_path)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("DEV_DBA_SQLCL_CONNECTION must not be empty when configured", result.stderr)
+
+        env_path = write_env(self.directory, {}, "\nDEV_DBA_SQLCL_CONNECTION=dba1,dba2\n")
+        result = load(env_path)
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("DEV_DBA_SQLCL_CONNECTION accepts one saved SQLcl connection alias", result.stderr)
 
     def test_require_single_refuses_a_multi_project_without_a_selection(self) -> None:
         env_path = write_env(self.directory, MULTI)
@@ -305,6 +387,48 @@ class PowerShellEnvironmentListTests(unittest.TestCase):
             environment["PROJECT_SCHEMA"] = project_schema
         script = f'. "{ROOT / "scripts" / "load_env.ps1"}" -EnvFile "{env_path}"; {probe}'
         return subprocess.run([PWSH, "-NoProfile", "-Command", script], env=environment, text=True, capture_output=True, check=False)
+
+    def test_workspace_developer_matches_bash_literal_values(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            for username in ("dev@example.com", "o'neil", GREEK_USERNAME, "demo"):
+                with self.subTest(username=username):
+                    path = write_without_workspace_username(Path(temporary), 'APEX_WORKSPACE_USERNAME="' + username + '"\n')
+                    probe = (
+                        '[BitConverter]::ToString([Text.Encoding]::UTF8.GetBytes('
+                        '"$($env:APEX_WORKSPACE_USERNAME)|$($env:DEVELOPER_NAME)|$($env:APEX_EXPECTED_USER)"'
+                        ')).Replace("-", "")'
+                    )
+                    result = self.run_probe(path, probe)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    expected = (username + "|ALICE|DEMO").encode("utf-8").hex()
+                    self.assertEqual(result.stdout.strip().lower(), expected)
+
+    @unittest.skipIf(APEX_26_2, "26.2 retired the uc-apx settings")
+    def test_fresh_config_exports_the_26_1_uc_defaults(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = write_without_uc(Path(temporary))
+            result = self.run_probe(path, '"$($env:INSTALL_UC_APX)|$($env:UC_APX_SKILLS_AGENT)"')
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual("false|universal", result.stdout.strip())
+
+    @unittest.skipUnless(APEX_26_2, "26.1 keeps the uc-apx settings")
+    def test_retired_uc_keys_match_bash_refusal(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            for setting in ("INSTALL_UC_APX=false", "INSTALL_UC_APX=true", "UC_APX_SKILLS_AGENT=universal"):
+                with self.subTest(setting=setting):
+                    path = write_without_uc(Path(temporary), setting + "\n")
+                    result = self.run_probe(path, "'LOADED'")
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn(RETIRED_UC_ERROR, plain(result.stderr))
+                    self.assertNotIn("LOADED", result.stdout)
+
+    @unittest.skipUnless(APEX_26_2, "26.1 keeps the uc-apx settings")
+    def test_fresh_config_does_not_export_retired_uc_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = write_without_uc(Path(temporary))
+            result = self.run_probe(path, '"$($env:INSTALL_UC_APX)|$($env:UC_APX_SKILLS_AGENT)"')
+            self.assertEqual(0, result.returncode, result.stderr)
+            self.assertEqual("|", result.stdout.strip())
 
     def test_lists_narrowing_and_guard_match_the_bash_loader(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -375,6 +499,8 @@ class PowerShellEnvironmentListTests(unittest.TestCase):
             "dba blank": {"PROJECT_NAME=apex-team-template": "PROJECT_NAME=apex-team-template\nDEV_DBA_SQLCL_CONNECTION="},
             "dba comma": {"PROJECT_NAME=apex-team-template": "PROJECT_NAME=apex-team-template\nDEV_DBA_SQLCL_CONNECTION=dba1,dba2"},
         }
+        if APEX_26_2:
+            del cases["boolean"]  # 26.1 wording for a uc-apx value; 26.2 refuses the key as retired
         for label, replacements in cases.items():
             with self.subTest(case=label), tempfile.TemporaryDirectory() as temporary:
                 env_path = write_env(Path(temporary), replacements)

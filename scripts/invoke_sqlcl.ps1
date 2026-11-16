@@ -11,6 +11,8 @@
 # Start-Process is what allows standard input to be redirected at all:
 # Windows PowerShell 5.1 has no '<' redirection operator for native commands.
 
+. (Join-Path $PSScriptRoot "template_release.ps1")
+
 # The live processes a Windows process started, and theirs (the launcher sql.exe starts
 # java.exe), each as a Process object. Windows reuses process ids and leaves a dead
 # parent's id on its children, so a process whose ParentProcessId matches is only a
@@ -72,15 +74,27 @@ function Stop-SqlclChildren([System.Diagnostics.Process[]] $Children, [datetime]
 # it). Wait in short steps instead; Stop-SqlclProcess handles an interrupt.
 function Wait-SqlclProcess {
   param([Parameter(Mandatory = $true)] $Process)
-  while (-not $Process.WaitForExit(200)) { }
-  # Complete asynchronous redirected-output events before a caller reads the transcript.
-  $Process.WaitForExit()
+  # Phase 2 release switch (scripts/template_release.ps1). 26.1 keeps its order: wait for exit and the
+  # redirected output first, then stop the children. 26.2 polls for exit, stops the children, then
+  # finishes the redirected output.
+  $apex262 = (Get-TemplateApexRelease -RepoRoot (Split-Path -Parent $PSScriptRoot)) -eq "26.2"
+  if ($apex262) {
+    while (-not $Process.WaitForExit(200)) { }
+  } else {
+    # Complete asynchronous redirected-output events before a caller reads the transcript.
+    $Process.WaitForExit()
+  }
   if (($PSVersionTable.PSEdition -eq "Desktop") -or ($null -ne $IsWindows -and $IsWindows)) {
     # The launcher can end before the java.exe it started; give its children ten
     # seconds in all, as after an interrupt, instead of waiting for ever.
     $savedExitCode = $global:LASTEXITCODE
     Stop-SqlclChildren -Children (Get-SqlclDescendants $Process.Id $Process.StartTime) -Deadline ([datetime]::UtcNow.AddSeconds(10))
     $global:LASTEXITCODE = $savedExitCode
+  }
+  if ($apex262) {
+    # The timed overload only waits for process exit. Finish async redirected
+    # output before callers read the transcript (Process.WaitForExit contract).
+    $Process.WaitForExit()
   }
 }
 
@@ -301,4 +315,22 @@ function Assert-SqlclOrdsVersion {
   }
   $result = Invoke-OrdsExportHelper -HelperArguments @("sqlcl-version", $transcript)
   if ($result.Status -ne 0) { throw $result.Text }
+}
+
+# 26.2 only: APEX 26.2 source and import support needs SQLcl 26.3. Defined on both templates; only
+# the 26.2 callers use it (26.1 has no apex_compatibility.py).
+function Assert-SqlclApexVersion {
+  param([Parameter(Mandatory = $true)][string] $WorkDirectory)
+  [System.IO.Directory]::CreateDirectory($WorkDirectory) | Out-Null
+  $stdinFile = Join-Path $WorkDirectory ".sqlcl-stdin"
+  [System.IO.File]::WriteAllText($stdinFile, "")
+  $transcript = Join-Path $WorkDirectory "sqlcl-version.txt"
+  $status = Invoke-Sqlcl -WorkingDirectory $WorkDirectory -StdInFile $stdinFile `
+    -TranscriptFile $transcript -Arguments @("-V")
+  if ($status -ne 0) { throw "APEX compatibility unavailable: could not run ``sql -V``" }
+  . (Join-Path $PSScriptRoot "resolve_python.ps1")
+  $python = Resolve-TeamPython
+  if ($null -eq $python) { throw "Python 3.10 or newer is required for APEX compatibility checks" }
+  $message = & $python.Path @($python.Prefix) (Join-Path $PSScriptRoot "apex_compatibility.py") sqlcl-version $transcript 2>&1
+  if ($LASTEXITCODE -ne 0) { throw ($message -join [Environment]::NewLine) }
 }
