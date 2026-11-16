@@ -92,3 +92,28 @@ Commands run in this session, from the 26.1 checkout, with results:
 - `scripts/rollout.py` (schema-version 1): SQL steps run the SQLcl transport preflight on the payload and the generated driver before SQLcl starts; receipt evidence paths are checked (inside the checkout, no symbolic links, present) when a receipt is written and when a run resumes. Both match 26.2.
 - `scripts/verify_local.py`: a template-locked file that is missing makes the drift check `attention` instead of `pass`, as in 26.2.
 - Not ported: the 26.2 app-deploy target identity and child-configuration bindings. 26.1 resolves app-deploy connections with `_app_target_details`; `resolve_target` refuses configurations 26.1 accepts today (for example a staging profile without `STAGING_SCHEMA` in a single-schema project), so porting would break working setups.
+
+## Decisions on chore/decisions-261
+
+- Path utils test (`tests/test_path_utils.py`, commit ea0dd78): the parent-alias test now uses a real directory symlink, as in 26.2. `symlink_to` is guarded with `skipTest` when symlink creation fails. The `try/except ModuleNotFoundError` import fallback is removed. The first test keeps its existing `assertIsNotNone` lines, which were outside this change.
+- autoInstall refusal on the publish path (commit 0003917): `scripts/validate_app_source.py` gains 26.2's `validate_import_effects` and the `--for-import` flag. `scripts/publish_app.sh` and `scripts/publish_app.ps1` call it with `--for-import` after the describe early exit and before the SQLcl connection check, so the refusal comes before the source is stamped and before SQLcl starts. Other callers (verify-local, rollout, capsule, feature) keep the two-argument form. Plain, quoted and CRLF forms are refused; `includeInAppExport: no` and `autoInstallX` are accepted.
+- The ported test is `test_automatic_supporting_objects_refuse_before_stamp_or_import` in `tests/test_publish_cli.py`, run for bash and pwsh. 26.1 has no native application lock, so instead of the 26.2 lock-call assertion it checks that `application.apx` is unchanged and that SQLcl never ran.
+- Docs row added to `docs/publish-rules.md`, worded with the 26.2 validator message. 26.2's docs have no row for this refusal.
+- Dry-run wording (Decision 3): held, not changed. 26.1 `_prepare_plan` never calls `_target_binding` or `resolve_target`. The target is resolved only after the dry-run `return 0`, in `_plan_targets`. In a 26.1 dry run, `_describe_step` reads the `PROD_*`/`STAGING_*` strings only to label app-deploy steps. The 26.2 sentence would be false for 26.1. A docs commit was made and dropped before any push. Decision needed: port df22dbb's planning change into 26.1, or keep the local-only wording.
+- Parity ledger: `docs/superpowers/template-parity.json` and `tools/template_parity.py` exist only in 26.2, not in 26.1 or its history. Nothing was created here. The entries whose status changes are `scripts/validate_app_source.py`, `tests/test_path_utils.py`, `tests/test_publish_cli.py`, `scripts/publish_app.sh`, `scripts/publish_app.ps1` and `docs/publish-rules.md`.
+
+## Verification (run in the clone)
+
+- `python3 scripts/pre_push_check.py --all`: exit 0, "all checks passed". Python syntax, Ruff and the PowerShell parse passed; 221 core-stamped files match. ShellCheck is not on PATH, so it did not run.
+- `python3 -m unittest discover -s tests -p test_path_utils.py -v`: OK, 3 tests.
+- `python3 -m unittest discover -s tests -p test_publish_cli.py -v`: OK, 54 tests, skipped=2 (both Windows-only: a Windows console Ctrl-C test and a Windows PowerShell module-path test).
+- `python3 -m unittest discover -s tests -p test_validate_app_source.py -v`: OK, 7 tests.
+- `python3 -m unittest discover -s tests -p test_documentation_contract.py -v`: OK, 27 tests.
+- `CI_TEST_JOBS=4 python3 scripts/ci_run_tests.py`: exit 0, `Combined: Ran 2721 tests; skipped=60; failures=0; errors=0; incomplete_modules=0`. The log has one `FAIL ... installed extractor is missing` line printed by a test that expects it; the summary counts it as passing.
+- Mutation check in a scratch clone, not the working clone: with `scripts/publish_app.sh` and `scripts/publish_app.ps1` reverted to babee3f, the new test failed for both bash and pwsh.
+
+## Not verified
+
+- ShellCheck and the Windows and macOS CI jobs were not run here.
+- The two Windows-only skips did not run.
+- No database, SQLcl, publish or export command was run; the work was offline only.
