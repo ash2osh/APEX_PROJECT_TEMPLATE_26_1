@@ -10,7 +10,7 @@ import _test_subprocess_safety  # noqa: F401
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import _no_real_sqlcl  # noqa: F401  (keeps tests away from a real SQLcl)
 from fake_sqlcl import environment as fake_environment, install as install_fake_sqlcl
@@ -1233,6 +1233,64 @@ class RolloutManifestTests(unittest.TestCase):
         )
         staged_ords_payload = captured_ords_payload.read_text(encoding="utf-8")
         self.assertIn("\n\n", staged_ords_payload)
+
+    def test_sql_script_transport_preflight_refuses_direct_quoted_hyphen_before_sqlcl(self) -> None:
+        payload = self.root / "scripts" / "hyphen.sql"
+        payload.write_text(
+            "DECLARE\n  v_text VARCHAR2(40) := 'value-\nnext';\nBEGIN\n  NULL;\nEND;\n/\n",
+            encoding="utf-8",
+        )
+        step = {"type": "sql-script", "file": "scripts/hyphen.sql", "connection": "OPS", "expectedUser": "OPS", "schema": "APP"}
+        manifest = self.write_manifest([step])
+        loaded = rollout.load_manifest(manifest, self.root)
+        plan = rollout._prepare_plan(loaded, "dev")
+        with patch("scripts.rollout.run_sqlcl") as sqlcl, patch("sys.stderr", new_callable=io.StringIO):
+            result = rollout.execute_step(
+                step,
+                environment="dev",
+                repo_root=self.root,
+                evidence_dir=self.root / "scratch" / "run" / "step-001",
+                step_number=1,
+                manifest=loaded,
+                plan=plan,
+                manifest_confirmed=False,
+            )
+
+        self.assertEqual(result.exit_code, 2)
+        self.assertIn("SQLcl transport preflight refused", result.message)
+        self.assertIn("quoted-trailing-hyphen", result.message)
+        sqlcl.assert_not_called()
+
+    def test_sql_script_transport_review_warns_on_assembled_clob_and_still_runs(self) -> None:
+        payload = self.root / "scripts" / "assembled.sql"
+        payload.write_text(
+            "-- Exact stored source for APP.P assembled as a CLOB.\n"
+            "DECLARE\n  l_source CLOB := TO_CLOB('value-\nnext');\nBEGIN\n"
+            "  EXECUTE IMMEDIATE l_source;\n  DBMS_LOB.FREETEMPORARY(l_source);\nEND;\n/\n",
+            encoding="utf-8",
+        )
+        step = {"type": "sql-script", "file": "scripts/assembled.sql", "connection": "OPS", "expectedUser": "OPS", "schema": "APP"}
+        manifest = self.write_manifest([step])
+        loaded = rollout.load_manifest(manifest, self.root)
+        plan = rollout._prepare_plan(loaded, "dev")
+        sqlcl_output = Mock(output="ROLLOUT_IDENTITY:OPS:APP\nROLLOUT_TARGET:DEVDB:DEVDB:DEVSERVICE\nROLLOUT_SCRIPT_COMPLETED:0001\n")
+        with patch("scripts.rollout.run_sqlcl", return_value=sqlcl_output) as sqlcl, \
+             patch("sys.stderr", new_callable=io.StringIO) as stderr:
+            result = rollout.execute_step(
+                step,
+                environment="dev",
+                repo_root=self.root,
+                evidence_dir=self.root / "scratch" / "run" / "step-001",
+                step_number=1,
+                manifest=loaded,
+                plan=plan,
+                manifest_confirmed=False,
+            )
+
+        self.assertEqual(result.exit_code, 0, result.message)
+        sqlcl.assert_called_once()
+        self.assertIn("rollout warning: SQLcl transport review", stderr.getvalue())
+        self.assertIn("quoted-trailing-hyphen", stderr.getvalue())
 
     def test_sql_script_runs_through_fake_sqlcl_with_identity_and_failure_guards(self) -> None:
         payload = self.root / "scripts" / "prerequisite.sql"

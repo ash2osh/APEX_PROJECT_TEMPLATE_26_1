@@ -31,6 +31,7 @@ from scripts.migration_manifest import MigrationManifestError, assert_single_lay
 from scripts.ords_export import OrdsExportError, check_no_oauth, check_structure, mask_sql
 from scripts.path_utils import relative_to_root
 from scripts.sqlcl_session import ALIAS_RE, SqlclError, run_sqlcl, safe_rmtree
+from scripts.sqlcl_transport import generated_clob_assembly, lint_sqlcl_transport
 from scripts.validate_app_source import validate_app_source
 from scripts.validate_migration import FIRST_WORD, mask_comments_and_literals, statement_spans, validate_sql_only
 
@@ -1468,6 +1469,17 @@ def _execute_sql_payload(
         step_number=step_number,
         expected_identity=expected_identity,
     )
+    mode = "assembled" if generated_clob_assembly(source) else "direct"
+    for finding in lint_sqlcl_transport(source, mode):
+        message = f"payload.sql:{finding.line} ({finding.code}): {finding.message}"
+        if finding.severity == "error":
+            return StepResult(2, _relative_paths((driver, evidence_dir / "payload.sql"), repo_root), f"SQLcl transport preflight refused: {message}")
+        print(f"rollout warning: SQLcl transport review: {message}", file=sys.stderr)
+    for finding in lint_sqlcl_transport(driver.read_text(encoding="utf-8"), "direct"):
+        message = f"rollout.sql:{finding.line} ({finding.code}): {finding.message}"
+        if finding.severity == "error":
+            return StepResult(2, _relative_paths((driver, evidence_dir / "payload.sql"), repo_root), f"SQLcl transport preflight refused: {message}")
+        print(f"rollout warning: SQLcl transport review: {message}", file=sys.stderr)
     target = Target(environment, step["connection"], step["expectedUser"], step["schema"], env_classification)
     try:
         result = run_sqlcl(target, driver, evidence_dir, phase="apply")
