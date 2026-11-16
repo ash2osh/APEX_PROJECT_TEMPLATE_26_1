@@ -4,7 +4,7 @@
 
 - Repair the nine defects confirmed in the 2026-10-15 inline review of `ash2osh/APEX_PROJECT_TEMPLATE_26_1` at `325b911e3c5bf3e0254ee457cd4170b184e1f35b`.
   - Local `main` was `297e84f8ea46d4fd124927cc744b909028a27334`, twelve commits behind. Implementation must start from the reviewed revision or reconcile any later upstream changes first.
-  - Original evidence: `/home/ash/projects/APEX_PROJECT_TEMPLATE_26_1/scratch/review-2026-10-15/REVIEW.md`, with repro scripts, JSON results, SQLcl transcripts and CI logs beside it. Those ignored artifacts support the findings; the durable requirements are recorded here so the plan does not depend on scratch surviving.
+  - Original evidence: `scratch/review-2026-10-15/REVIEW.md` (ignored, in the reviewed checkout), with repro scripts, JSON results, SQLcl transcripts and CI logs beside it. Those ignored artifacts support the findings; the durable requirements are recorded here so the plan does not depend on scratch surviving.
   - Baseline verification: 1,356 local tests run, 32 skipped; exact-SHA Linux/Windows/macOS CI passed. Those results predate repairs and are not post-fix evidence.
 
 ## Constraints
