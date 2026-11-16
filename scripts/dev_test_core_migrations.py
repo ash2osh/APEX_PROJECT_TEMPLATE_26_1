@@ -244,9 +244,10 @@ def _legacy_rollout_observed_identity(
 ) -> dict[str, str]:
     """Verify the 26.1 rollout's SQLcl identity markers and fresh post-step identity.
 
-    APEX 26.1 rollout receipts predate targetBinding/observedIdentity fields. Its
-    SQLcl transcript still carries the guarded user/schema and database/service
-    markers; pair those with a fresh full catalog identity read after delivery.
+    APEX 26.1 rollout receipts carry the observed identity but no targetBinding, and
+    the step report names no identity. Its SQLcl transcript still carries the guarded
+    user/schema and database/service markers; pair those with a fresh full catalog
+    identity read after delivery, which the receipt's observed identity must equal.
     """
     evidence_paths = report_step.get("evidencePaths")
     if not isinstance(evidence_paths, list) or any(not isinstance(item, str) for item in evidence_paths):
@@ -470,8 +471,13 @@ def run_sqlcl_delivery(
             or receipt.get("observedIdentity") != report_step.get("observedIdentity")
         ):
             raise core_types._ScenarioProblem("UNKNOWN", "rollout receipt target identity does not match the verified report")
-        if not has_target_binding and ("targetBinding" in receipt or "observedIdentity" in receipt):
-            raise core_types._ScenarioProblem("UNKNOWN", "26.1 rollout receipt unexpectedly mixes identity schema versions")
+        if not has_target_binding and "targetBinding" in receipt:
+            raise core_types._ScenarioProblem("UNKNOWN", "26.1 rollout receipt unexpectedly carries a target binding")
+        if not has_target_binding and (
+            not isinstance(receipt.get("observedIdentity"), Mapping)
+            or not core_types._same_scenario_identity(rollout_identity, receipt["observedIdentity"])
+        ):
+            raise core_types._ScenarioProblem("UNKNOWN", "26.1 rollout receipt identity does not match the fresh DEV readback")
         rollout_record.update({
             "status": "PASSED", "sourceSha256": report_step["sha256"],
             "observedIdentity": rollout_identity,

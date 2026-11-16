@@ -631,6 +631,11 @@ include step status, timing, hashes and evidence paths. Successful receipts
 are local recovery evidence under `scratch/rollout-receipts/`; resuming with
 `--from-step N` requires matching receipts for every earlier step, and each receipt's evidence paths must
 still exist inside the checkout without symbolic links; a receipt whose evidence was deleted refuses the resume.
+For a schema-version 1 rollout, each `migrate`, `sql-script` and `ords-import` step observes the target identity before and
+after it runs, and each migration receipt of a `migrate` step must match that identity. A resume re-observes the live identity of
+each earlier one of those steps and refuses a change. A schema-version 1 receipt written before this check has no observed identity
+and refuses the resume: inspect the completed step and reconcile it as the refusal says. Never edit a receipt to add an identity.
+`app-deploy` steps are not observed by this check.
 A receipt is written only when the step's evidence paths pass the same check. Before SQLcl starts, a SQL step's
 payload and generated driver pass the SQLcl transport preflight: an error-level finding (for example a quoted
 trailing hyphen that SQLcl would read as a continuation) refuses the step with exit 2, and review findings are

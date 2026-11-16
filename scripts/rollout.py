@@ -27,7 +27,7 @@ if __package__ in (None, ""):
 from scripts import migrate, terminal_confirm, verify_checks
 from scripts.db_targets import Target, TargetResolutionError, batch_schema, flat_migrations_apply, looks_like_production_identity, resolve_target
 from scripts.deployment_descriptor import read_descriptor
-from scripts.migration_manifest import MigrationManifestError, assert_single_layout, load_batch
+from scripts.migration_manifest import MigrationManifestError, assert_single_layout, load_batch, validate_receipt as validate_migration_receipt
 from scripts.ords_export import OrdsExportError, check_no_oauth, check_structure, mask_sql
 from scripts.path_utils import relative_to_root
 from scripts.sqlcl_session import ALIAS_RE, SqlclError, run_sqlcl, safe_rmtree
@@ -40,7 +40,7 @@ ROOT = Path(__file__).resolve().parents[1]
 ORACLE_IDENTIFIER = re.compile(r"[A-Z][A-Z0-9_$#]{0,127}\Z", re.ASCII)
 MANIFEST_SCHEMA_VERSION = 1
 REPORT_SCHEMA_VERSION = 1
-RECEIPT_SCHEMA_VERSION = 1
+RECEIPT_SCHEMA_VERSION = 2
 ROLLOUT_MARKER_LITERAL = re.compile(r"(?i)ROLLOUT_(?:IDENTITY|TARGET|SCRIPT_COMPLETED)")
 CURRENT_SCHEMA_CHANGE = re.compile(r"(?is)\bALTER\s+SESSION\s+SET\s+CURRENT_SCHEMA\b")
 ORDS_CALL = re.compile(r"(?im)\b(?:ORDS(?:_ADMIN)?|ORDS_METADATA)\.[A-Z][A-Z0-9_]*[ \t]*\(")
@@ -82,6 +82,61 @@ def _observe_target_identity(target: Target, run_dir: Path) -> dict[str, str]:
     inventory = capture_inventory(target, run_dir)
     receipt_identity = migrate._identity_for_receipt(inventory, target)
     return {field: receipt_identity[field] for field in OBSERVED_IDENTITY_FIELDS}
+
+
+IDENTITY_STEP_TYPES = frozenset({"migrate", "sql-script", "ords-import"})
+
+
+def _identity_target(step: Mapping, repo_root: Path, environment: str) -> Target | None:
+    """The database a migrate or SQL step writes to, resolved as that step's own runner resolves it.
+
+    App-deploy targets are not observed here. They stay on _app_target_details: resolve_target refuses
+    configurations, such as a single-schema project without a STAGING_SCHEMA, that the app deploy accepts.
+    """
+    if step["type"] not in IDENTITY_STEP_TYPES:
+        return None
+    binding = _target_binding(step, repo_root, environment)
+    return Target(environment, binding["connection"], binding["expectedUser"], binding["schema"], binding["classification"])
+
+
+def _binding_for_target(target: Target) -> dict[str, str]:
+    return {
+        "environment": target.environment,
+        "connection": target.connection,
+        "expectedUser": target.expected_user,
+        "schema": target.schema,
+        "classification": target.classification,
+    }
+
+
+def _verify_migration_receipts(root: Path, step: dict, binding: dict, observed_identity: dict[str, str]) -> None:
+    """Every migration folder's status receipt must match its exact source and the observed target."""
+    if step["type"] != "migrate":
+        return
+    migrations = load_batch(root, step["folders"])
+    target_identity = {
+        "environment": binding["environment"],
+        "connection": binding["connection"],
+        "expected_user": binding["expectedUser"],
+        **observed_identity,
+    }
+    for migration in migrations:
+        receipt = migration.folder / f"status.{binding['environment']}.json"
+        try:
+            _assert_no_symlink(receipt, root)
+        except RolloutError as error:
+            raise RolloutError(f"migration receipt needs reconciliation: {error}") from error
+        if not receipt.is_file():
+            raise RolloutError(
+                f"migration step {migration.folder.name} has no verified receipt; reconcile before resuming rollout"
+            )
+        try:
+            validate_migration_receipt(receipt, migration, target_identity)
+        except MigrationManifestError as error:
+            raise RolloutError(
+                f"migration receipt for {migration.folder.name} does not match the exact source and observed target; "
+                f"reconcile before resuming rollout: {error}"
+            ) from error
 
 
 def _utc_now() -> str:
@@ -1003,6 +1058,34 @@ def _validate_evidence_paths(paths: object, root: Path, step_number: int) -> lis
     return paths
 
 
+def _receipt_schema_version(manifest: RolloutManifest) -> int:
+    """Capsule (schema-version 2) receipts keep schemaVersion 1; legacy receipts record observed identity."""
+    return 1 if manifest.schema_version == 2 else RECEIPT_SCHEMA_VERSION
+
+
+def _validate_receipt_identity(observed: object, plan_item: dict, environment: str) -> None:
+    """Only a migrate or SQL step names a database in its receipt, and that identity must be complete."""
+    number = plan_item["number"]
+    if plan_item["type"] not in IDENTITY_STEP_TYPES:
+        if observed is not None:
+            raise RolloutError(f"step {number} receipt must not claim a database identity")
+        return
+    if (
+        not isinstance(observed, dict)
+        or set(observed) != set(OBSERVED_IDENTITY_FIELDS)
+        or any(not isinstance(observed.get(field), str) or not observed[field].strip() for field in OBSERVED_IDENTITY_FIELDS)
+    ):
+        raise RolloutError(f"step {number} receipt has invalid observed database identity")
+    step = plan_item["step"]
+    if plan_item["type"] in {"sql-script", "ords-import"} and (
+        observed["session_user"].upper() != step["expectedUser"].upper()
+        or observed["current_schema"].upper() != step["schema"].upper()
+    ):
+        raise RolloutError(f"step {number} receipt identity does not match its configured user and schema")
+    if environment != "prod" and looks_like_production_identity(observed["db_name"], observed["db_unique_name"], observed["service_name"]):
+        raise RolloutError(f"step {number} receipt records production identity for a non-production target")
+
+
 def _write_receipt(root: Path, environment: str, manifest: RolloutManifest, plan_item: dict, step_report: dict) -> Path:
     path = _receipt_path(root, manifest.sha256, environment, plan_item["number"])
     try:
@@ -1010,7 +1093,7 @@ def _write_receipt(root: Path, environment: str, manifest: RolloutManifest, plan
         _safe_scratch_root(root)
         _safe_directory(path.parent, root)
         receipt = {
-            "schemaVersion": RECEIPT_SCHEMA_VERSION,
+            "schemaVersion": _receipt_schema_version(manifest),
             "status": "succeeded",
             "environment": environment,
             "manifestSha256": manifest.sha256,
@@ -1023,6 +1106,8 @@ def _write_receipt(root: Path, environment: str, manifest: RolloutManifest, plan
             "durationSeconds": step_report["durationSeconds"],
             "evidencePaths": step_report["evidencePaths"],
         }
+        if manifest.schema_version == 1:
+            receipt["observedIdentity"] = step_report.get("observedIdentity")
         _install_rollout_receipt(path, receipt)
     except (OSError, RolloutError) as error:
         raise RolloutError(
@@ -1040,8 +1125,13 @@ def _verify_receipt(root: Path, manifest: RolloutManifest, environment: str, pla
     if path.is_symlink() or not path.is_file():
         raise RolloutError(f"step {plan_item['number']} has no matching successful receipt: {relative_to_root(path, root)}")
     receipt = _read_json(path, f"step {plan_item['number']} receipt")
+    if manifest.schema_version == 1 and isinstance(receipt, dict) and receipt.get("schemaVersion") == 1:
+        raise RolloutError(
+            f"step {plan_item['number']} has a legacy receipt without independently observed target identity; "
+            "inspect the completed step and reconcile before retrying"
+        )
     expected = {
-        "schemaVersion": RECEIPT_SCHEMA_VERSION,
+        "schemaVersion": _receipt_schema_version(manifest),
         "status": "succeeded",
         "environment": environment,
         "manifestSha256": manifest.sha256,
@@ -1051,6 +1141,8 @@ def _verify_receipt(root: Path, manifest: RolloutManifest, environment: str, pla
         "inputHashes": plan_item["inputHashes"],
     }
     required_fields = set(expected) | {"startedAt", "endedAt", "durationSeconds", "evidencePaths"}
+    if manifest.schema_version == 1:
+        required_fields.add("observedIdentity")
     if (
         not isinstance(receipt, dict)
         or set(receipt) != required_fields
@@ -1068,6 +1160,8 @@ def _verify_receipt(root: Path, manifest: RolloutManifest, environment: str, pla
     if type(duration) not in (int, float) or not math.isfinite(duration) or duration < 0:
         raise RolloutError(f"step {plan_item['number']} receipt has an invalid duration")
     _validate_evidence_paths(receipt["evidencePaths"], root, plan_item["number"])
+    if manifest.schema_version == 1:
+        _validate_receipt_identity(receipt["observedIdentity"], plan_item, environment)
     return receipt, path
 
 
@@ -1953,6 +2047,7 @@ def _run_legacy_rollout(
     plan: list[dict] = []
     report_paths: tuple[Path, Path] | None = None
     report: dict | None = None
+    prior_receipts: list[tuple[dict, dict, dict, Path]] = []
     try:
         if environment not in {"dev", "staging", "prod"}:
             raise RolloutError("--env must be dev, staging, or prod")
@@ -1986,14 +2081,15 @@ def _run_legacy_rollout(
             _safe_scratch_root(root)
             for item, step_report in zip(plan[: from_step - 1], report["steps"][: from_step - 1], strict=False):
                 receipt, receipt_path = _verify_receipt(root, manifest, environment, item)
+                prior_receipts.append((item, step_report, receipt, receipt_path))
                 step_report.update({
-                    "status": "resumed",
+                    "status": "pending-resume-verification",
                     "startedAt": receipt["startedAt"],
                     "endedAt": receipt["endedAt"],
                     "durationSeconds": receipt["durationSeconds"],
                     "evidencePaths": receipt["evidencePaths"],
                     "receiptPath": relative_to_root(receipt_path, root).as_posix(),
-                    "message": "verified prior rollout receipt",
+                    "message": "receipt matches; live target identity pending",
                 })
 
         _assert_unreceipted_execution_range(root, manifest, environment, plan, from_step)
@@ -2066,6 +2162,29 @@ def _run_legacy_rollout(
             _write_confirmation_evidence(confirmation_path, manifest, plan, environment, report["confirmedBy"])
             report["confirmationPath"] = relative_to_root(confirmation_path, root).as_posix()
 
+        if prior_receipts:
+            _snapshot(manifest, plan, "before resuming receipted steps", environment)
+            for item, step_report, receipt, _receipt_path_value in prior_receipts:
+                identity_target = _identity_target(item["step"], root, environment)
+                if identity_target is not None:
+                    identity_dir = run_evidence / "resume-checks" / f"step-{item['number']:03d}"
+                    current_identity = _observe_target_identity(identity_target, identity_dir)
+                    if current_identity != receipt["observedIdentity"]:
+                        raise RolloutError(
+                            f"step {item['number']} live database identity differs from its successful receipt; "
+                            "inspect the completed step and reconcile before retrying"
+                        )
+                    _verify_migration_receipts(root, item["step"], _binding_for_target(identity_target), current_identity)
+                    step_report["evidencePaths"] = [
+                        *step_report["evidencePaths"],
+                        relative_to_root(identity_dir, root).as_posix(),
+                    ]
+                step_report["status"] = "resumed"
+                step_report["message"] = (
+                    "verified prior receipt and live target identity" if identity_target is not None
+                    else "verified prior rollout receipt"
+                )
+
         _write_reports(report, report_paths)
         for index in range(from_step - 1, len(plan)):
             item = plan[index]
@@ -2077,6 +2196,13 @@ def _run_legacy_rollout(
                 evidence_dir = run_evidence / f"step-{item['number']:03d}"
                 _snapshot(manifest, plan, f"before step {item['number']}", environment)
                 evidence_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
+                identity_target = _identity_target(item["step"], root, environment)
+                before_identity = None
+                identity_evidence: list[str] = []
+                if identity_target is not None:
+                    before_dir = evidence_dir / "target-before"
+                    before_identity = _observe_target_identity(identity_target, before_dir)
+                    identity_evidence.append(relative_to_root(before_dir, root).as_posix())
                 step_target_name = approved_target_name
                 if approved_target_names:
                     step_targets = _plan_targets([item], root, environment)
@@ -2093,6 +2219,8 @@ def _run_legacy_rollout(
                     manifest=manifest,
                     plan=plan,
                     manifest_confirmed=manifest_confirmed,
+                    # The writer-session identity guard stays where the rollout already applies it (staging and production).
+                    expected_identity=before_identity if environment in {"staging", "prod"} else None,
                     confirm_target=step_target_name,
                     rollout_confirmed_by=report["confirmedBy"],
                     accept_pauses=yes,
@@ -2103,10 +2231,28 @@ def _run_legacy_rollout(
                 step_report["message"] = result.message
                 if result.exit_code == 0:
                     _snapshot(manifest, plan, f"after step {item['number']}", environment)
+                    observed_identity: dict[str, str] | None = None
+                    if identity_target is not None:
+                        if result.observed_identity is not None and result.observed_identity != before_identity:
+                            raise RolloutError(
+                                f"step {item['number']} SQLcl writer identity did not match the independently observed target"
+                            )
+                        after_dir = evidence_dir / "target-after"
+                        after_identity = _observe_target_identity(identity_target, after_dir)
+                        identity_evidence.append(relative_to_root(after_dir, root).as_posix())
+                        if after_identity != before_identity:
+                            raise RolloutError(
+                                f"step {item['number']} database identity changed during execution; "
+                                "the step cannot receive a successful rollout receipt"
+                            )
+                        _verify_migration_receipts(root, item["step"], _binding_for_target(identity_target), after_identity)
+                        observed_identity = after_identity
+                    step_report["evidencePaths"] = list(dict.fromkeys([*step_report["evidencePaths"], *identity_evidence]))
                     step_report["endedAt"] = _utc_now()
                     step_report["durationSeconds"] = round(time.perf_counter() - step_started, 3)
                     receipt_path = _write_receipt(root, environment, manifest, item, {
                         **step_report,
+                        "observedIdentity": observed_identity,
                     })
                     step_report["receiptPath"] = relative_to_root(receipt_path, root).as_posix()
                     step_report["status"] = "succeeded"

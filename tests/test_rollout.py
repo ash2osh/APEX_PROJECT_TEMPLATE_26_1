@@ -17,9 +17,20 @@ from fake_sqlcl import environment as fake_environment, install as install_fake_
 
 from scripts import rollout
 from scripts.db_targets import Target
+from scripts.migration_manifest import load_batch
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def fake_sqlcl_success_script(identity: dict[str, str], step_number: int = 1) -> str:
+    """Shell lines for a fake SQLcl that prints the markers of a script which completed on this identity."""
+    lines = [
+        f"ROLLOUT_IDENTITY:{identity['session_user']}:{identity['current_schema']}",
+        f"ROLLOUT_TARGET:{identity['db_name']}:{identity['db_unique_name']}:{identity['service_name']}",
+        f"ROLLOUT_SCRIPT_COMPLETED:{step_number:04d}",
+    ]
+    return "".join(f'printf "{line}\\n"\n' for line in lines)
 
 
 class RolloutManifestTests(unittest.TestCase):
@@ -164,7 +175,10 @@ class RolloutManifestTests(unittest.TestCase):
             if mutate is not None:
                 mutate(number)
             code = 2 if number == fail_at else 0
-            return rollout.StepResult(code, (evidence.relative_to(self.root.resolve()).as_posix(),), "simulated")
+            # A writer that completes confirms the identity it was asked to guard (execute_step checks this).
+            return rollout.StepResult(
+                code, (evidence.relative_to(self.root.resolve()).as_posix(),), "simulated", context.get("expected_identity"),
+            )
 
         return execute
 
@@ -252,9 +266,28 @@ class RolloutManifestTests(unittest.TestCase):
 
         def observe(target, run_dir):
             observed.append(target.connection)
+            Path(run_dir).mkdir(parents=True, exist_ok=True)  # the receipt names this evidence directory
             return {field: "observed" for field in rollout.OBSERVED_IDENTITY_FIELDS} | {"db_unique_name": name}
 
         return observed, observe
+
+    def identity_for(self, name: str = "DEVDB") -> dict[str, str]:
+        """A complete identity for an OPS-to-APP DEV script target, as the catalog path returns it."""
+        return {
+            "session_user": "OPS", "current_schema": "APP", "db_name": name, "db_unique_name": f"{name}_UNIQUE",
+            "service_name": f"{name}SERVICE", "container_id": "3", "container_name": "APP_PDB", "edition": "ORA$BASE",
+            "database_version": "23.0.0.0.0",
+        }
+
+    def observe_identity(self, identity: dict[str, str]) -> None:
+        """Make the target observation return this identity and create its evidence directory, as the catalog path does."""
+        def observe(_target, run_dir):
+            Path(run_dir).mkdir(parents=True, exist_ok=True)
+            return dict(identity)
+
+        patcher = patch("scripts.rollout._observe_target_identity", side_effect=observe)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def test_yes_runs_staging_without_reading_stdin_and_records_it(self) -> None:
         calls: list[int] = []
@@ -368,9 +401,16 @@ class RolloutManifestTests(unittest.TestCase):
         manifest = self.write_manifest([self.prod_sql_step()])
         report_base = self.root / "scratch" / "report"
         observed, observe = self.observed_names("PRODDB_UNIQUE")
+        confirmation_reads: list[str] = []
+
+        def observe_for_confirmation(target, run_dir):
+            if Path(run_dir).parent.name.startswith("confirm-target-"):
+                confirmation_reads.append(target.connection)
+            return observe(target, run_dir)
+
         output = io.StringIO()
         with patch("scripts.rollout.execute_step", side_effect=self.fake_executor(calls)), patch(
-            "scripts.rollout._observe_target_identity", side_effect=observe
+            "scripts.rollout._observe_target_identity", side_effect=observe_for_confirmation
         ), patch("builtins.input", side_effect=AssertionError("-y must not read stdin")), contextlib.redirect_stdout(output):
             status = rollout.run_rollout(
                 manifest, "prod", repo_root=self.root, report_path=report_base, yes=True, confirm_target="PRODDB_UNIQUE",
@@ -379,7 +419,8 @@ class RolloutManifestTests(unittest.TestCase):
 
         self.assertEqual(status, 0)
         self.assertEqual(calls, [1])
-        self.assertEqual(observed, ["PROD_APP"])
+        self.assertEqual(confirmation_reads, ["PROD_APP"])
+        self.assertEqual(set(observed), {"PROD_APP"}, "the step's before and after identity reads stay on the approved target")
         self.assertIn("Confirmed by --yes and --confirm-target PRODDB_UNIQUE; the interactive prompt was skipped.", output.getvalue())
         report = json.loads(report_base.with_suffix(".json").read_text(encoding="utf-8"))
         self.assertEqual(report["confirmedBy"], "--yes --confirm-target")
@@ -571,10 +612,12 @@ class RolloutManifestTests(unittest.TestCase):
         manifest = self.write_manifest([step1, step2])
         def observe(target, run_dir):
             db = "PRODDB_A" if target.connection == "PROD_APP" else "PRODDB_B"
+            Path(run_dir).mkdir(parents=True, exist_ok=True)
             return {field: "observed" for field in rollout.OBSERVED_IDENTITY_FIELDS} | {"db_unique_name": db}
         prompts = []
         with patch("scripts.rollout._observe_target_identity", side_effect=observe), patch(
-            "scripts.rollout.execute_step", return_value=rollout.StepResult(0)
+            "scripts.rollout.execute_step",
+            side_effect=lambda _step, **kwargs: rollout.StepResult(0, (), "simulated", kwargs.get("expected_identity")),
         ) as exec_mock, contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             status = rollout.run_rollout(
                 manifest, "prod", repo_root=self.root, confirm=lambda prompt: prompts.append(prompt) or True,
@@ -712,11 +755,8 @@ class RolloutManifestTests(unittest.TestCase):
         payload.write_text("CREATE TABLE APP.PRECHECK (ID NUMBER);\n", encoding="utf-8")
         fake_bin = self.root / "fake-bin"
         calls = self.root / "fake-sqlcl-calls.log"
-        install_fake_sqlcl(
-            fake_bin,
-            'printf "invoked\\n" >> "$FAKE_CALL_LOG"\n'
-            'printf "ROLLOUT_IDENTITY:OPS:APP\\nROLLOUT_TARGET:DEVDB:DEVDB:DEVSERVICE\\nROLLOUT_SCRIPT_COMPLETED:0001\\n"\n',
-        )
+        install_fake_sqlcl(fake_bin, 'printf "invoked\\n" >> "$FAKE_CALL_LOG"\n' + fake_sqlcl_success_script(self.identity_for()))
+        self.observe_identity(self.identity_for())
         manifest = self.write_manifest([{
             "type": "sql-script", "file": "scripts/prerequisite.sql",
             "connection": "OPS", "expectedUser": "OPS", "schema": "APP",
@@ -748,6 +788,134 @@ class RolloutManifestTests(unittest.TestCase):
         self.assertEqual(report["status"], "failed")
         self.assertIn("receipt", report["error"].casefold())
         self.assertTrue(any(word in report["error"].casefold() for word in ("preserv", "reconcil", "review", "continuation")))
+
+    def test_resume_revalidates_independent_database_identity_before_skipping(self) -> None:
+        script = self.root / "scripts" / "prerequisite.sql"
+        script.write_text("SELECT 1 FROM dual;\n", encoding="utf-8")
+        manifest = self.write_manifest([
+            {"type": "sql-script", "file": "scripts/prerequisite.sql", "connection": "OPS", "expectedUser": "OPS", "schema": "APP"},
+            {"type": "pause", "message": "finish"},
+        ])
+        first_identity = self.identity_for("DEVDB")
+        repointed_identity = self.identity_for("OTHERDB")
+        calls: list[int] = []
+
+        def observer(identity):
+            def observe(_target, run_dir):
+                Path(run_dir).mkdir(parents=True, exist_ok=True)
+                return dict(identity)
+
+            return observe
+
+        with patch("scripts.rollout.execute_step", side_effect=self.fake_executor(calls, fail_at=2)), patch(
+            "scripts.rollout._observe_target_identity", side_effect=observer(first_identity),
+        ):
+            first_status = rollout.run_rollout(
+                manifest, "dev", repo_root=self.root, report_path=self.root / "scratch" / "identity-first",
+                confirm=lambda _prompt: True,
+            )
+        self.assertEqual(first_status, 2)
+        self.assertEqual(calls, [1, 2])
+
+        calls.clear()
+        with patch("scripts.rollout.execute_step", side_effect=self.fake_executor(calls)), patch(
+            "scripts.rollout._observe_target_identity", side_effect=observer(repointed_identity),
+        ):
+            resumed_status = rollout.run_rollout(
+                manifest, "dev", from_step=2, repo_root=self.root, report_path=self.root / "scratch" / "identity-resume",
+                confirm=lambda _prompt: True,
+            )
+
+        self.assertEqual(resumed_status, 2)
+        self.assertEqual(calls, [], "a changed target must stop the resume before any later step runs")
+        resumed = json.loads((self.root / "scratch" / "identity-resume.json").read_text(encoding="utf-8"))
+        self.assertIn("differs from its successful receipt", resumed["error"])
+
+    def test_legacy_schema_one_receipt_without_observed_identity_is_refused_on_resume(self) -> None:
+        manifest = self.write_manifest(self.pause_steps(2))
+        calls: list[int] = []
+        with patch("scripts.rollout.execute_step", side_effect=self.fake_executor(calls)):
+            first_status = rollout.run_rollout(
+                manifest, "dev", repo_root=self.root, report_path=self.root / "scratch" / "legacy-first", confirm=lambda _prompt: True,
+            )
+        self.assertEqual(first_status, 0)
+
+        manifest_hash = hashlib.sha256(manifest.read_bytes()).hexdigest()
+        receipt_path = rollout._receipt_path(self.root, manifest_hash, "dev", 1)
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        legacy = {key: value for key, value in receipt.items() if key != "observedIdentity"} | {"schemaVersion": 1}
+        receipt_path.write_text(json.dumps(legacy, indent=2) + "\n", encoding="utf-8")
+
+        calls.clear()
+        with patch("scripts.rollout.execute_step", side_effect=self.fake_executor(calls)):
+            resumed_status = rollout.run_rollout(
+                manifest, "dev", from_step=2, repo_root=self.root, report_path=self.root / "scratch" / "legacy-resume",
+                confirm=lambda _prompt: True,
+            )
+
+        self.assertEqual(resumed_status, 2)
+        self.assertEqual(calls, [])
+        resumed = json.loads((self.root / "scratch" / "legacy-resume.json").read_text(encoding="utf-8"))
+        self.assertIn("legacy receipt without independently observed target identity", resumed["error"])
+
+    def test_rollout_migration_resume_requires_exact_source_and_observed_target_receipts(self) -> None:
+        folder = self.add_migration()
+        migration = load_batch(self.root, [folder])[0]
+        observed = self.identity_for("DBA")
+        target_identity = {
+            "environment": "dev", "connection": "DEV_ALIAS", "expected_user": "OPS", **observed,
+        }
+        receipt = {
+            "schemaVersion": 1,
+            "state": "verified",
+            "environment": "dev",
+            "migration": migration.folder.name,
+            "createdDate": migration.date,
+            "family": migration.family,
+            "revision": migration.revision,
+            "files": [{"name": item.name, "sequence": item.sequence, "sha256": item.sha256} for item in migration.files],
+            "checksSha256": migration.checks_sha256,
+            "payloadDigest": migration.payload_digest,
+            "target": target_identity,
+            "applyStartedAt": "2026-10-11T00:00:00Z",
+            "applyCompletedAt": "2026-10-11T00:01:00Z",
+            "verifiedAt": "2026-10-11T00:02:00Z",
+            "checks": [{"id": check.id, "passed": True, "rows": 1, "value": 1} for check in migration.postconditions],
+            "verifier": "template-migration-v1",
+            "normalization": "normalization-v1",
+        }
+        status_path = migration.folder / "status.dev.json"
+        status_path.write_text(json.dumps(receipt) + "\n", encoding="utf-8")
+        step = {"type": "migrate", "folders": [folder]}
+        binding = {
+            "environment": "dev", "connection": "DEV_ALIAS", "expectedUser": "OPS",
+            "schema": "APP", "classification": "development",
+        }
+
+        rollout._verify_migration_receipts(self.root, step, binding, observed)
+
+        wrong_target = {**receipt, "target": {**target_identity, "db_unique_name": "OTHER_DB"}}
+        status_path.write_text(json.dumps(wrong_target) + "\n", encoding="utf-8")
+        with self.assertRaisesRegex(rollout.RolloutError, "exact source and observed target"):
+            rollout._verify_migration_receipts(self.root, step, binding, observed)
+
+        status_path.write_text(json.dumps(receipt) + "\n", encoding="utf-8")
+        (migration.folder / migration.files[0].name).write_text("CREATE TABLE T (ID NUMBER, EXTRA NUMBER);\n", encoding="utf-8")
+        with self.assertRaisesRegex(rollout.RolloutError, "exact source and observed target"):
+            rollout._verify_migration_receipts(self.root, step, binding, observed)
+
+    def test_sql_script_driver_binds_full_observed_writer_identity(self) -> None:
+        driver_dir = self.root / "identity-driver"
+        driver_dir.mkdir()
+        driver = rollout._script_driver(
+            driver_dir, "SELECT 1 FROM dual;\n",
+            environment="dev", schema="APP", expected_user="OPS", step_number=1,
+            expected_identity=self.identity_for("DEVDB"),
+        )
+        text = driver.read_text(encoding="utf-8")
+        self.assertIn("c_expected_db_unique_name", text)
+        self.assertIn("rollout writer identity mismatch", text)
+        self.assertIn("ROLLOUT_WRITER_IDENTITY", text)
 
     def test_rerun_from_step_one_with_pause_steps_executes_nothing_and_keeps_receipts(self) -> None:
         calls: list[int] = []
@@ -1415,6 +1583,7 @@ class RolloutManifestTests(unittest.TestCase):
             "connection": "OPS", "expectedUser": "OPS", "schema": "APP",
         }])
         report_base = self.root / "scratch" / "sql-failure"
+        self.observe_identity(self.identity_for())
 
         with patch.dict(
             os.environ,
@@ -1489,6 +1658,7 @@ class RolloutManifestTests(unittest.TestCase):
             "connection": "OPS", "expectedUser": "OPS", "schema": "APP",
         }])
         report_base = self.root / "scratch" / "race"
+        self.observe_identity(self.identity_for())
         snapshot = rollout._snapshot
         calls = 0
 
@@ -1544,7 +1714,11 @@ class RolloutManifestTests(unittest.TestCase):
             callback_approvals.append(confirm("child migration prompt"))
             return 0
 
-        with patch("scripts.rollout.migrate.main", side_effect=fake_migrate_main):
+        verified: list[dict] = []
+        self.observe_identity(self.identity_for("STGDB"))
+        with patch("scripts.rollout.migrate.main", side_effect=fake_migrate_main), patch(
+            "scripts.rollout._identity_target", return_value=Target("staging", "STG_ALIAS", "APP", "APP", "staging"),
+        ), patch("scripts.rollout._verify_migration_receipts", side_effect=lambda *args: verified.append(args[-1])):
             status = rollout.run_rollout(
                 manifest,
                 "staging",
@@ -1557,6 +1731,7 @@ class RolloutManifestTests(unittest.TestCase):
         self.assertEqual(len(prompts), 1)
         self.assertIn("Step 01", prompts[0])
         self.assertEqual(callback_approvals, [True])
+        self.assertEqual(verified, [self.identity_for("STGDB")], "each migration receipt is checked against the observed target")
 
     def test_manifest_confirmation_names_the_application_workspace_and_schema(self) -> None:
         self.add_app()

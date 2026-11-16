@@ -455,6 +455,31 @@ class BackupDbWithOrdsTests(OrdsCliTestCase):
                 else:
                     self.assertEqual(before, tree(project.root), "a refusal installs nothing")
 
+    def test_an_unguarded_failure_inside_the_ords_scope_stops_the_run_before_sqlcl(self) -> None:
+        # run_ords_scope is called as `... || exit $?`, which turns errexit off for its whole body: a failed helper
+        # inside it was ignored, and the ORDS export still ran. The failure must stop the run before SQLcl's export.
+        if os.name == "nt":
+            self.skipTest("the python3 stand-in is a Bash script, which PATH lookup does not start under Git Bash")
+        real_python = shutil.which("python3")
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Project(Path(temporary), "bash")
+            stand_in = project.root / "stand-in"
+            stand_in.mkdir()
+            python = stand_in / "python3"
+            python.write_text(
+                "#!/usr/bin/env bash\n"
+                "if [ \"${1:-}\" = - ]; then echo 'stage name helper failed' >&2; exit 1; fi\n"
+                f"exec '{real_python}' \"$@\"\n",
+                encoding="utf-8", newline="\n",
+            )
+            python.chmod(0o755)
+            project.environment["PATH"] = f"{stand_in}{os.pathsep}{project.environment['PATH']}"
+            before = tree(project.root)
+            result = project.run("backup-ords")
+            self.assertNotEqual(0, result.returncode, plain(result.stdout + result.stderr))
+            self.assertEqual(["version"], project.logged(), "no ORDS session may run after an internal failure")
+            self.assertEqual(before, tree(project.root))
+
     def test_a_table_or_code_failure_means_no_ords_session_and_no_installation(self) -> None:
         for scope in ("tables", "code"):
             def body(project: Project) -> None:
