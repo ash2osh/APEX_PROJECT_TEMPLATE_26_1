@@ -7,10 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-try:
-    from scripts.path_utils import relative_to_root
-except ModuleNotFoundError:
-    relative_to_root = None
+from scripts.path_utils import relative_to_root
 
 
 class RelativeToRootTests(unittest.TestCase):
@@ -29,19 +26,19 @@ class RelativeToRootTests(unittest.TestCase):
             with patch("scripts.path_utils.os.path.samefile", side_effect=samefile):
                 self.assertEqual(Path("scratch/report.json"), relative_to_root(candidate, root))
 
-    def test_alias_above_the_repository_root_does_not_count_as_a_reparse_point(self) -> None:
+    def test_does_not_treat_a_parent_alias_outside_the_repository_as_source_link(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             parent = Path(temporary) / "real-parent"
             root = parent / "repo"
             root.mkdir(parents=True)
             alias_parent = Path(temporary) / "parent-alias"
+            try:
+                alias_parent.symlink_to(parent, target_is_directory=True)
+            except OSError as exc:
+                self.skipTest(f"symlink creation is unavailable: {exc}")
             candidate = alias_parent / "repo" / "scratch" / "report.json"
 
-            def samefile(left: str | Path, right: str | Path) -> bool:
-                return Path(left) == alias_parent / "repo" and Path(right) == root
-
-            with patch("scripts.path_utils.os.path.samefile", side_effect=samefile):
-                self.assertEqual(Path("scratch/report.json"), relative_to_root(candidate, root))
+            self.assertEqual(Path("scratch/report.json"), relative_to_root(candidate, root))
 
     def test_rejects_a_path_outside_the_repository(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
