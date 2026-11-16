@@ -224,6 +224,8 @@ if ($describe) {
   exit 0
 }
 
+& $python.Path @($python.Prefix) $sourceValidator $repoRoot $appDir --for-import
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 if ([string]::IsNullOrWhiteSpace($sqlclConnection) -or [string]::IsNullOrWhiteSpace($expectedUser)) {
   switch ($appEnvironment) {
     "dev" {

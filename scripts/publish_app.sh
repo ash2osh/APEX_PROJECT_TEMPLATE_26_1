@@ -239,6 +239,8 @@ if [ "$describe" = true ]; then
   exit 0
 fi
 
+python3 "$REPO_ROOT/scripts/validate_app_source.py" "$REPO_ROOT" "$app_dir" --for-import || exit 2
+
 if [ -z "$sqlcl_connection" ] || [ -z "$expected_user" ]; then
   case "$app_environment" in
     dev)

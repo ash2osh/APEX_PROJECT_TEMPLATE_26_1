@@ -344,6 +344,38 @@ class PublishAppCliTests(unittest.TestCase):
             self.assertIn("symbolic links or reparse points", result.stdout + result.stderr)
             self.assertFalse(sql_log.exists(), "SQLcl must not run for a symlinked application root")
 
+    def test_automatic_supporting_objects_refuse_before_stamp_or_import(self) -> None:
+        pwsh = _test_subprocess_safety.working_pwsh()
+        shells = [("bash", [BASH])] + ([("pwsh", [pwsh, "-NoProfile", "-File"])] if pwsh else [])
+        for name, launcher in shells:
+            with self.subTest(wrapper=name), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                runner, sql_log, _, environment, app, state = self.make_stateful_dev_fixture(root)
+                environment["PROJECT_ENV_FILE"] = str(root / ".env")
+                application = app / "application.apx"
+                original = application.read_bytes()
+                support = app / "supporting-objects" / "supporting-objects.apx"
+                support.parent.mkdir()
+                support.write_text(
+                    "supportingObject (\n    advanced {\n        includeInAppExport: autoInstall\n    }\n)\n",
+                    encoding="utf-8",
+                )
+                script = runner if name == "bash" else runner.with_suffix(".ps1")
+
+                result = subprocess.run(
+                    [*launcher, str(script), "100", "--force"],
+                    env=environment,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("automatic supporting-object execution", result.stdout + result.stderr)
+                self.assertFalse(sql_log.exists(), "SQLcl must not run for an autoInstall refusal")
+                self.assertEqual((state / "import-count.txt").read_text().strip(), "0")
+                self.assertEqual(application.read_bytes(), original, "the source must not be stamped before the refusal")
+
     def test_client_error_or_missing_verification_never_reports_published(self) -> None:
         for mode in ("sp2", "no-sentinel"):
             with self.subTest(mode=mode), tempfile.TemporaryDirectory() as temporary:

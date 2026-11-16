@@ -130,6 +130,7 @@ rollout that runs an app deployment records the confirmation in its own report.
 | `is not listed in STAGING_SCHEMA` / `is not listed in PROD_SCHEMA` | The app's parsing schema has no entry for that target. Add its schema, connection, and expected user to the aligned staging or production lists in `.env`. |
 | `application source is outside the repository` / `symbolic links or reparse points are not supported` | Keep the app source as real files inside the checkout. |
 | `the application path contains characters SQLcl cannot pass` | The repository path contains `'`, `"` or `&`, which SQLcl would cut short or substitute. Move the checkout to a path without them. |
+| `automatic supporting-object execution is not authorized by app publication` | The app source sets `includeInAppExport: autoInstall`, which lets Oracle run supporting-object scripts during an import. Publish refuses before it stamps the source and before SQLcl starts, so nothing is imported. Remove `autoInstall` (the check also matches the setting inside comments), and apply any schema change through a reviewed migration. |
 | `DEV publish needs application.apx to stamp the publish tag` | The app source is incomplete; export it again. |
 | `could not stamp the application version` | Fix the `version:` line in `application.apx` as the message says (for example, a duplicate line or a version over 255 bytes). |
 | `application.apx changed while the publish tag was stamped` | You saved `application.apx` while publish was stamping it. Your save is kept; publish again. |
