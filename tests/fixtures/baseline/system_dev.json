@@ -18,3 +18,4 @@
   "sections": {"system-privileges": [{"grantee": "APP_DEV", "privilege": "CREATE SESSION", "admin_option": "NO"}]},
   "unavailable": {}
 }
+

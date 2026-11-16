@@ -6,6 +6,8 @@ import unittest
 import sys
 from pathlib import Path
 
+from scripts.validate_migration import statement_spans, validate_sql_only
+
 
 ROOT = Path(__file__).resolve().parents[1]
 VALIDATOR = ROOT / "scripts" / "validate_migration.py"
@@ -379,9 +381,17 @@ class ValidateMigrationTests(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("SQL-only migration", result.stderr)
 
-    def test_transaction_control_is_only_accepted_when_explicitly_enabled(self) -> None:
-        from scripts.validate_migration import statement_spans, validate_sql_only
+    def test_rollout_transaction_opt_in_preserves_statement_spans(self) -> None:
+        source = "COMMIT;\nROLLBACK;\nCOMMIT WORK;\nROLLBACK WORK;\n"
+        spans = statement_spans(source, allow_transaction_control=True)
+        self.assertEqual([source[start:end] for start, end in spans], [
+            "COMMIT", "ROLLBACK", "COMMIT WORK", "ROLLBACK WORK",
+        ])
+        validate_sql_only(source, allow_transaction_control=True)
+        with self.assertRaises(ValueError):
+            validate_sql_only(source)
 
+    def test_transaction_control_is_only_accepted_when_explicitly_enabled(self) -> None:
         source = "INSERT INTO T (ID) VALUES (1);\nCOMMIT;\n"
         with self.assertRaises(ValueError):
             validate_sql_only(source)
@@ -399,8 +409,6 @@ class ValidateMigrationTests(unittest.TestCase):
                 validate_sql_only(source)
 
     def test_rollout_transaction_control_accepts_only_commit_and_rollback(self) -> None:
-        from scripts.validate_migration import validate_sql_only
-
         for source in ("COMMIT;\n", "ROLLBACK;\n", "COMMIT WORK;\n", "ROLLBACK WORK;\n", "commit work;\n"):
             with self.subTest(accepted=source):
                 validate_sql_only(source, allow_transaction_control=True)
@@ -411,6 +419,15 @@ class ValidateMigrationTests(unittest.TestCase):
             "ROLLBACK FORCE '1.2.3';\n", "COMMIT COMMENT 'x';\n", "COMMIT WRITE WAIT;\n", "SAVEPOINT review_point;\n",
         ):
             with self.subTest(refused=source), self.assertRaises(ValueError):
+                validate_sql_only(source, allow_transaction_control=True)
+
+    def test_rollout_transaction_opt_in_still_refuses_client_hazards(self) -> None:
+        for source in (
+            "COMMIT;\nHOST touch marker\n", "ROLLBACK;\n@other.sql\n",
+            "COMMIT;\n/*/\nPROMPT hidden\n*/\nSELECT 1 FROM dual;\n",
+            "COMMIT,~\nHOST touch marker\n", "ROLLBACK/**/;\n",
+        ):
+            with self.subTest(source=source), self.assertRaises(ValueError):
                 validate_sql_only(source, allow_transaction_control=True)
 
 

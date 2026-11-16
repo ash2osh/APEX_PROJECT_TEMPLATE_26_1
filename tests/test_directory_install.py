@@ -234,6 +234,52 @@ class DirectoryInstallTests(unittest.TestCase):
         self.assertEqual(self.snapshot_tree(stage), before_stage)
         self.assertFalse(destination.exists())
 
+    def test_darwin_refuses_existing_destination_without_mutating_either_tree(self) -> None:
+        api = self.require_installer()
+        stage = self.make_stage()
+        destination = self.destination()
+        before_stage = self.snapshot_tree(stage)
+        native_rename = Mock()
+
+        def reject_existing_destination(*_arguments: object) -> int:
+            api.ctypes.set_errno(errno.EEXIST)
+            return -1
+
+        native_rename.side_effect = reject_existing_destination
+        libc = Mock()
+        libc.renameatx_np = native_rename
+        libc.renamex_np = native_rename
+
+        filesystem_id = api._filesystem_id
+        calls = 0
+
+        def create_destination_during_preflight(
+            handle: object,
+            destination_path: Path = destination,
+            filesystem_id_fn=filesystem_id,
+        ) -> int:
+            nonlocal calls
+            calls += 1
+            if (handle == destination_path.parent or calls == 2) and not destination_path.exists():
+                destination_path.mkdir()
+                (destination_path / "keep.txt").write_bytes(b"keep existing bytes")
+            if isinstance(handle, (str, Path)):
+                return destination_path.parent.stat().st_dev
+            return filesystem_id_fn(handle)
+
+        with patch.object(api.sys, "platform", "darwin"), patch.object(
+            api.ctypes, "CDLL", return_value=libc
+        ), patch.object(
+            api.ctypes, "get_errno", return_value=errno.EEXIST
+        ), patch.object(
+            api, "_filesystem_id", side_effect=create_destination_during_preflight
+        ):
+            with self.assertRaisesRegex(api.DirectoryInstallError, "occupied"):
+                api.install_directory_exclusive(stage, destination)
+
+        self.assertEqual(self.snapshot_tree(stage), before_stage)
+        self.assertEqual(self.snapshot_tree(destination), {"keep.txt": b"keep existing bytes"})
+
     @unittest.skipUnless(sys.platform == "darwin", "native Darwin renamex_np no-overwrite qualification")
     def test_darwin_native_rename_does_not_replace_a_destination_created_after_precheck(self) -> None:
         api = self.require_installer()
@@ -400,6 +446,7 @@ class DirectoryInstallTests(unittest.TestCase):
             st_file_attributes = 0x400
 
         self.assertTrue(api._is_reparse_point(ReparseDirectory()))
+        self.assertTrue(api._is_symlink_or_reparse(ReparseDirectory()))
 
     def test_refuses_a_missing_or_nondirectory_destination_parent(self) -> None:
         api = self.require_installer()

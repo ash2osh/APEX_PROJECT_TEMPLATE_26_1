@@ -37,7 +37,6 @@ class SqlDriverContractTests(unittest.TestCase):
                 contents = (ROOT / "scripts" / name).read_text(encoding="utf-8")
                 self.assertRegex(contents, r"(?im)^EXIT SUCCESS ROLLBACK\s*$")
 
-    # ASHARIF 2026-10-28: retain Oracle trigger validity separately from the ENABLE/DISABLE flag.
     def test_feature_trigger_catalog_captures_database_object_status(self) -> None:
         from scripts import compare_schema
 
@@ -112,6 +111,26 @@ class SqlDriverContractTests(unittest.TestCase):
         self.assertIn("l_pos := l_pos + UTL_RAW.LENGTH(l_piece)", contents)
         self.assertIn("CATALOG_ENCODING:gzip-base64-v1", contents)
         self.assertGreaterEqual(32767, 4 * 12000 // 3)
+
+    def test_catalog_driver_cleans_temporary_lobs_on_success_and_exception(self) -> None:
+        contents = (ROOT / "scripts" / "schema_catalog.sql").read_text(encoding="utf-8")
+        self.assertIn("DBMS_LOB.ISTEMPORARY", contents)
+        self.assertIn("DBMS_LOB.FREETEMPORARY", contents)
+        self.assertGreaterEqual(len(re.findall(r"(?i)cleanup_temp_blob\s*\(\s*l_gzip\s*\)", contents)), 2)
+        self.assertGreaterEqual(len(re.findall(r"(?i)cleanup_temp_blob\s*\(\s*l_blob\s*\)", contents)), 2)
+        self.assertGreaterEqual(len(re.findall(r"(?i)cleanup_temp_lob\s*\(\s*l_raw\s*\)", contents)), 2)
+        self.assertRegex(
+            contents,
+            r"(?i)cleanup_temp_blob\s*\(\s*l_gzip\s*\);\s*"
+            r"cleanup_temp_blob\s*\(\s*l_blob\s*\);\s*"
+            r"cleanup_temp_lob\s*\(\s*l_raw\s*\);\s*"
+            r"EXCEPTION\s+WHEN\s+OTHERS\s+THEN\s*"
+            r"cleanup_temp_blob\s*\(\s*l_gzip\s*\);\s*"
+            r"cleanup_temp_blob\s*\(\s*l_blob\s*\);\s*"
+            r"cleanup_temp_lob\s*\(\s*l_raw\s*\);\s*"
+            r"ROLLBACK;\s*RAISE;",
+        )
+
 
     def test_the_catalog_driver_lifts_the_dbms_output_cap_before_it_prints_the_payload(self) -> None:
         # SQLcl's SERVEROUTPUT SIZE UNLIMITED still leaves a 1,000,000-byte buffer

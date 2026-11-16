@@ -268,10 +268,9 @@ def mask_java_quoted_values(source: str) -> str:
 
 
 def validate_sql_only(source: str, *, allow_transaction_control: bool = False) -> None:
-    """Allow SQL statements and PL/SQL blocks, but no SQLcl commands.
+    """Allow SQL and PL/SQL, with transaction completion reserved for migration drivers.
 
-    Transaction completion stays reserved for migration drivers unless a caller
-    explicitly validates a standalone test/rollout script.
+    Standalone rollout scripts may explicitly opt into COMMIT and ROLLBACK.
     """
     statement_spans(source, allow_transaction_control=allow_transaction_control)
 
@@ -330,7 +329,6 @@ def statement_spans(source: str, *, allow_transaction_control: bool = False) -> 
                 f"so put a space after '{first_match.group()}'"
             )
         tokens = FIRST_WORD.findall(masked[index:index + 240])
-        first = first_match.group().upper()
 
         is_plsql_block = first in {"BEGIN", "DECLARE"}
         if first == "CREATE":
@@ -358,9 +356,7 @@ def statement_spans(source: str, *, allow_transaction_control: bool = False) -> 
 
         # Name a client command before asking for a semicolon: HOST, DEFINE, START
         # and the like end at the newline, so "add a semicolon" would be wrong.
-        allowed = first in SQL_STARTERS
-        if transaction_control:
-            allowed = True
+        allowed = first in SQL_STARTERS or transaction_control
         if first == "SET":
             # Only SET CONSTRAINTS and SET TRANSACTION are SQL; read the second word
             # from this statement, not from the one after a ';'.
