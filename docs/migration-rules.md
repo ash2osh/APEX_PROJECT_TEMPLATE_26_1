@@ -641,7 +641,7 @@ migration-only capsule; see [migration-only releases](feature-releases.md#migrat
 
 Rollout receipts are never replaced. Before execution, the rollout checks every selected step's canonical receipt
 path under `scratch/rollout-receipts/<manifest-sha256>/<env>/` and refuses any existing file, directory, malformed
-receipt, or symbolic link: it exits 2 and runs no step. `--dry-run` applies the same refusal. A manifest whose steps
+receipt, or symbolic link: it exits 2 and runs no step. For a schema-version 1 manifest, `--dry-run` applies the same refusal. A manifest whose steps
 already succeeded for an environment therefore cannot run again from step 1. Keep the original receipts and report,
 inspect the target, and use a separately reviewed continuation manifest (a changed manifest with a new digest) for
 further writes. Successful receipts are installed with an atomic no-overwrite link. If a receipt appears after
