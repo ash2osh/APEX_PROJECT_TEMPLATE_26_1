@@ -71,6 +71,29 @@ project_env_match() {
   [[ "$1" =~ $2 ]]
 }
 
+# Phase 2 release switch: the template release is apexRelease in template-manifest.json, and a
+# manifest without the key is the 26.1 template. sed reads it because this loader must not need
+# Python. scripts/template_release.py applies the same rule. An unreadable manifest is refused.
+project_env_read_apex_release() {
+  local manifest="$project_env_repo_root/template-manifest.json" value=""
+  if [ ! -f "$manifest" ]; then
+    project_env_fail "template manifest not found: $manifest"
+    return 1
+  fi
+  if grep -q '"apexRelease"' "$manifest"; then
+    value="$(sed -n 's/^[[:space:]]*"apexRelease"[[:space:]]*:[[:space:]]*"\([^"]*\)"[[:space:]]*,\{0,1\}[[:space:]]*$/\1/p' "$manifest" | head -n 1)"
+  else
+    value=26.1
+  fi
+  case "$value" in
+    26.1|26.2) project_env_apex_release="$value" ;;
+    *) project_env_fail "cannot read apexRelease (26.1 or 26.2) from $manifest"; return 1 ;;
+  esac
+}
+if ! project_env_read_apex_release; then
+  return 1 2>/dev/null || exit 1
+fi
+
 if [ ! -f "$PROJECT_ENV_FILE" ]; then
   project_env_fail "configuration file not found: $PROJECT_ENV_FILE (copy .env.example to .env)"
   return 1 2>/dev/null || exit 1
@@ -113,8 +136,15 @@ while IFS= read -r project_env_line || [ -n "$project_env_line" ]; do
   project_env_key="${BASH_REMATCH[1]}"
   project_env_value="${BASH_REMATCH[2]}"
   case "$project_env_key" in
+    INSTALL_UC_APX|UC_APX_SKILLS_AGENT)
+      # 26.1 keeps its uc-apx settings; 26.2 retired them and refuses them.
+      if [ "$project_env_apex_release" = 26.2 ]; then
+        project_env_fail "uc-apx settings are retired; remove INSTALL_UC_APX and UC_APX_SKILLS_AGENT from .env"
+        return 1 2>/dev/null || exit 1
+      fi
+      ;;
     PROJECT_NAME|DEVELOPER_NAME|DB_ENVIRONMENT|APEX_APP_ID|APEX_WORKSPACE_USERNAME|\
-    INSTALL_UC_APX|UC_APX_SKILLS_AGENT|AGENT_STYLE|AGENT_STYLE_LEARNING|\
+    AGENT_STYLE|AGENT_STYLE_LEARNING|\
     TABLES_SCHEMA|TABLES_PREFIXES|TABLES_SQLCL_CONNECTION|TABLES_EXPECTED_USER|\
     CODE_SCHEMA|CODE_PREFIXES|CODE_SQLCL_CONNECTION|CODE_EXPECTED_USER|\
     APEX_PARSING_SCHEMA|APEX_SQLCL_CONNECTION|APEX_EXPECTED_USER|\
@@ -159,11 +189,14 @@ while IFS= read -r project_env_line || [ -n "$project_env_line" ]; do
   project_env_seen_keys+=("$project_env_key")
 done < "$PROJECT_ENV_FILE"
 
-if [ "${INSTALL_UC_APX+x}" != x ]; then INSTALL_UC_APX=false; fi
-if [ "${UC_APX_SKILLS_AGENT+x}" != x ]; then UC_APX_SKILLS_AGENT=universal; fi
+if [ "$project_env_apex_release" != 26.2 ]; then
+  if [ "${INSTALL_UC_APX+x}" != x ]; then INSTALL_UC_APX=false; fi
+  if [ "${UC_APX_SKILLS_AGENT+x}" != x ]; then UC_APX_SKILLS_AGENT=universal; fi
+  export INSTALL_UC_APX UC_APX_SKILLS_AGENT
+fi
 if [ "${AGENT_STYLE+x}" != x ]; then AGENT_STYLE=standard; fi
 if [ "${AGENT_STYLE_LEARNING+x}" != x ]; then AGENT_STYLE_LEARNING=on; fi
-export INSTALL_UC_APX UC_APX_SKILLS_AGENT AGENT_STYLE AGENT_STYLE_LEARNING
+export AGENT_STYLE AGENT_STYLE_LEARNING
 
 project_env_required=(
   PROJECT_NAME DEVELOPER_NAME DB_ENVIRONMENT APEX_APP_ID
@@ -283,6 +316,28 @@ for project_env_migration_prefix in '' STAGING_ PROD_; do
     export "PROJECT_${project_env_migration_prefix}MIGRATION_CONFIGURED=true"
   fi
 done
+
+# 26.2 DBA connection check (its position in 26.2 is kept; the 26.1 check follows the APEX checks).
+if [ "$project_env_apex_release" = 26.2 ]; then
+  for project_env_dba_key in DEV_DBA_SQLCL_CONNECTION STAGING_DBA_SQLCL_CONNECTION PROD_DBA_SQLCL_CONNECTION; do
+    project_env_dba_seen=false
+    for project_env_seen_key in "${project_env_seen_keys[@]}"; do
+      [ "$project_env_seen_key" != "$project_env_dba_key" ] || project_env_dba_seen=true
+    done
+    if [ "$project_env_dba_seen" = true ]; then
+      project_env_dba_value="${!project_env_dba_key:-}"
+      if [ -z "${project_env_dba_value//[[:space:]]/}" ]; then
+        project_env_fail "$project_env_dba_key must not be empty when configured"
+        return 1 2>/dev/null || exit 1
+      fi
+      if [[ "$project_env_dba_value" == *,* ]]; then
+        project_env_fail "$project_env_dba_key accepts one saved SQLcl connection alias"
+        return 1 2>/dev/null || exit 1
+      fi
+      project_env_check_list "$project_env_dba_key" alias || { return 1 2>/dev/null || exit 1; }
+    fi
+  done
+fi
 
 for project_env_prefix in PROD STAGING; do
   project_env_connection_key="${project_env_prefix}_SQLCL_CONNECTION"
@@ -417,14 +472,16 @@ case "$DB_ENVIRONMENT" in
     return 1 2>/dev/null || exit 1
     ;;
 esac
-case "$INSTALL_UC_APX" in
-  true|false) ;;
-  *) project_env_fail "INSTALL_UC_APX must be true or false"; return 1 2>/dev/null || exit 1 ;;
-esac
-case "$UC_APX_SKILLS_AGENT" in
-  universal|claude-code) ;;
-  *) project_env_fail "UC_APX_SKILLS_AGENT must be universal or claude-code"; return 1 2>/dev/null || exit 1 ;;
-esac
+if [ "$project_env_apex_release" != 26.2 ]; then
+  case "$INSTALL_UC_APX" in
+    true|false) ;;
+    *) project_env_fail "INSTALL_UC_APX must be true or false"; return 1 2>/dev/null || exit 1 ;;
+  esac
+  case "$UC_APX_SKILLS_AGENT" in
+    universal|claude-code) ;;
+    *) project_env_fail "UC_APX_SKILLS_AGENT must be universal or claude-code"; return 1 2>/dev/null || exit 1 ;;
+  esac
+fi
 case "$AGENT_STYLE" in
   standard|concise|teaching|asharif-style) ;;
   *) project_env_fail "AGENT_STYLE must be one of: standard, concise, teaching, asharif-style"; return 1 2>/dev/null || exit 1 ;;
@@ -444,20 +501,22 @@ project_env_check_aligned TABLES_SCHEMA TABLES_SQLCL_CONNECTION TABLES_EXPECTED_
 project_env_check_aligned CODE_SCHEMA CODE_SQLCL_CONNECTION CODE_EXPECTED_USER || { return 1 2>/dev/null || exit 1; }
 project_env_check_aligned APEX_PARSING_SCHEMA APEX_SQLCL_CONNECTION APEX_EXPECTED_USER || { return 1 2>/dev/null || exit 1; }
 
-for project_env_dba_key in DEV_DBA_SQLCL_CONNECTION STAGING_DBA_SQLCL_CONNECTION PROD_DBA_SQLCL_CONNECTION; do
-  if [ "${!project_env_dba_key+x}" = x ]; then
-    project_env_dba_value="${!project_env_dba_key}"
-    if [ -z "${project_env_dba_value//[[:space:]]/}" ]; then
-      project_env_fail "$project_env_dba_key must not be empty"
-      return 1 2>/dev/null || exit 1
+if [ "$project_env_apex_release" != 26.2 ]; then
+  for project_env_dba_key in DEV_DBA_SQLCL_CONNECTION STAGING_DBA_SQLCL_CONNECTION PROD_DBA_SQLCL_CONNECTION; do
+    if [ "${!project_env_dba_key+x}" = x ]; then
+      project_env_dba_value="${!project_env_dba_key}"
+      if [ -z "${project_env_dba_value//[[:space:]]/}" ]; then
+        project_env_fail "$project_env_dba_key must not be empty"
+        return 1 2>/dev/null || exit 1
+      fi
+      if ! project_env_match "$project_env_dba_value" '^[A-Za-z0-9][A-Za-z0-9._-]*$'; then
+        project_env_fail "$project_env_dba_key contains unsupported characters"
+        return 1 2>/dev/null || exit 1
+      fi
+      export "$project_env_dba_key=$project_env_dba_value"
     fi
-    if ! project_env_match "$project_env_dba_value" '^[A-Za-z0-9][A-Za-z0-9._-]*$'; then
-      project_env_fail "$project_env_dba_key contains unsupported characters"
-      return 1 2>/dev/null || exit 1
-    fi
-    export "$project_env_dba_key=$project_env_dba_value"
-  fi
-done
+  done
+fi
 
 # The configured schemas, and whether any list names more than one.
 project_env_union=()
@@ -577,9 +636,9 @@ unset project_env_migration_prefix project_env_migration_present project_env_dev
 unset project_env_union project_env_multi project_env_items project_env_item
 unset project_env_known project_env_union_item project_env_selected_known project_env_count_items
 unset project_env_dev_schema project_env_multi_mapping project_env_ords_present project_env_ords_schemas project_env_ords_users project_env_ords_index
-unset project_env_repo_root
+unset project_env_repo_root project_env_apex_release
 # project_env_fail and project_env_require_single stay defined for callers that
 # refuse an ambiguous schema; the parsing helpers do not.
 unset -f project_env_validate_unique_csv project_env_csv_shape_ok project_env_split_csv \
   project_env_count project_env_check_list project_env_check_aligned project_env_narrow \
-  project_env_match
+  project_env_match project_env_read_apex_release
