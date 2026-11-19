@@ -247,5 +247,135 @@ class BackupDbCliTests(unittest.TestCase):
             script,
         )
 
+    # A committed DEMO$ mirror holding every output of both scopes, plus an ORDS export.
+    COMMITTED_MIRROR = {
+        "tables/OLD_TABLE.sql": "CREATE TABLE OLD_TABLE (ID NUMBER);\n",
+        "manifest-tables.txt": "TABLE=1\n",
+        "views/OLD_VIEW.sql": "CREATE VIEW OLD_VIEW AS SELECT 1 AS ID FROM dual;\n",
+        "packages/OLD_PACKAGE.sql": "CREATE PACKAGE OLD_PACKAGE AS END;\n",
+        "manifest-code.txt": "FUNCTION=0\nPACKAGE=1\nPACKAGE BODY=0\nPROCEDURE=0\nSYNONYM=0\nTRIGGER=0\nVIEW=1\n",
+        "ords/OLD_MODULE.json": '{"module": "old"}\n',
+    }
+    # What the fake SQLcl in make_checkout writes for each scope.
+    TABLES_OUTPUT = {
+        "tables/FAKE_TABLE.sql": "CREATE FAKE OBJECT;\n",
+        "manifest-tables.txt": "TABLE=1\n",
+    }
+    CODE_OUTPUT = {
+        "views/FAKE_VIEW.sql": "CREATE FAKE OBJECT;\n",
+        "manifest-code.txt": "FUNCTION=0\nPACKAGE=0\nPACKAGE BODY=0\nPROCEDURE=0\nSYNONYM=0\nTRIGGER=0\nVIEW=1\n",
+    }
+
+    def committed(self, *paths: str) -> dict[str, str]:
+        return {path: self.COMMITTED_MIRROR[path] for path in paths}
+
+    def backup_over_committed_mirror(
+        self,
+        powershell: bool,
+        env_changes: dict[str, str],
+        extra_env: dict[str, str] | None = None,
+    ) -> dict[str, str]:
+        """Run the backup over a committed DEMO$ mirror with the real replace helper; return the mirror it left."""
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            script = self.make_checkout(root, powershell=powershell)
+            # make_checkout installs a spy replace_mirror; these tests need the real one.
+            helper = "replace_mirror.ps1" if powershell else "replace_mirror.sh"
+            shutil.copy2(ROOT / "scripts" / helper, root / "scripts" / helper)
+            env_path = root / ".env"
+            env_text = env_path.read_text(encoding="utf-8")
+            for old, new in env_changes.items():
+                self.assertIn(old, env_text)
+                env_text = env_text.replace(old, new)
+            env_path.write_text(env_text, encoding="utf-8")
+            mirror = root / "database" / "DEMO$"
+            for relative, text in self.COMMITTED_MIRROR.items():
+                target = mirror / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(text, encoding="utf-8")
+            subprocess.run(["git", "-C", str(root), "add", "database"], check=True)
+            subprocess.run(["git", "-C", str(root), "commit", "-qm", "seed committed mirror"], check=True)
+
+            result = self.run_backup(script, powershell=powershell, extra_env=extra_env)
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertEqual(sorted(entry.name for entry in (root / "database").iterdir()), ["DEMO$"])
+            return {
+                path.relative_to(mirror).as_posix(): path.read_text(encoding="utf-8")
+                for path in mirror.rglob("*")
+                if path.is_file()
+            }
+
+    def assert_tables_only_run_keeps_committed_code_scope(self, powershell: bool) -> None:
+        # PROJECT_SCHEMA narrows the run to DEMO$ tables; CODE lists another owner, which this run does not refresh.
+        files = self.backup_over_committed_mirror(
+            powershell,
+            env_changes={
+                "CODE_SCHEMA=DEMO$": "CODE_SCHEMA=CODEONLY$",
+                "CODE_EXPECTED_USER=DEMO": "CODE_EXPECTED_USER=CODEONLY$",
+                "CODE_SQLCL_CONNECTION=docker-demo": "CODE_SQLCL_CONNECTION=docker-codeonly",
+            },
+            extra_env={"PROJECT_SCHEMA": "DEMO$"},
+        )
+        # The tables scope is replaced whole; the committed code scope, its manifest and the ORDS export survive.
+        self.assertEqual(
+            files,
+            {
+                **self.TABLES_OUTPUT,
+                **self.committed("views/OLD_VIEW.sql", "packages/OLD_PACKAGE.sql", "manifest-code.txt",
+                                 "ords/OLD_MODULE.json"),
+            },
+        )
+
+    def assert_code_only_run_keeps_committed_tables_scope(self, powershell: bool) -> None:
+        # PROJECT_SCHEMA narrows the run to DEMO$ code; TABLES lists another owner, which this run does not refresh.
+        files = self.backup_over_committed_mirror(
+            powershell,
+            env_changes={
+                "TABLES_SCHEMA=DEMO$": "TABLES_SCHEMA=TABLESONLY$",
+                "TABLES_EXPECTED_USER=DEMO": "TABLES_EXPECTED_USER=TABLESONLY$",
+                "TABLES_SQLCL_CONNECTION=docker-demo": "TABLES_SQLCL_CONNECTION=docker-tablesonly",
+            },
+            extra_env={"PROJECT_SCHEMA": "DEMO$"},
+        )
+        # The code scope is replaced whole; the committed tables scope, its manifest and the ORDS export survive.
+        self.assertEqual(
+            files,
+            {
+                **self.CODE_OUTPUT,
+                **self.committed("tables/OLD_TABLE.sql", "manifest-tables.txt", "ords/OLD_MODULE.json"),
+            },
+        )
+
+    def assert_both_scopes_replace_committed_mirror(self, powershell: bool) -> None:
+        files = self.backup_over_committed_mirror(powershell, env_changes={})
+        # Both scopes ran, so their stale files (OLD_TABLE, OLD_VIEW, OLD_PACKAGE) are gone; the ORDS export is carried over.
+        self.assertEqual(
+            files,
+            {**self.TABLES_OUTPUT, **self.CODE_OUTPUT, **self.committed("ords/OLD_MODULE.json")},
+        )
+
+    def test_bash_tables_only_run_keeps_committed_code_scope_and_manifest(self) -> None:
+        self.assert_tables_only_run_keeps_committed_code_scope(powershell=False)
+
+    @unittest.skipUnless(PWSH, "PowerShell Core is not installed")
+    def test_powershell_tables_only_run_keeps_committed_code_scope_and_manifest(self) -> None:
+        self.assert_tables_only_run_keeps_committed_code_scope(powershell=True)
+
+    def test_bash_code_only_run_keeps_committed_tables_scope_and_manifest(self) -> None:
+        self.assert_code_only_run_keeps_committed_tables_scope(powershell=False)
+
+    @unittest.skipUnless(PWSH, "PowerShell Core is not installed")
+    def test_powershell_code_only_run_keeps_committed_tables_scope_and_manifest(self) -> None:
+        self.assert_code_only_run_keeps_committed_tables_scope(powershell=True)
+
+    def test_bash_both_scopes_run_replaces_both_mirrors_and_their_stale_files(self) -> None:
+        self.assert_both_scopes_replace_committed_mirror(powershell=False)
+
+    @unittest.skipUnless(PWSH, "PowerShell Core is not installed")
+    def test_powershell_both_scopes_run_replaces_both_mirrors_and_their_stale_files(self) -> None:
+        self.assert_both_scopes_replace_committed_mirror(powershell=True)
+
+
 if __name__ == "__main__":
     unittest.main()

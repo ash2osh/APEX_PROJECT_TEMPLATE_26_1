@@ -32,6 +32,16 @@ projects remove inherited template-maintenance tests, GitHub workflows and
 Dependabot; the original template keeps them for its own validation. Retain
 project-specific tests and the operational scripts, `.env`, manifest and lock.
 
+## Daily choices
+
+Each line names one route and links to the single place that owns its procedure.
+
+- Save a change in APEX Builder and bring it into Git with an export, as described in [Builder first](docs/GETTING_STARTED.md#a-builder-first).
+- Edit an app's APEXlang files and publish them to DEV, as described in [files first](docs/GETTING_STARTED.md#b-files-first).
+- Change stored code (packages, procedures, functions, triggers and types) through a feature release, as described in [feature-oriented releases](docs/feature-releases.md).
+- Apply a one-time schema change as a dated, numbered migration folder, as described in [migration rules](docs/migration-rules.md).
+- Promote an app to staging and then production with `deploy`, as described in [release to staging and production](docs/EXAMPLES.md#7-release-to-staging-and-production).
+
 ## What you get
 
 | Feature | What it does |
@@ -280,7 +290,7 @@ for the privilege and command limits.
 | --- | --- |
 | `doctor` | Checks every distinct `(connection, expected user, schema)` across the three profiles, and every ORDS target when that optional profile exists, with one read-only SQLcl identity check each. It reports each schema and fails if any check fails. `--schema` narrows it. |
 | `export <id>` | Reads the app's parsing schema from `APEX_APPLICATIONS` using the first `APEX_SQLCL_CONNECTION` entry, requires that schema in `APEX_PARSING_SCHEMA`, then reconnects with that schema's own connection and writes `apps/<SCHEMA>/<id>/`. `team.sh export` takes one ID. `scripts/export_apps.sh` with no argument resolves each configured app ID separately and installs all exports in one all-or-nothing mirror replacement. |
-| `backup-db` | Runs the tables scope for each tables schema and the code scope for each code schema, plus the ORDS scope for each ORDS schema when the optional ORDS profile exists. Each has a staging directory, a completeness check, and a dirty-mirror check. Nothing is installed until every schema verifies; one mirror replacement installs them all. `--schema` narrows the run. |
+| `backup-db` | Runs the tables scope for each tables schema and the code scope for each code schema, plus the ORDS scope for each ORDS schema when the optional ORDS profile exists. Each has a staging directory, a completeness check, and a dirty-mirror check. Nothing is installed until every schema verifies; one mirror replacement installs them all. A table or code scope that this run does not refresh for a schema (the schema is listed by only one of those profiles, or `--schema` narrows the run) is carried over unchanged from the committed mirror, and so is `ords/` when ORDS is not selected. `--schema` narrows the run. |
 | `backup-ords` | Exports each ORDS schema (`ORDS_SCHEMA`, optional) to `database/<SCHEMA>/ords/schema.sql` and replaces only that folder. `--schema` narrows the run; an ORDS-only schema is selectable. |
 | `publish <id>` | Imports to shared DEV only (`scripts/team.sh publish <id> [--env dev]`). Requires the app folder, descriptor, and live app parsing schema to agree and be listed, then uses that schema's connection. The drift guard, version stamp, and byte-equality verification remain unchanged. Promotion to staging or production uses `deploy`. |
 | `deploy <id> --env staging\|prod` | Confirms promotion to staging or production or prints a DBA runbook (`--manual`). The descriptor's `parsingSchema` selects the same-named staging or production entry. Confirmation shows the schema and connection. |
@@ -309,78 +319,25 @@ Limits:
 
 ## Builder-first workflow
 
-Make and save the change in shared APEX Builder, then export that app's source:
+Save the change in APEX Builder, then run `scripts/team.sh export 100` and review
+the APEXlang diff before you commit it. Export captures the current Builder state
+and never imports the app back. It refuses to write over uncommitted local changes
+and keeps your deployment descriptors.
 
-```bash
-scripts/team.sh export 100
-git status --short --untracked-files=all -- apps/DEMO/100/
-git diff -- apps/DEMO/100/
-```
-
-Review the APEXlang changes before committing. This route captures current
-Builder state; it does not import the app back into Builder. The exporter
-refuses to overwrite a dirty local source directory. It first exports into
-`scratch/`, checks the SQLcl result and Builder revision, then replaces the
-local source mirror while preserving its authored deployment descriptors.
+Steps: [Getting started, section 9](docs/GETTING_STARTED.md#a-builder-first).
+Publish-side refusals and drift rules: [publish-rules](docs/publish-rules.md).
 
 ## File-first APEXlang workflow
 
-Edit the APEXlang files and review them. Committing first is optional:
-publish imports the files on disk, and the shared database is the source of
-truth. Before importing into shared DEV, tell teammates which app ID is being published and check for
-unsaved or in-progress Builder edits. Then run:
+Edit the APEXlang files, tell your team which app you are publishing, and check
+that nobody has unsaved work in Builder on it. Committing first is optional,
+because publish imports the files on disk. Run `scripts/team.sh publish 100 --env dev`.
+Publish refuses when the live app changed since your last export, and it stamps a
+publish tag into `application.apx` before it imports. Commit the stamped file
+afterwards. Staging and production use `deploy`.
 
-```bash
-scripts/team.sh publish 100 --env dev
-```
-
-The exporter records the app's `last_updated_on` value from Oracle before it
-reads APEXlang, then checks the value again when the export completes. If the
-app changed during export, it refuses to install that source. The DEV drift
-guard compares the current Builder value with this database-time baseline, so
-the workstation's time zone does not affect the check. If Builder is newer,
-export and reconcile before importing. `--force` bypasses only the drift guard
-and should be used only after the discrepancy is reviewed. Oracle stores this
-revision at one-second precision; if the revision matches the database's
-current second, export and publish fail closed and ask you to retry after one
-second. This persisted timestamp cannot reveal unsaved Builder edits, so
-coordinate with teammates before publishing. Staging and production promotion
-uses the separate `deploy` command.
-
-APEX does not stamp `last_updated_on` while importing, so an app installed or
-published from APEXlang has no Builder timestamp until someone saves it in
-Builder. To make each import identifiable, a DEV publish first stamps a
-publish tag onto the end of the application version in `application.apx`:
-
-```text
-version: "V2 Powered By xxx [ASHARIF-2026-09-26r001]"
-```
-
-The tag is `DEVELOPER_NAME` from `.env`, the publish date, and a counter that
-counts up with each publish of that date, whoever published, and restarts at
-`r001` on a later date. The date never moves back, so a tag is never reused.
-The export marker records the live version with the Builder timestamp, and the
-drift guard refuses to publish when the live version differs from your
-baseline, which is how it detects a teammate's import. Commit the stamped
-`application.apx` after a successful publish. If the import fails, publish
-restores the unstamped file. The tag appears wherever the theme renders
-`#APP_VERSION#`, such as the Universal Theme footer, and `deploy` ships it to
-staging and production unchanged.
-
-After a successful DEV import, `publish` exports the app again and compares the
-APEXlang file names and bytes with the local source, excluding the local
-deployment descriptors and export marker. It advances the drift baseline only
-when that source matches and the live Builder revision stayed stable during the
-verification export. If SQLcl reports an error, the source differs, or the
-revision is ambiguous, publish fails and leaves the old baseline in place.
-SQLcl can exit successfully without importing, for example when a descriptor
-names an unknown workspace, so publish also requires its `Import successful.`
-line.
-Publish preflight also requires the selected application tree to be physically
-inside the checkout and rejects symbolic links and reparse points.
-
-When publish refuses, see [docs/publish-rules.md](docs/publish-rules.md) for
-every rule, what each message means, and what to do.
+Steps: [Getting started, section 9](docs/GETTING_STARTED.md#b-files-first).
+Every refusal, the drift rules and the publish tag: [publish-rules](docs/publish-rules.md).
 
 ## Schema migrations
 
@@ -802,6 +759,7 @@ unknown. Version and compatibility do not prove feature privileges or availabili
 | `scripts/team.sh deploy <id> --env <staging\|prod> [--manual] [--yes\|-y] [--confirm-target <db_unique_name>]` | Confirm a promotion or print a DBA runbook. `--yes` accepts the prompt on staging; production needs `--confirm-target` with it. `--manual` takes neither flag. |
 | `scripts/team.sh upgrade-template [--dry-run]` | Update template-owned files; never overwrites project files. |
 | `scripts/team.sh verify-local [--format text\|json] [--live]` | Validate `.env`, the template manifest and lock, local template changes, application sources and deployment descriptors, and upgrade conflict copies, read-only and offline. `--live` also runs `doctor`. Exit 0 all good, 1 attention, 2 failure. |
+| `scripts/team.sh targets [--format text\|json]` | Show, offline and read-only, the schema, saved connection and login each operation uses, for every environment and every dev profile. It never connects or starts SQLcl. `--schema` is refused because the report lists every configured schema; a `REFUSED` row is the refusal the command would print. |
 | `scripts/team.sh template-status [--format text\|json]` | Compare template-owned files with the local lock; no network access by default. |
 | `scripts/team.sh template-status --upstream --ref <ref>` | Explicitly compare local files with a branch, tag or commit from the manifest's upstream repository. |
 | `scripts/team.sh skills setup none\|superpowers\|mattpocock\|both [--primary superpowers\|mattpocock]` | Set up optional, pinned workflow packs locally. |

@@ -128,14 +128,17 @@ class DocumentationContractTests(unittest.TestCase):
         ):
             with self.subTest(command=command):
                 self.assertIn(command, readme)
-        self.assertIn("After a successful DEV import", readme)
-        self.assertIn("APEXlang file names and bytes", readme)
-        self.assertIn("leaves the old baseline in place", readme)
+        # The publish flow moved from the README into its owning doc; the README now links to it.
+        publish_rules = contents[ROOT / "docs" / "publish-rules.md"]
+        self.assertIn("publish-rules.md", readme)
+        self.assertIn("After a successful DEV import", publish_rules)
+        self.assertIn("APEXlang file names and bytes", publish_rules)
+        self.assertIn("leaves the old baseline in place", publish_rules)
+        self.assertIn("APEX does not stamp `last_updated_on` while importing", publish_rules)
+        self.assertIn("[ASHARIF-2026-09-26r001]", publish_rules)
+        self.assertIn("Commit the stamped", publish_rules)
         self.assertIn("commands such as `SET DEFINE`", readme)
-        self.assertIn("APEX does not stamp `last_updated_on` while importing", readme)
         self.assertIn("`CREATE MLE MODULE`", readme)
-        self.assertIn("[ASHARIF-2026-09-26r001]", readme)
-        self.assertIn("Commit the stamped", readme)
         self.assertIn("DEVELOPER_NAME", contents[ROOT / "AGENTS.md"])
         self.assertIn("scripts/team.sh upgrade-template", readme)
         self.assertIn("AGENTS.project.md", readme)
@@ -398,6 +401,12 @@ def heading_slugs(markdown: str) -> set[str]:
     return slugs
 
 
+def markdown_section(markdown: str, start: str, end: str) -> str:
+    """The text from the heading that starts with `start` up to the heading that starts with `end`."""
+    begin = markdown.index(start)
+    return markdown[begin:markdown.index(end, begin)]
+
+
 def team_commands() -> list[str]:
     """The command names `scripts/team.sh --help` lists."""
     help_text = subprocess.run(
@@ -457,6 +466,46 @@ class GuideContractTests(unittest.TestCase):
             for used in re.findall(r"scripts/team\.(?:sh|ps1) ([a-z][a-z-]+)", text):
                 with self.subTest(file=name, command=used):
                     self.assertIn(used, commands)
+
+    def test_getting_started_checks_the_schema_and_login_before_the_connection(self) -> None:
+        guide = (ROOT / "docs" / "GETTING_STARTED.md").read_text(encoding="utf-8")
+        configure = markdown_section(guide, "## 6. Configure `.env`", "## 7. ")
+        check = markdown_section(guide, "## 7. ", "## 8. ")
+        self.assertIn("scripts/team.sh targets", configure)
+        self.assertIn("scripts/team.sh targets", check)
+        self.assertIn("REFUSED", check)
+        # The offline report comes before the database check that connects.
+        self.assertLess(check.index("scripts/team.sh targets"), check.index("scripts/team.sh doctor"))
+        cheat_sheet = markdown_section(guide, "## 11. Everyday cheat sheet", "## Next steps")
+        self.assertIn("| `scripts/team.sh targets` (offline) |", cheat_sheet)
+
+    def test_verify_local_is_never_asked_for_before_the_first_export(self) -> None:
+        # A fresh checkout has no application folder, so verify-local reports every configured app as FAIL.
+        # Step 7 may explain that, but no command block there may run it: the newcomer runs it after the export.
+        guide = (ROOT / "docs" / "GETTING_STARTED.md").read_text(encoding="utf-8")
+        check = markdown_section(guide, "## 7. ", "## 8. ")
+        self.assertIn("is expected", check)
+        self.assertIn("directory not found under apps/", check)
+        self.assertNotIn("fix every", check.lower())
+        check_commands = [line for block in re.findall(r"```bash\n(.*?)```", check, re.DOTALL) for line in block.splitlines()]
+        self.assertEqual([], [line for line in check_commands if "verify-local" in line])
+        first_export = guide.index("scripts/team.sh export 100")
+        for block in re.findall(r"```bash\n(.*?)```", guide, re.DOTALL):
+            if "scripts/team.sh verify-local" in block:
+                with self.subTest(block=block):
+                    self.assertGreater(guide.index(block), first_export)
+        step8 = markdown_section(guide, "## 8. ", "## 9. ")
+        self.assertLess(step8.index("scripts/team.sh export 100"), step8.index("scripts/team.sh verify-local"))
+        self.assertIn("Every line should say `PASS`", step8)
+
+    def test_migration_rules_say_which_profile_migrate_and_new_migration_use(self) -> None:
+        rules = (ROOT / "docs" / "migration-rules.md").read_text(encoding="utf-8")
+        environment = markdown_section(rules, "## Environment targets", "## Comparing selected live objects")
+        self.assertIn("`MIGRATION_SCHEMA`, `MIGRATION_SQLCL_CONNECTION` and `MIGRATION_EXPECTED_USER`", environment)
+        self.assertIn("`scripts/team.sh targets`", environment)
+        starting = markdown_section(rules, "## Starting a code migration from DEV", "## Immutability and status receipts")
+        self.assertIn("`new-migration` reads the code profile (`CODE_*`)", starting)
+        self.assertIn("`MIGRATION_*` owner", starting)
 
     def test_local_links_point_at_real_headings(self) -> None:
         for path in DOCS:

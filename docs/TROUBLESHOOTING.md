@@ -51,6 +51,17 @@ for migration rules see [migration-rules.md](migration-rules.md).
 | `refusing to back up over dirty mirror: database/<SCHEMA>/ords` | Uncommitted changes in the ORDS export. | Commit, stash or discard them, then run `backup-ords` again. |
 | `ORDS export verification failed for <SCHEMA>: ...`, `backup-ords error: ...`, `owns <N> ORDS OAuth client(s)` or `SQLcl <release> is not supported for the ORDS export` | The optional ORDS export refused its own result, or ORDS is not configured. Nothing was installed. | Every message, its meaning and its fix are in [ords-export.md](ords-export.md#messages). |
 
+## Local readiness
+
+These lines come from `scripts/team.sh verify-local` (step 8 of the getting started guide). A `FAIL` line makes the command exit 2; an `ATTENTION` line with no `FAIL` makes it exit 1.
+
+| You see | What it means | What to do |
+| --- | --- | --- |
+| `[FAIL] configured_app_<id>: configured application <id> directory not found under apps/` | `APEX_APP_ID` lists an app you have not exported. Before your first export every configured app shows this. | Run `scripts/team.sh export <id>`, or remove `<id>` from `APEX_APP_ID` if you do not use it. |
+| `missing DEV deployment descriptor: <path>` | The app folder has no `deployments/dev.json`. | Copy `apps/templates/deployments/dev.json` into the app's `deployments/` folder and set the workspace, app ID and parsing schema (step 8). |
+| `.template-lock.json is required in a downstream project` | The project has no template lock, so upgrades cannot tell your changes from template files. | Create it as the [post-clone cleanup](GETTING_STARTED.md#post-clone-cleanup) section describes. |
+| `[ATTENTION] template_drift:` with a non-zero `missing` count, or a lock comparison that is `unknown` | A template-owned file named in the lock is missing, or there is no readable lock to compare against. A file you customized is not a problem: it is only counted and stays upgradeable. | Run `scripts/team.sh template-status` to list the files, then restore the missing template file. |
+
 ## Publish
 
 | You see | What it means | What to do |

@@ -159,6 +159,137 @@ class TeamCliTests(unittest.TestCase):
                     self.assertIn(expected, result.stdout)
                     self.assertNotIn("configuration file", result.stderr)
 
+    def targets_entries(self) -> list[list[str]]:
+        entries = [[BASH, str(ROOT / "scripts" / "team.sh")]]
+        pwsh = _test_subprocess_safety.working_pwsh()
+        if pwsh:
+            entries.append([pwsh, "-NoProfile", "-File", str(ROOT / "scripts" / "team.ps1")])
+        return entries
+
+    def targets_environment(self, parent: Path, env_text: str) -> tuple[dict[str, str], Path]:
+        """An environment whose PROJECT_ENV_FILE is env_text and whose sql fake records any call instead of running it."""
+        env_file = parent / ".env"
+        env_file.write_text(env_text, encoding="utf-8", newline="\n")
+        calls = parent / "sqlcl calls.log"
+        fake_bin = parent / "fake sqlcl bin"
+        fake_sqlcl.install(fake_bin, "printf '%s\\n' \"$*\" >> \"$FAKE_SQLCL_CALLS\"\nexit 17\n")
+        environment = fake_sqlcl.environment(
+            fake_bin, base=os.environ, PROJECT_ENV_FILE=str(env_file), FAKE_SQLCL_CALLS=str(calls),
+        )
+        environment.pop("PROJECT_SCHEMA", None)
+        return environment, calls
+
+    def test_targets_prints_the_example_env_report_offline_in_both_wrappers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            environment, calls = self.targets_environment(parent, (ROOT / ".env.example").read_text(encoding="utf-8"))
+            for command in self.targets_entries():
+                with self.subTest(entry=command[-1]):
+                    result = subprocess.run([*command, "targets"], cwd=parent, env=environment,
+                                            text=True, capture_output=True, check=False)
+                    self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                    self.assertIn("Effective database targets (offline: no connection is made and no SQLcl runs)", result.stdout)
+                    self.assertRegex(result.stdout, r"(?m)^dev\s+migration\s+DEMO\s+docker-demo\s+DEMO\s+no\s+development\s+resolved$")
+                    self.assertNotIn("REFUSED", result.stdout)
+                    as_json = subprocess.run([*command, "targets", "--format", "json"], cwd=parent, env=environment,
+                                             text=True, capture_output=True, check=False)
+                    self.assertEqual(0, as_json.returncode, as_json.stderr)
+                    self.assertEqual(1, json.loads(as_json.stdout)["schemaVersion"])
+            self.assertFalse(calls.exists(), "targets started SQLcl")
+
+    def test_targets_shows_the_refused_row_for_a_split_owner_env_in_both_wrappers(self) -> None:
+        split_owner = (ROOT / ".env.example").read_text(encoding="utf-8") + (
+            "\nMIGRATION_SCHEMA=DEMODATA\nMIGRATION_SQLCL_CONNECTION=docker-demo\nMIGRATION_EXPECTED_USER=DEMODATA\n"
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            environment, calls = self.targets_environment(parent, split_owner)
+            for command in self.targets_entries():
+                with self.subTest(entry=command[-1]):
+                    result = subprocess.run([*command, "targets"], cwd=parent, env=environment,
+                                            text=True, capture_output=True, check=False)
+                    self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                    self.assertIn("REFUSED: schema DEMO is not listed in MIGRATION_SCHEMA for dev", result.stdout)
+                    self.assertIn("migrate refuses a migration folder for DEMO", result.stdout)
+            self.assertFalse(calls.exists(), "targets started SQLcl")
+
+    def test_targets_refuses_extra_arguments_and_schema_with_the_status_verify_local_uses(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            environment, calls = self.targets_environment(parent, (ROOT / ".env.example").read_text(encoding="utf-8"))
+            for command in self.targets_entries():
+                with self.subTest(entry=command[-1]):
+                    offline = subprocess.run([*command, "verify-local", "--bogus"], cwd=parent, env=environment,
+                                             text=True, capture_output=True, check=False)
+                    self.assertEqual(2, offline.returncode, offline.stderr)
+                    unknown = subprocess.run([*command, "targets", "--bogus"], cwd=parent, env=environment,
+                                             text=True, capture_output=True, check=False)
+                    self.assertEqual(offline.returncode, unknown.returncode, unknown.stdout + unknown.stderr)
+                    self.assertIn("unrecognized arguments: --bogus", unknown.stderr)
+                    for schema_form in (["--schema", "DEMO"], ["--schema=DEMO"]):
+                        refused = subprocess.run([*command, "targets", *schema_form], cwd=parent, env=environment,
+                                                 text=True, capture_output=True, check=False)
+                        self.assertEqual(2, refused.returncode, refused.stdout + refused.stderr)
+                        self.assertIn("targets does not accept --schema", refused.stderr)
+                    help_result = subprocess.run([*command, "targets", "--help"], cwd=parent, env=environment,
+                                                 text=True, capture_output=True, check=False)
+                    self.assertEqual(0, help_result.returncode, help_result.stderr)
+                    self.assertIn("--format", help_result.stdout)
+            self.assertFalse(calls.exists(), "a refused targets call started SQLcl")
+
+    def test_targets_works_without_an_env_file_in_both_wrappers(self) -> None:
+        # Like template-status, a missing .env is not an error: every row reads "not configured", SQLcl never starts,
+        # an inherited shell variable is not reported as configuration, help still works, and argument errors keep status 2.
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            environment, calls = self.targets_environment(parent, "")
+            environment["PROJECT_ENV_FILE"] = str(parent / "missing.env")
+            environment["CODE_SCHEMA"] = "INHERITED_ONLY"
+            for command in self.targets_entries():
+                with self.subTest(entry=command[-1]):
+                    as_json = subprocess.run([*command, "targets", "--format", "json"], cwd=parent, env=environment,
+                                             text=True, capture_output=True, check=False)
+                    output = as_json.stdout + as_json.stderr
+                    self.assertEqual(0, as_json.returncode, output)
+                    rows = json.loads(as_json.stdout)["rows"]
+                    self.assertTrue(rows)
+                    self.assertEqual({"not configured"}, {row["status"] for row in rows}, output)
+                    self.assertNotIn("INHERITED_ONLY", output)
+                    help_result = subprocess.run([*command, "targets", "--help"], cwd=parent, env=environment,
+                                                 text=True, capture_output=True, check=False)
+                    self.assertEqual(0, help_result.returncode, help_result.stdout + help_result.stderr)
+                    self.assertIn("--format", help_result.stdout)
+                    self.assertNotIn("configuration file", help_result.stdout + help_result.stderr)
+                    for arguments in (["extra"], ["--schema", "DEMO"]):
+                        refused = subprocess.run([*command, "targets", *arguments], cwd=parent, env=environment,
+                                                 text=True, capture_output=True, check=False)
+                        self.assertEqual(2, refused.returncode, refused.stdout + refused.stderr)
+            self.assertFalse(calls.exists(), "targets started SQLcl")
+
+    def test_targets_ignores_an_inherited_project_schema(self) -> None:
+        # targets reports every configured schema, so a PROJECT_SCHEMA left in the shell must not narrow it or refuse it.
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            environment, calls = self.targets_environment(parent, (ROOT / ".env.example").read_text(encoding="utf-8"))
+            environment["PROJECT_SCHEMA"] = "NOT_CONFIGURED"
+            for command in self.targets_entries():
+                with self.subTest(entry=command[-1]):
+                    result = subprocess.run([*command, "targets"], cwd=parent, env=environment,
+                                            text=True, capture_output=True, check=False)
+                    self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                    self.assertRegex(result.stdout, r"(?m)^dev\s+read\s+DEMO\s+docker-demo\s+DEMO\s+no\s+development\s+resolved")
+            self.assertFalse(calls.exists(), "targets started SQLcl")
+
+    def test_targets_is_listed_in_full_usage_and_not_in_the_everyday_list(self) -> None:
+        for command in self.targets_entries():
+            with self.subTest(entry=command[-1]):
+                full = subprocess.run([*command, "--help"], cwd=ROOT, text=True, capture_output=True, check=False).stdout
+                everyday = subprocess.run(command, cwd=ROOT, text=True, capture_output=True, check=False,
+                                          env={**os.environ, "PROJECT_ENV_FILE": str(ROOT / ".env.example")}).stdout
+                self.assertIn("targets [--format text|json]", full)
+                self.assertIn("(except upgrade-template, verify-local, template-status, targets, migration-plan,", full)
+                self.assertNotIn("targets", everyday)
+
     def test_migration_plan_help_and_offline_need_no_env(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root, environment, calls = migration_plan_checkout(Path(temporary))
@@ -1164,8 +1295,7 @@ class TeamCliTests(unittest.TestCase):
                 # native-process wait settle before broadcasting SIGINT to the whole group;
                 # an interrupt during process startup can abort pwsh instead of exercising
                 # team.ps1's finally block.
-                time.sleep(0.1)
-                os.killpg(process.pid, signal.SIGINT)
+                _test_subprocess_safety.interrupt_process_group(process, settle=0.1)
                 stdout, stderr = process.communicate(timeout=60)
             finally:
                 if process.poll() is None:
@@ -1208,9 +1338,8 @@ class TeamCliTests(unittest.TestCase):
                 child = int(child_pid.read_text())
                 # SQLcl can start before Start-Process has handed it to PowerShell; a Ctrl-C
                 # inside Start-Process cannot be handled, so let it return first.
-                time.sleep(1)
+                _test_subprocess_safety.interrupt_process_group(process, settle=1.0)
                 interrupted_at = time.monotonic()
-                os.killpg(process.pid, signal.SIGINT)
                 output, errors = process.communicate(timeout=60)
                 elapsed = time.monotonic() - interrupted_at
                 time.sleep(0.5)
@@ -1258,8 +1387,7 @@ class TeamCliTests(unittest.TestCase):
                 self.assertTrue(started.exists(), "the helper never started")
                 # See test_powershell_exits_130_when_interrupted_while_a_helper_runs:
                 # avoid interrupting PowerShell while its native-process wait is starting.
-                time.sleep(0.1)
-                os.killpg(process.pid, signal.SIGINT)
+                _test_subprocess_safety.interrupt_process_group(process, settle=0.1)
                 stdout, stderr = process.communicate(timeout=60)
             finally:
                 if process.poll() is None:
@@ -1572,8 +1700,7 @@ class TeamCliTests(unittest.TestCase):
                     self.assertTrue(started.exists(), "SQLcl never started")
                     # A child can start just before the wrapper finishes entering its wait.
                     # Signal after that transition so this covers Ctrl-C handling, not startup.
-                    time.sleep(0.1)
-                    os.killpg(process.pid, signal.SIGINT)
+                    _test_subprocess_safety.interrupt_process_group(process, settle=0.1)
                     stdout, stderr = process.communicate(timeout=60)
                 finally:
                     if process.poll() is None:

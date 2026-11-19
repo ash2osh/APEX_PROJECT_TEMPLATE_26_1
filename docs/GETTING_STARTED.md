@@ -247,17 +247,24 @@ The example uses the same schema, connection and user for tables, code and APEX,
 which is right for most projects. If you work with an AI assistant, you can ask
 it to run `/init` and it will ask these questions for you.
 
+To see which schema, connection and login each operation will use, run
+`scripts/team.sh targets`. It reads `.env` only and never connects.
+
 ## 7. Check the connection
 
-First check your files without touching a database. It reads `.env`, the template lock,
-each application source and its deployment descriptors:
+Both checks below are read-only. Run the offline one first:
 
 ```bash
-scripts/team.sh verify-local
+scripts/team.sh targets
 ```
 
-Each line says `PASS`, `ATTENTION` or `FAIL`; fix every `FAIL` before you go on. Then check the DEV
-database connection:
+It prints one row per operation (`read` for code metadata, `migration` for
+`migrate`), with the schema, saved connection and login taken from your `.env`,
+so a wrong name shows before anything connects. A `REFUSED` row names the setting
+that stops that operation; the notes under the table explain a split owner.
+
+Then check the DEV database connection. `doctor` connects and checks the login it
+gets:
 
 ```bash
 scripts/team.sh doctor
@@ -276,11 +283,10 @@ Doctor checks passed for the configured DEV connection.
 `doctor` only reads. If it fails, [TROUBLESHOOTING.md](TROUBLESHOOTING.md) lists
 each message and what to do.
 
-After validation, review your root `.env` and version it in your own downstream
-Git repository. Keep only literal configuration and saved SQLcl connection
-names in it; credentials stay in SQLcl's secure store. The root `.env` is
-available to Git, while nested `.env` files and `.env.*` variants are ignored.
-Template upgrades preserve your `.env`, including when it is tracked.
+You have no application folder yet, so `scripts/team.sh verify-local` would now
+report each configured application as `FAIL` (`configured application 100
+directory not found under apps/`) and exit 2. That is expected until your first
+export: run `verify-local` at the end of step 8, not here.
 
 ## 8. Export your first app
 
@@ -309,17 +315,11 @@ apps/DEMO/100/
 └── apex-team-export.json  records when the export was taken (used by publish)
 ```
 
-Commit the result:
-
-```bash
-git add apps/
-git commit -m "Export app 100"
-```
-
 ### Tell the template where the app deploys
 
-Publishing needs a small descriptor that names the workspace, the app ID, and
-the parsing schema. Copy the example and edit the three values:
+Publishing needs a small descriptor for each app that names the workspace, the app ID, and
+the parsing schema. For each app folder, copy the example and edit the three values
+(for another app, set its own `"id"`):
 
 ```bash
 cp apps/templates/deployments/dev.json apps/DEMO/100/deployments/dev.json
@@ -337,6 +337,36 @@ cp apps/templates/deployments/dev.json apps/DEMO/100/deployments/dev.json
 
 The same folder can hold `staging.json` and `prod.json` later.
 
+### Check the app and the configuration
+
+Now that the app folder exists, check it. This check is offline and changes nothing:
+
+```bash
+scripts/team.sh verify-local
+```
+
+Every line should say `PASS`. A line that says `ATTENTION` or `FAIL` names the file
+or setting to fix; the command exits 0 only when every line passes.
+
+`verify-local` expects an app folder for every ID in `APEX_APP_ID`. The example `.env`
+lists `100,200`, so if you exported only app 100 you will still see
+`configured application 200 directory not found`. Export each ID you use
+(`scripts/team.sh export <app_id>`), or remove the IDs you do not use from `APEX_APP_ID`.
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#local-readiness) lists the fix for each line.
+
+Commit the exports and descriptors together:
+
+```bash
+git add apps/
+git commit -m "Export app 100"
+```
+
+After validation, review your root `.env` and version it in your own downstream
+Git repository. Keep only literal configuration and saved SQLcl connection
+names in it; credentials stay in SQLcl's secure store. The root `.env` is
+available to Git, while nested `.env` files and `.env.*` variants are ignored.
+Template upgrades preserve your `.env`, including when it is tracked.
+
 ## 9. Make a change
 
 There are two ways to change an app. Use whichever suits the task.
@@ -349,9 +379,18 @@ There are two ways to change an app. Use whichever suits the task.
 
 ```bash
 scripts/team.sh export 100
+git status --short --untracked-files=all -- apps/DEMO/100/
 git diff apps/DEMO/100/
 git add apps/ && git commit -m "Change the dashboard title"
 ```
+
+Review the APEXlang changes before you commit them; `git status` also lists new
+files. Export captures the current Builder state and never imports the app back into
+Builder. It refuses to write over a local source folder that has uncommitted or
+untracked changes, so commit or stash your own edits first. It exports into
+`scratch/`, checks the SQLcl result and that Builder did not change while the export
+ran, and only then replaces the local source. The `deployments/*.json` descriptors you
+wrote are kept.
 
 ### B. Files first
 
@@ -367,7 +406,9 @@ scripts/team.sh publish 100 --env dev
 ```
 
 Publish refuses, with an explanation, if the live app changed since your last
-export. That is the safety net: run `export`, review, and try again. On success
+export. That is the safety net: run `export`, review, and try again. Every refusal,
+what it means, and what to do is in [publish-rules](publish-rules.md), which also
+explains the publish tag. On success
 it stamps your name and the date onto the app version, imports, re-exports the
 app to prove it matches your files, and ends with:
 
@@ -448,6 +489,7 @@ revision folder instead (`...-r002`). Commit the folder.
 | --- | --- |
 | check my setup | `scripts/team.sh doctor` |
 | check my files without a database | `scripts/team.sh verify-local` |
+| see which schema, connection and login each operation uses | `scripts/team.sh targets` (offline) |
 | copy a live app into Git | `scripts/team.sh export <app-id>` |
 | push my edited files to the live app | `scripts/team.sh publish <app-id> --env dev` |
 | refresh the read-only database copy | `scripts/team.sh backup-db` |

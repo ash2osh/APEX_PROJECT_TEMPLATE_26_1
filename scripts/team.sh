@@ -84,8 +84,9 @@ Commands:
                                               Check .env, template lock, apps and descriptors offline (no database)
   template-status [--format text|json] [--upstream --ref <ref>]
                                               Inspect local template drift; fetch upstream only when requested
+  targets [--format text|json]                Show the schema, connection and login each operation uses (offline; no database)
 Options:
-  --schema <NAME>                             Run one configured schema (except upgrade-template, verify-local, template-status, migration-plan, archive-migrations, dev-test, skills, mcp, feature and reconcile-migration)
+  --schema <NAME>                             Run one configured schema (except upgrade-template, verify-local, template-status, targets, migration-plan, archive-migrations, dev-test, skills, mcp, feature and reconcile-migration)
   --help                                      Show this help
 Environment:
   MIGRATION_PREFLIGHT_INVENTORY_RETRIES        Retry changing live catalogs (default 3)
@@ -128,7 +129,7 @@ command_name="$1"
 shift
 # --schema NAME is the one selection channel: strip it and export PROJECT_SCHEMA
 # so every child script's loader narrows to that schema.
-if [ "$command_name" != upgrade-template ] && [ "$command_name" != verify-local ] && [ "$command_name" != template-status ] && [ "$command_name" != migration-plan ] && [ "$command_name" != archive-migrations ] && [ "$command_name" != dev-test ] && [ "$command_name" != skills ] && [ "$command_name" != mcp ] && [ "$command_name" != feature ] && [ "$command_name" != reconcile-migration ]; then
+if [ "$command_name" != upgrade-template ] && [ "$command_name" != verify-local ] && [ "$command_name" != template-status ] && [ "$command_name" != targets ] && [ "$command_name" != migration-plan ] && [ "$command_name" != archive-migrations ] && [ "$command_name" != dev-test ] && [ "$command_name" != skills ] && [ "$command_name" != mcp ] && [ "$command_name" != feature ] && [ "$command_name" != reconcile-migration ]; then
   schema_filtered=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -287,6 +288,39 @@ case "$command_name" in
     [ "$#" -ge 1 ] || fail "usage: scripts/team.sh check-conflicts <migration-folder> [...] (--env dev|staging|prod | --local)"
     PROJECT_ENV_FILE="${PROJECT_ENV_FILE:-$REPO_ROOT/.env}" \
       exec "$REPO_ROOT/scripts/check_conflicts.sh" "$@"
+    ;;
+  targets)
+    # Offline and read-only: the report reads the loaded .env names and never connects or starts SQLcl.
+    # It lists every configured schema, so --schema is refused and an inherited PROJECT_SCHEMA is cleared.
+    for targets_argument in "$@"; do
+      case "$targets_argument" in
+        --schema|--schema=*) fail "targets does not accept --schema: it reports every configured schema" ;;
+      esac
+    done
+    unset PROJECT_SCHEMA
+    # Help is argparse-only and must work without a configured .env, as in compare-env.
+    for targets_argument in "$@"; do
+      if [ "$targets_argument" = "--help" ] || [ "$targets_argument" = "-h" ]; then
+        cd "$REPO_ROOT"
+        exec python3 -m scripts.show_targets "$@"
+      fi
+    done
+    targets_env_file="${PROJECT_ENV_FILE:-$REPO_ROOT/.env}"
+    # Resolve a relative PROJECT_ENV_FILE as load_env.sh does: the caller's directory first, then the repository root.
+    case "$targets_env_file" in
+      /*|[A-Za-z]:[/\\]*) ;;
+      *) [ -f "$targets_env_file" ] || targets_env_file="$REPO_ROOT/$targets_env_file" ;;
+    esac
+    cd "$REPO_ROOT"
+    if [ -f "$targets_env_file" ]; then
+      # shellcheck source=load_env.sh
+      source "$REPO_ROOT/scripts/load_env.sh" "$targets_env_file"
+      # Extra or unknown arguments are refused by the module's parser (exit 2), as template-status refuses them.
+      exec python3 -m scripts.show_targets "$@"
+    fi
+    # No .env is not an error here, as for template-status: every row reports "not configured". The module reads
+    # os.environ, so an empty mapping stops a shell variable such as CODE_SCHEMA from appearing as configuration.
+    exec python3 -c 'import sys; from scripts.show_targets import main; raise SystemExit(main(sys.argv[1:], environ={}))' "$@"
     ;;
   migration-plan)
     migration_plan_root="$REPO_ROOT"
