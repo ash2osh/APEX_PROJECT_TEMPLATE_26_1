@@ -237,6 +237,49 @@ class TeamCliTests(unittest.TestCase):
                     self.assertIn("--format", help_result.stdout)
             self.assertFalse(calls.exists(), "a refused targets call started SQLcl")
 
+    def test_targets_works_without_an_env_file_in_both_wrappers(self) -> None:
+        # Like template-status, a missing .env is not an error: every row reads "not configured", SQLcl never starts,
+        # an inherited shell variable is not reported as configuration, help still works, and argument errors keep status 2.
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            environment, calls = self.targets_environment(parent, "")
+            environment["PROJECT_ENV_FILE"] = str(parent / "missing.env")
+            environment["CODE_SCHEMA"] = "INHERITED_ONLY"
+            for command in self.targets_entries():
+                with self.subTest(entry=command[-1]):
+                    as_json = subprocess.run([*command, "targets", "--format", "json"], cwd=parent, env=environment,
+                                             text=True, capture_output=True, check=False)
+                    output = as_json.stdout + as_json.stderr
+                    self.assertEqual(0, as_json.returncode, output)
+                    rows = json.loads(as_json.stdout)["rows"]
+                    self.assertTrue(rows)
+                    self.assertEqual({"not configured"}, {row["status"] for row in rows}, output)
+                    self.assertNotIn("INHERITED_ONLY", output)
+                    help_result = subprocess.run([*command, "targets", "--help"], cwd=parent, env=environment,
+                                                 text=True, capture_output=True, check=False)
+                    self.assertEqual(0, help_result.returncode, help_result.stdout + help_result.stderr)
+                    self.assertIn("--format", help_result.stdout)
+                    self.assertNotIn("configuration file", help_result.stdout + help_result.stderr)
+                    for arguments in (["extra"], ["--schema", "DEMO"]):
+                        refused = subprocess.run([*command, "targets", *arguments], cwd=parent, env=environment,
+                                                 text=True, capture_output=True, check=False)
+                        self.assertEqual(2, refused.returncode, refused.stdout + refused.stderr)
+            self.assertFalse(calls.exists(), "targets started SQLcl")
+
+    def test_targets_ignores_an_inherited_project_schema(self) -> None:
+        # targets reports every configured schema, so a PROJECT_SCHEMA left in the shell must not narrow it or refuse it.
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            environment, calls = self.targets_environment(parent, (ROOT / ".env.example").read_text(encoding="utf-8"))
+            environment["PROJECT_SCHEMA"] = "NOT_CONFIGURED"
+            for command in self.targets_entries():
+                with self.subTest(entry=command[-1]):
+                    result = subprocess.run([*command, "targets"], cwd=parent, env=environment,
+                                            text=True, capture_output=True, check=False)
+                    self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                    self.assertRegex(result.stdout, r"(?m)^dev\s+read\s+DEMO\s+docker-demo\s+DEMO\s+no\s+development\s+resolved")
+            self.assertFalse(calls.exists(), "targets started SQLcl")
+
     def test_targets_is_listed_in_full_usage_and_not_in_the_everyday_list(self) -> None:
         for command in self.targets_entries():
             with self.subTest(entry=command[-1]):

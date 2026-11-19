@@ -628,23 +628,38 @@ try {
       Exit-Team $LASTEXITCODE
     }
     "targets" {
-      # Offline and read-only: the report reads the loaded .env values and never connects or starts SQLcl.
-      # It lists every configured schema, so --schema is refused here and an inherited PROJECT_SCHEMA is cleared.
+      # Offline and read-only: the report reads the loaded .env names and never connects or starts SQLcl.
+      # It lists every configured schema, so --schema is refused and an inherited PROJECT_SCHEMA is cleared.
       foreach ($targetsArgument in $Arguments) {
         if ($targetsArgument -eq "--schema" -or $targetsArgument -like "--schema=*") {
           Fail "targets does not accept --schema: it reports every configured schema"
         }
       }
       Remove-Item -LiteralPath Env:PROJECT_SCHEMA -ErrorAction SilentlyContinue
-      . (Join-Path $PSScriptRoot "load_env.ps1") -EnvFile $env:PROJECT_ENV_FILE
+      # Help is argparse-only and must work without a configured .env, as in compare-env.
+      $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
+      # Resolve a relative PROJECT_ENV_FILE as load_env.ps1 does: the caller's directory first, then the repository root.
+      $targetsEnvFile = if ([string]::IsNullOrWhiteSpace($env:PROJECT_ENV_FILE)) { Join-Path $repoRoot ".env" } else { $env:PROJECT_ENV_FILE }
+      if (-not [System.IO.Path]::IsPathRooted($targetsEnvFile) -and -not (Test-Path -LiteralPath $targetsEnvFile -PathType Leaf)) {
+        $targetsEnvFile = Join-Path $repoRoot $targetsEnvFile
+      }
+      $targetsHelp = ($Arguments -ccontains "--help" -or $Arguments -ccontains "-h")
+      if (-not $targetsHelp -and (Test-Path -LiteralPath $targetsEnvFile -PathType Leaf)) {
+        . (Join-Path $PSScriptRoot "load_env.ps1") -EnvFile $env:PROJECT_ENV_FILE
+      }
       . (Join-Path $PSScriptRoot "resolve_python.ps1")
       $python = Resolve-TeamPython
-      if ($null -eq $python) { Fail "Python 3.10 or newer is required to show the effective database targets (python3, python or py -3)" }
-      $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
-      # The module is a package: it runs as -m from the repository root, as team.sh does.
+      if ($null -eq $python) { Fail "Python 3.10 or newer is required to show the configured targets (python3, python or py -3)" }
+      # Extra or unknown arguments are refused by the module's parser (exit 2), as template-status refuses them.
       Push-Location -LiteralPath $repoRoot
       try {
-        & $python.Path @($python.Prefix) -m scripts.show_targets @Arguments
+        if ($targetsHelp -or (Test-Path -LiteralPath $targetsEnvFile -PathType Leaf)) {
+          & $python.Path @($python.Prefix) -m scripts.show_targets @Arguments
+        } else {
+          # No .env is not an error here, as for template-status: every row reports "not configured". The module reads
+          # the process environment, so an empty mapping stops a shell variable such as CODE_SCHEMA from appearing as configuration.
+          & $python.Path @($python.Prefix) -c 'import sys; from scripts.show_targets import main; raise SystemExit(main(sys.argv[1:], environ={}))' @Arguments
+        }
         $targetsStatus = $LASTEXITCODE
       } finally {
         Pop-Location

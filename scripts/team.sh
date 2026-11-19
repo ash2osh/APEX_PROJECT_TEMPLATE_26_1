@@ -290,19 +290,37 @@ case "$command_name" in
       exec "$REPO_ROOT/scripts/check_conflicts.sh" "$@"
     ;;
   targets)
-    # Offline and read-only: the report reads the loaded .env values and never connects or starts SQLcl.
-    # It lists every configured schema, so --schema is refused here and an inherited PROJECT_SCHEMA is cleared.
+    # Offline and read-only: the report reads the loaded .env names and never connects or starts SQLcl.
+    # It lists every configured schema, so --schema is refused and an inherited PROJECT_SCHEMA is cleared.
     for targets_argument in "$@"; do
       case "$targets_argument" in
         --schema|--schema=*) fail "targets does not accept --schema: it reports every configured schema" ;;
       esac
     done
     unset PROJECT_SCHEMA
-    PROJECT_ENV_FILE="${PROJECT_ENV_FILE:-$REPO_ROOT/.env}"
-    # shellcheck source=load_env.sh
-    source "$REPO_ROOT/scripts/load_env.sh" "$PROJECT_ENV_FILE"
+    # Help is argparse-only and must work without a configured .env, as in compare-env.
+    for targets_argument in "$@"; do
+      if [ "$targets_argument" = "--help" ] || [ "$targets_argument" = "-h" ]; then
+        cd "$REPO_ROOT"
+        exec python3 -m scripts.show_targets "$@"
+      fi
+    done
+    targets_env_file="${PROJECT_ENV_FILE:-$REPO_ROOT/.env}"
+    # Resolve a relative PROJECT_ENV_FILE as load_env.sh does: the caller's directory first, then the repository root.
+    case "$targets_env_file" in
+      /*|[A-Za-z]:[/\\]*) ;;
+      *) [ -f "$targets_env_file" ] || targets_env_file="$REPO_ROOT/$targets_env_file" ;;
+    esac
     cd "$REPO_ROOT"
-    exec python3 -m scripts.show_targets "$@"
+    if [ -f "$targets_env_file" ]; then
+      # shellcheck source=load_env.sh
+      source "$REPO_ROOT/scripts/load_env.sh" "$targets_env_file"
+      # Extra or unknown arguments are refused by the module's parser (exit 2), as template-status refuses them.
+      exec python3 -m scripts.show_targets "$@"
+    fi
+    # No .env is not an error here, as for template-status: every row reports "not configured". The module reads
+    # os.environ, so an empty mapping stops a shell variable such as CODE_SCHEMA from appearing as configuration.
+    exec python3 -c 'import sys; from scripts.show_targets import main; raise SystemExit(main(sys.argv[1:], environ={}))' "$@"
     ;;
   migration-plan)
     migration_plan_root="$REPO_ROOT"
