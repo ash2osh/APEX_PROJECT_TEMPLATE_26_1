@@ -162,3 +162,14 @@ Commands run from this checkout, in order, with results:
 - `test_team_cli.py`: 2 failures on the old `team.ps1` (the `targets --help` inherited-schema test and the refused `doctor --schema` test). The unset-schema guard passes on the old script, as intended.
 
 **Not verified:** Windows PowerShell 5.1 (PowerShell 7.7 on Linux only). No database, SQLcl, network, publish, migrate or deploy command ran. The full `scripts/ci_run_tests.py` suite was not run; only the six modules named above were run.
+
+## Live verification on local Docker Oracle (2026-11-19, pass 3)
+
+Targets: the three disposable scratch containers `fq-scratch-dev`, `fq-scratch-stg` and `fq-scratch-prod` (Oracle AI Database 26ai Free 23.26.3, schema `FEATURE_QA`, saved connections `fqdev`, `fqstg`, `fqtarget3`). The persistent `local-26ai` container was not written to. The scratch containers were started for this run and stopped afterwards.
+
+- **Repository live modules, run from throwaway clones of the final branch:** `tests/test_live_baseline.py` 14 tests OK; `tests/test_live_feature_release.py` 22 tests OK with the three-target proof, the dedicated long-view and the staging benchmark scenarios enabled (1 skipped: the two-schema scenario needs a second schema).
+- **Generator checks written for this pass (32, all OK):** the CHECK replacement block compiles and runs on Oracle (reviewed replace, idempotent re-run, refusal with -20994 for a stale review or changed status, -20993 for a primary key of the same name, DISABLED stays DISABLED, quoted identifiers compare by their text, the precondition query counts violating rows, and the known drop-then-add hazard is confirmed so the precondition is what prevents it); the sequence block restores the target's own increment; an owner-qualified object-type column adds and checks; catalog-shaped foreign-key order creates parent first; `ALL_TAB_PRIVS.GRANTABLE` exists; GRANT ALL and column grants are not recorded as ALL or UPDATE(col); INVISIBLE columns add with `INVISIBLE` (also before an identity clause) and the postcondition checks `HIDDEN_COLUMN`.
+- **What the catalog showed:** an INVISIBLE user column is `HIDDEN_COLUMN=YES`, `USER_GENERATED=YES`; a function-based index column is hidden, `USER_GENERATED=NO`, virtual; `ALL_TAB_COLS.DATA_DEFAULT_VC` returns a virtual column's expression on 23ai (not confirmed on older releases, so expression capture is not implemented). `DATA_DEFAULT` is a LONG and cannot be used in a SQL expression.
+- **SQLcl session cost:** about 2.1 s for connect, one statement, exit.
+- **Real project check:** `upgrade_template.py --dry-run` against a long-lived downstream project changed nothing in it (the working tree stayed clean) and found no mode-only updates.
+- **Not verified:** Windows PowerShell 5.1.
