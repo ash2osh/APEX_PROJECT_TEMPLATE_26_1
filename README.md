@@ -605,7 +605,9 @@ local lock. It never fetches by default. For a read-only upstream comparison,
 pass both `--upstream` and an explicit `--ref`; the command reports the fetched
 commit and file statuses without installing or changing files. A missing lock
 in a downstream project is reported as unknown. A 26.1 lock or manifest without
-`apexRelease` counts as 26.1.
+`apexRelease` counts as 26.1. Tests and `.github/` files that the post-clone
+cleanup removed are reported as `removed-by-cleanup`, which is informational and
+does not make the status `attention`.
 
 Report a confirmed problem in an inherited template file with a sanitized entry
 in the project-owned `TODO.md`; [the template feedback guide](docs/template-feedback.md)

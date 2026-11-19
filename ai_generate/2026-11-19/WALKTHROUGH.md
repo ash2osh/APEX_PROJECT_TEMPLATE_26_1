@@ -73,6 +73,33 @@ Branch `codex/review-fixes-2026-11-19`, cut from `origin/main` after the shared-
 
 `TODO.md` gained "Open after the 2026-11-19 review fixes" with the three open items listed under Open below. This file is the day's walkthrough.
 
+## 7. Review follow-ups ported from the sibling template
+
+**Observation:** the same review findings, fixed in the sibling template, were still open here. Reproduced on a scratch copy with a corrupt `template-manifest.json`: `scripts/verify_local.py --format json` exited with a traceback at its `scripts/local_config.py` import, because `local_config` reads the manifest when it is imported. Also, a locked test or `.github/` file removed by the post-clone cleanup counted as `missing`, and a linked worktree was not recognized as the original template because `is_original_template` read `.git/config` only.
+
+| File | Change |
+| --- | --- |
+| `scripts/template_drift.py` | `CLEANUP_PREFIXES` (`tests/`, `.github/`): a missing locked file under them is `removed-by-cleanup`, which does not make the status `attention`. `_git_config_path` reads a `.git` directory, or a `.git` file's `gitdir:` line and its `commondir`, with no Git process. `is_original_template` uses it. |
+| `scripts/verify_local.py` | The `local_config` import is guarded. A malformed or unknown manifest gives one failed `template_release` check and exit 2, in both formats. The `template_drift` message counts the removed files. |
+| `scripts/team.ps1` | `targets` passes `prog='scripts/team.ps1 targets'` in both the `.env` branch (now `-c`, not `-m`) and the no-`.env` branch. |
+| `tests/test_template_drift.py` | Three tests: cleanup removals, a missing file outside the prefixes, a customized test file. |
+| `tests/test_verify_local.py` | Cleanup drift tests, original-template detection (plain, linked worktree with and without `commondir`, garbage `.git` file, a real `git worktree`), and malformed-manifest runs as subprocesses. |
+| `tests/test_team_cli.py` | `targets` usage under PowerShell 7, skipped without `pwsh`. |
+| `docs/GETTING_STARTED.md`, `docs/ci-checks.md`, `docs/TROUBLESHOOTING.md`, `README.md` | The cleanup removes `.core-stamp.json` and explains `removed-by-cleanup`; the shared-core stamp wording; two local-readiness rows; the template-status sentence. |
+
+**Deviations from the sibling template:**
+- In 26.1 `is_original_template` lives in `scripts/template_drift.py`, so `_git_config_path` lives there too, and `verify_local.py` still imports the function.
+- The application-lock item (`app-unlock` closing `held` records) is not ported: 26.1 has no application lock script. `docs/publish-rules.md` is unchanged.
+- The 26.1 cleanup is one `git rm -r --ignore-unmatch tests .github docs/superpowers` command, so the `.core-stamp.json` removal is a separate line.
+
+**Verified:**
+- Before and after, same commands: `test_template_drift` 4 then 7 OK; `test_verify_local` 29 then 39 OK; `test_team_cli` 74 then 75 OK (6 platform skips in both); `test_documentation_contract` 30 OK; `test_show_targets` 11 OK.
+- Each new test that targets a change fails against the old behaviour (scratch copies, no stash): cleanup state reverted to `missing` (1 template_drift test and 2 verify_local tests fail); old `verify_local.py` (3 malformed-manifest tests fail); `.git` file handling replaced by the old fixed path (3 worktree tests fail); old `team.ps1` (2 PowerShell usage cases fail).
+- A healthy repository with the same trees gives the same `verify-local` exit code and `template-status` output; the only text change is the added `0 removed by cleanup` count.
+- `ruff check` on the touched Python files and `scripts/sync_core.py check .` (242 shared files OK).
+
+**Not verified:** Windows PowerShell 5.1 (PowerShell 7 on Linux only). No database, SQLcl or network call ran, and `scripts/pre_push_check.py --all` and the full CI suite were not run.
+
 ## Verification
 
 Commands run from this checkout, in order, with results:

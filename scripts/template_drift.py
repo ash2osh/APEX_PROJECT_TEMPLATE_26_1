@@ -33,15 +33,53 @@ from scripts.upgrade_template import (
 
 REPORT_SCHEMA_VERSION = 1
 SHA_RE = re.compile(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})\Z", re.ASCII)
+# Locked paths that the post-clone cleanup removes on purpose (docs/GETTING_STARTED.md, "Post-clone cleanup").
+# A missing file under these prefixes is reported as removed-by-cleanup, which is informational, not drift.
+CLEANUP_PREFIXES = ("tests/", ".github/")
+
+
+def _git_config_path(repo_root: Path) -> Path | None:
+    """Return the repository config file from local files only (no Git process, no network).
+
+    A plain checkout has a `.git` directory. A linked worktree or submodule has a `.git` file
+    holding `gitdir: <path>`; its shared settings live in the directory named by `commondir`
+    (for a worktree `<main>/.git/worktrees/<name>/commondir` holds `../..`).
+    """
+    dot_git = repo_root / ".git"
+    try:
+        if dot_git.is_dir():
+            return dot_git / "config"
+        if not dot_git.is_file():
+            return None
+        lines = dot_git.read_text(encoding="utf-8").splitlines()
+        first = lines[0].strip() if lines else ""
+        if not first.startswith("gitdir:"):
+            return None
+        gitdir = Path(first[len("gitdir:"):].strip())
+        if not gitdir.is_absolute():
+            gitdir = repo_root / gitdir
+        gitdir = gitdir.resolve()
+        commondir_file = gitdir / "commondir"
+        if commondir_file.is_file():
+            common = Path(commondir_file.read_text(encoding="utf-8").strip())
+            if not common.is_absolute():
+                common = gitdir / common
+            return common.resolve() / "config"
+        return gitdir / "config"
+    except (OSError, UnicodeError, ValueError):
+        return None
 
 
 def is_original_template(repo_root: Path, manifest: dict) -> bool:
     """Recognize the original repository from its local origin URL and the manifest; never contact GitHub."""
     if not manifest or not isinstance(manifest.get("upstream"), str):
         return False
+    config_path = _git_config_path(repo_root)
+    if config_path is None:
+        return False
     configuration = configparser.ConfigParser(interpolation=None)
     try:
-        configuration.read_string((repo_root / ".git" / "config").read_text(encoding="utf-8"))
+        configuration.read_string(config_path.read_text(encoding="utf-8"))
         origin = configuration.get('remote "origin"', "url")
     except (OSError, UnicodeError, configparser.Error):
         return False
@@ -88,7 +126,8 @@ def _local_file_state(repo_root: Path, relative: str, expected: str) -> dict:
     except UpgradeError:
         return {"path": relative, "status": "unsafe"}
     if pair is None:
-        return {"path": relative, "status": "missing"}
+        status = "removed-by-cleanup" if relative.startswith(CLEANUP_PREFIXES) else "missing"
+        return {"path": relative, "status": status}
     return {
         "path": relative,
         "status": "matches-lock" if pair[1] == expected else "customized",

@@ -156,16 +156,24 @@ Then remove the inherited maintenance files:
 
 ```bash
 git rm -r --ignore-unmatch tests .github docs/superpowers
+# The shared-core stamp belongs to the template repository's shared-core check. A project created from the
+# template inherits it, but it is not part of a downstream project; upgrade-template never ships it.
+git rm --ignore-unmatch .core-stamp.json
 git status --short
 ```
 
 This removes template tests, GitHub Actions workflows, Dependabot configuration
 and tracked historical planning/design documents if present. The daily team
 commands do not require those files. Keep `scripts/`, operational documentation,
-`.agents/`, `.claude/`, `template-manifest.json` and `.template-lock.json`.
+`.agents/`, `.claude/`, `template-manifest.json` and `.template-lock.json`; remove
+`.core-stamp.json` as shown above.
 Configure the credential-free root `.env` in step 6 and keep it in your own Git
 repository after validation. Review the cleanup, commit it, and then push to
 your downstream remote.
+
+After this cleanup, `scripts/team.sh template-status` reports removed tests and
+`.github/` files as `removed-by-cleanup`. That state is informational, not drift:
+the status stays `current` when nothing else differs.
 
 An upgrade keeps previously installed files deleted (`KEEP-DELETED`), but may
 introduce new template test/workflow files. Review those after every upgrade.
