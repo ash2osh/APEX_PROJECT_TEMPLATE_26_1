@@ -1164,8 +1164,7 @@ class TeamCliTests(unittest.TestCase):
                 # native-process wait settle before broadcasting SIGINT to the whole group;
                 # an interrupt during process startup can abort pwsh instead of exercising
                 # team.ps1's finally block.
-                time.sleep(0.1)
-                os.killpg(process.pid, signal.SIGINT)
+                _test_subprocess_safety.interrupt_process_group(process, settle=0.1)
                 stdout, stderr = process.communicate(timeout=60)
             finally:
                 if process.poll() is None:
@@ -1208,9 +1207,8 @@ class TeamCliTests(unittest.TestCase):
                 child = int(child_pid.read_text())
                 # SQLcl can start before Start-Process has handed it to PowerShell; a Ctrl-C
                 # inside Start-Process cannot be handled, so let it return first.
-                time.sleep(1)
+                _test_subprocess_safety.interrupt_process_group(process, settle=1.0)
                 interrupted_at = time.monotonic()
-                os.killpg(process.pid, signal.SIGINT)
                 output, errors = process.communicate(timeout=60)
                 elapsed = time.monotonic() - interrupted_at
                 time.sleep(0.5)
@@ -1258,8 +1256,7 @@ class TeamCliTests(unittest.TestCase):
                 self.assertTrue(started.exists(), "the helper never started")
                 # See test_powershell_exits_130_when_interrupted_while_a_helper_runs:
                 # avoid interrupting PowerShell while its native-process wait is starting.
-                time.sleep(0.1)
-                os.killpg(process.pid, signal.SIGINT)
+                _test_subprocess_safety.interrupt_process_group(process, settle=0.1)
                 stdout, stderr = process.communicate(timeout=60)
             finally:
                 if process.poll() is None:
@@ -1572,8 +1569,7 @@ class TeamCliTests(unittest.TestCase):
                     self.assertTrue(started.exists(), "SQLcl never started")
                     # A child can start just before the wrapper finishes entering its wait.
                     # Signal after that transition so this covers Ctrl-C handling, not startup.
-                    time.sleep(0.1)
-                    os.killpg(process.pid, signal.SIGINT)
+                    _test_subprocess_safety.interrupt_process_group(process, settle=0.1)
                     stdout, stderr = process.communicate(timeout=60)
                 finally:
                     if process.poll() is None:
