@@ -472,7 +472,7 @@ try {
       Invoke-TeamBash -ScriptName "team.sh" -ScriptArguments (@("new-migration") + @($Arguments))
     }
     "feature" {
-      if ($Arguments.Count -lt 1) { Fail "usage: scripts/team.ps1 feature <init|capture|diff|doctor|freeze|clean-capsule|reconcile-run|convert-plan> [arguments]" }
+      if ($Arguments.Count -lt 1) { Fail "usage: scripts/team.ps1 feature <init|capture|apply|diff|doctor|freeze|clean-capsule|reconcile-run|convert-plan> [arguments]" }
       $featureArguments = @($Arguments)
       if ($featureArguments[0] -ceq "freeze" -and $featureArguments.Count -gt 1) {
         $featureArguments[1] = ConvertTo-MigrationFolderArgument ([string] $featureArguments[1])
@@ -486,6 +486,17 @@ try {
           if ($featureValue -ceq "--feature" -or $featureValue -ceq "--format") { $expectsValue = $true; continue }
           if (-not $featureValue.StartsWith("-")) {
             $featureArguments[$featureIndex] = ConvertTo-MigrationFolderArgument $featureValue
+          }
+        }
+      }
+      if ($featureArguments[0] -ceq "apply" -or $featureArguments[0] -ceq "reconcile-run") {
+        for ($featureIndex = 1; $featureIndex -lt $featureArguments.Count; $featureIndex++) {
+          $featureValue = [string] $featureArguments[$featureIndex]
+          if ($featureValue -cmatch '^--(?:checks|execute-plan|evidence)$' -and $featureIndex + 1 -lt $featureArguments.Count) {
+            $featureIndex++
+            $featureArguments[$featureIndex] = ConvertTo-MigrationFolderArgument ([string] $featureArguments[$featureIndex])
+          } elseif ($featureValue -cmatch '^(--(?:checks|execute-plan|evidence)=)(.*)$') {
+            $featureArguments[$featureIndex] = $Matches[1] + (ConvertTo-MigrationFolderArgument $Matches[2])
           }
         }
       }

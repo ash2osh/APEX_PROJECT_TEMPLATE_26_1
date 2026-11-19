@@ -22,9 +22,12 @@
   the conflict checker. Treat a write attempt without a verified receipt as
   requiring live reconciliation before retry. See
   `docs/migration-rules.md`.
-- For feature capsules, keep complete mutable package sources under
-  `features/<slug>/<SCHEMA>/`, capture only from DEV, and review the generated
-  source diff. Replace the scaffold check and commit every selected input and
+- Keep complete mutable stored units and dedicated views under
+  `features/<slug>/<SCHEMA>/`. Use read-only `feature apply --prepare` and
+  review the target, baseline evidence, and source diff before an explicitly
+  authorized DEV write with `--execute-plan`. Preserve pending markers and
+  evidence for reconciliation. Use dated migrations for one-time changes and
+  required intermediate definitions. Replace the scaffold check and commit every selected input and
   the schema-version 2 manifest before freezing. Use the same frozen capsule
   for staging and production; production requires a verified staging report.
   Treat an interrupted/unknown checkpoint as unresolved until reconciled, and

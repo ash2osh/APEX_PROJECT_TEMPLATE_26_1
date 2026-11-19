@@ -5,23 +5,42 @@ stored-unit sources, compact Git diffs, and one frozen payload for staging and
 production. Existing dated migrations and schema-version 1 rollout manifests
 keep their current behavior.
 
-## Scope and revisit criteria
+## Scope and DEV workflow
 
-Feature releases do not replace dated migrations yet. Today:
+Feature capsules can ship the final stored-unit definitions alongside dated
+migrations for one-time data and schema changes.
 
 - `feature capture` reads one stored unit: a package or type (specification and
-  body), or a single trigger, procedure or function. Views go in the feature's
-  `ddl.sql`. Destructive DDL (`DROP`, `RENAME`, `TRUNCATE`) and anything the DDL
-  forms refuse stay in dated migrations started with
+  body), or a single trigger, procedure or function. Put each separately
+  selected view in `views/<name>.sql` with one `CREATE OR REPLACE VIEW` and
+  explicit projected columns. Prepare binds and verifies the effective
+  default collation when the source omits it. Destructive DDL (`DROP`, `RENAME`, `TRUNCATE`) and
+  anything the DDL forms refuse stay in dated migrations started with
   `scripts/team.sh new-migration --source`.
-- Feature files have no DEV apply path. `feature capture --env dev` reads DEV into
-  the repository and writes nothing to DEV. `rollout` refuses `--env dev` for a
-  feature capsule and runs only `--env staging` or `--env prod`.
+- `feature apply --prepare` reads the configured DEV target and saves a private
+  plan and source review. `PROJECT_ENV_FILE` must be inside the checkout.
+  A missing or drifted baseline requires a fresh review and explicit
+  `--accept-live-baseline` with the displayed digest. Review the plan and coordinate
+  before executing the authorized write with `--execute-plan FILE`.
+  A verified write saves the prepared diff in the [daily change record](daily-change-record.md).
+- `feature apply --status` reports pending attempts offline, including when
+  their scratch evidence is missing. After confirming the original operation
+  ended, use `feature reconcile-run <plan-id> --env dev --evidence FILE`
+  with reviewed evidence for the same target. The command rechecks the
+  before-state or intended state before recording closure and saves the
+  prepared diff when it verifies the intended state.
 
-Revisit whether dated migrations can be retired for object work only when all of
-these hold: one feature release has moved through DEV, then staging, then
-production under a frozen capsule; a DEV apply path for feature files is
-documented; and the data-step rule for features is settled.
+Use version-2 capsule rollout for staging and production. A reviewed target
+precondition is required when replacing an existing view in a capsule.
+Keep a genuinely required intermediate body, its in-session assertion,
+the backfill and the final body in one reviewed dated migration. Ship that
+migration as the sole writer of that unit in its capsule.
+
+```bash
+scripts/team.sh feature apply inventory --schema APP_CODE --env dev --unit "VIEW:ITEM_LOOKUP" --prepare
+scripts/team.sh feature apply inventory --schema APP_CODE --env dev --execute-plan scratch/feature-dev/prepare-example/plan.json
+scripts/team.sh feature apply inventory --schema APP_CODE --env dev --status
+```
 
 ## Create and review feature source
 
