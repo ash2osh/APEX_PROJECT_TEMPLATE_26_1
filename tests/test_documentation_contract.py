@@ -464,6 +464,37 @@ class GuideContractTests(unittest.TestCase):
                 with self.subTest(file=name, command=used):
                     self.assertIn(used, commands)
 
+    def test_getting_started_checks_the_schema_and_login_before_the_connection(self) -> None:
+        guide = (ROOT / "docs" / "GETTING_STARTED.md").read_text(encoding="utf-8")
+        configure = markdown_section(guide, "## 6. Configure `.env`", "## 7. ")
+        check = markdown_section(guide, "## 7. ", "## 8. ")
+        self.assertIn("scripts/team.sh targets", configure)
+        self.assertIn("scripts/team.sh targets", check)
+        self.assertIn("REFUSED", check)
+        # The offline report comes before the database check that connects.
+        self.assertLess(check.index("scripts/team.sh targets"), check.index("scripts/team.sh doctor"))
+        cheat_sheet = markdown_section(guide, "## 11. Everyday cheat sheet", "## Next steps")
+        self.assertIn("| `scripts/team.sh targets` (offline) |", cheat_sheet)
+
+    def test_verify_local_is_never_asked_for_before_the_first_export(self) -> None:
+        # A fresh checkout has no application folder, so verify-local reports every configured app as FAIL.
+        # Step 7 may explain that, but no command block there may run it: the newcomer runs it after the export.
+        guide = (ROOT / "docs" / "GETTING_STARTED.md").read_text(encoding="utf-8")
+        check = markdown_section(guide, "## 7. ", "## 8. ")
+        self.assertIn("is expected", check)
+        self.assertIn("directory not found under apps/", check)
+        self.assertNotIn("fix every", check.lower())
+        check_commands = [line for block in re.findall(r"```bash\n(.*?)```", check, re.DOTALL) for line in block.splitlines()]
+        self.assertEqual([], [line for line in check_commands if "verify-local" in line])
+        first_export = guide.index("scripts/team.sh export 100")
+        for block in re.findall(r"```bash\n(.*?)```", guide, re.DOTALL):
+            if "scripts/team.sh verify-local" in block:
+                with self.subTest(block=block):
+                    self.assertGreater(guide.index(block), first_export)
+        step8 = markdown_section(guide, "## 8. ", "## 9. ")
+        self.assertLess(step8.index("scripts/team.sh export 100"), step8.index("scripts/team.sh verify-local"))
+        self.assertIn("Every line should say `PASS`", step8)
+
     def test_migration_rules_say_which_profile_migrate_and_new_migration_use(self) -> None:
         rules = (ROOT / "docs" / "migration-rules.md").read_text(encoding="utf-8")
         environment = markdown_section(rules, "## Environment targets", "## Comparing selected live objects")

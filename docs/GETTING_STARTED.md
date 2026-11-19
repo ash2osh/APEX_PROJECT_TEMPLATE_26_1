@@ -252,15 +252,19 @@ To see which schema, connection and login each operation will use, run
 
 ## 7. Check the connection
 
-First check your files without touching a database. It reads `.env`, the template lock,
-each application source and its deployment descriptors:
+Both checks below are read-only. Run the offline one first:
 
 ```bash
-scripts/team.sh verify-local
+scripts/team.sh targets
 ```
 
-Each line says `PASS`, `ATTENTION` or `FAIL`; fix every `FAIL` before you go on. Then check the DEV
-database connection:
+It prints one row per operation (`read` for code metadata, `migration` for
+`migrate`), with the schema, saved connection and login taken from your `.env`,
+so a wrong name shows before anything connects. A `REFUSED` row names the setting
+that stops that operation; the notes under the table explain a split owner.
+
+Then check the DEV database connection. `doctor` connects and checks the login it
+gets:
 
 ```bash
 scripts/team.sh doctor
@@ -279,11 +283,10 @@ Doctor checks passed for the configured DEV connection.
 `doctor` only reads. If it fails, [TROUBLESHOOTING.md](TROUBLESHOOTING.md) lists
 each message and what to do.
 
-After validation, review your root `.env` and version it in your own downstream
-Git repository. Keep only literal configuration and saved SQLcl connection
-names in it; credentials stay in SQLcl's secure store. The root `.env` is
-available to Git, while nested `.env` files and `.env.*` variants are ignored.
-Template upgrades preserve your `.env`, including when it is tracked.
+You have no application folder yet, so `scripts/team.sh verify-local` would now
+report each configured application as `FAIL` (`configured application 100
+directory not found under apps/`) and exit 2. That is expected until your first
+export: run `verify-local` at the end of step 8, not here.
 
 ## 8. Export your first app
 
@@ -339,6 +342,23 @@ cp apps/templates/deployments/dev.json apps/DEMO/100/deployments/dev.json
 ```
 
 The same folder can hold `staging.json` and `prod.json` later.
+
+### Check the app and the configuration
+
+Now that the app folder exists, check it. This check is offline and changes nothing:
+
+```bash
+scripts/team.sh verify-local
+```
+
+Every line should say `PASS`. A line that says `ATTENTION` or `FAIL` names the file
+or setting to fix; the command exits 0 only when every line passes.
+
+After validation, review your root `.env` and version it in your own downstream
+Git repository. Keep only literal configuration and saved SQLcl connection
+names in it; credentials stay in SQLcl's secure store. The root `.env` is
+available to Git, while nested `.env` files and `.env.*` variants are ignored.
+Template upgrades preserve your `.env`, including when it is tracked.
 
 ## 9. Make a change
 
