@@ -836,17 +836,19 @@ def main(argv: list[str] | None = None) -> int:
 
 # ASHARIF 2026-10-24: Post-upgrade synchronization for Graphify and toolchain components
 def _post_upgrade_sync(project_root: Path, actions: list[Action]) -> None:
-    """Synchronize environment integrations when upgrade touches toolchain files."""
+    """Refresh the Graphify integration, but only in a project that already uses it.
+
+    Runs setup_graphify_apx.py when the project has a graphify-out directory.
+    Updating the extractor alone does not trigger it.
+    """
     setup_script = project_root / "scripts" / "setup_graphify_apx.py"
     if not setup_script.is_file():
         return
+    # Optional tooling is never installed by an upgrade: a project that has never
+    # used Graphify gets the new extractor file but is not set up with it. The
+    # setup may rewrite files of a Graphify installation on PATH, which can be shared.
     graphify_out = project_root / "graphify-out"
-    touched_extractor = any(
-        a.path in ("scripts/graphify_apexlang_extractor.py", "scripts/setup_graphify_apx.py")
-        and a.kind in ("CREATE", "UPDATE")
-        for a in actions
-    )
-    if not (graphify_out.is_dir() or touched_extractor):
+    if not graphify_out.is_dir():
         return
 
     try:

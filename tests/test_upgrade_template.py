@@ -1288,11 +1288,12 @@ class LineEndingPlanTests(unittest.TestCase):
             self.assertFalse((project / upgrade_engine.LOCK_NAME).exists())
 
     # ASHARIF 2026-10-24: Test post-upgrade synchronization for Graphify
-    def test_post_upgrade_sync_runs_setup_graphify_when_extractor_touched(self) -> None:
+    def test_post_upgrade_sync_runs_setup_graphify_when_extractor_touched_and_graph_in_use(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             project = Path(temporary)
             scripts = project / "scripts"
             scripts.mkdir(parents=True, exist_ok=True)
+            (project / "graphify-out").mkdir()
             setup_script = scripts / "setup_graphify_apx.py"
             setup_script.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
 
@@ -1308,12 +1309,13 @@ class LineEndingPlanTests(unittest.TestCase):
                     timeout=60,
                 )
 
-    def test_post_upgrade_sync_runs_setup_graphify_when_extractor_is_created(self) -> None:
+    def test_post_upgrade_sync_runs_setup_graphify_when_extractor_is_created_and_graph_in_use(self) -> None:
         # An upgrade that adds the extractor reports CREATE, never ADD.
         with tempfile.TemporaryDirectory() as temporary:
             project = Path(temporary)
             scripts = project / "scripts"
             scripts.mkdir(parents=True, exist_ok=True)
+            (project / "graphify-out").mkdir()
             setup_script = scripts / "setup_graphify_apx.py"
             setup_script.write_text("#!/usr/bin/env python3\n", encoding="utf-8")
 
@@ -1328,6 +1330,33 @@ class LineEndingPlanTests(unittest.TestCase):
                     text=True,
                     timeout=60,
                 )
+
+    def test_post_upgrade_sync_skipped_when_extractor_created_but_graphify_never_used(self) -> None:
+        # Shipping a new extractor must not install Graphify into a project that lacks it.
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary)
+            scripts = project / "scripts"
+            scripts.mkdir(parents=True, exist_ok=True)
+            (scripts / "setup_graphify_apx.py").write_text("#!/usr/bin/env python3\n", encoding="utf-8")
+
+            actions = [
+                upgrade_engine.Action("CREATE", "scripts/graphify_apexlang_extractor.py"),
+                upgrade_engine.Action("UPDATE", "scripts/setup_graphify_apx.py"),
+            ]
+            with patch("subprocess.run") as mock_run:
+                upgrade_engine._post_upgrade_sync(project, actions)
+                mock_run.assert_not_called()
+
+    def test_post_upgrade_sync_skipped_without_setup_script_even_with_graph(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            project = Path(temporary)
+            (project / "scripts").mkdir(parents=True, exist_ok=True)
+            (project / "graphify-out").mkdir()
+
+            actions = [upgrade_engine.Action("UPDATE", "scripts/graphify_apexlang_extractor.py")]
+            with patch("subprocess.run") as mock_run:
+                upgrade_engine._post_upgrade_sync(project, actions)
+                mock_run.assert_not_called()
 
     # ASHARIF 2026-10-24: Test post-upgrade synchronization skipped when untargeted
     def test_post_upgrade_sync_skipped_when_extractor_untouched_and_no_graph(self) -> None:
