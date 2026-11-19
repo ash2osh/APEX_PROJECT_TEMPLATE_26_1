@@ -31,6 +31,22 @@ check approved them. That shrinks the window for a save to slip in to the
 import itself; it still cannot see Builder edits that were never saved, so tell
 the team before you publish.
 
+APEX does not stamp `last_updated_on` while importing, so an app installed or published
+from APEXlang has no Builder timestamp until someone saves it in Builder. The version
+tag below is what identifies that import instead.
+
+The export reads the app's Builder timestamp and version before it reads the APEXlang
+files and again when it finishes. If the app changed while it ran (a Builder save or an
+import), export refuses with `export error: APEX App <id> changed (Builder save or
+import) while export was running` and installs nothing.
+
+The guard compares Builder's timestamp with the database clock (`SYSDATE`, read in
+the same SQLcl session), not with your workstation's clock, so your time zone does
+not affect the check. Oracle's `DATE` type has one-second precision. When the saved
+timestamp falls in the current database second, the guard cannot tell whether a
+save came before or after your export, so it refuses with `matches the current
+database second`; wait one second and retry.
+
 Two people who publish the same app within one import's duration (about twenty
 seconds) can both pass both checks. Their imports then run one after the other
 and the later one wins. The earlier publish fails its post-import verification
@@ -39,6 +55,25 @@ teammate's import replaced yours`: nothing is lost, because your edits are still
 in your files, but DEV runs the other developer's source. Commit your stamped
 `application.apx`, export, merge, and publish again, after agreeing with them
 who goes next.
+
+## The publish tag
+
+Each DEV publish stamps a tag into the end of the application version in
+`application.apx`, before it imports:
+
+```text
+version: "V2 Powered By xxx [ASHARIF-2026-09-26r001]"
+```
+
+The tag is `DEVELOPER_NAME` from `.env`, the publish date, and a counter. The counter
+counts up with each publish of that date, whoever published, and restarts at `r001`
+on a later date. The date never moves back, so a tag is never reused: a repeated tag
+would hide the imports in between from the drift guard. Publish only proceeds when
+the live version equals your baseline, so each tag builds on the one before it, and
+a teammate's import shows up as a version the guard refuses. The tag appears wherever
+the theme renders `#APP_VERSION#`, such as the Universal Theme footer, and `deploy`
+ships it to staging and production unchanged. Commit the stamped `application.apx`
+after a successful publish.
 
 ## The usual fix
 
@@ -176,8 +211,17 @@ live version, then reconcile and commit.
 | `interrupted while the import was running, so its result is unknown` | You (or a signal) stopped publish while SQLcl was importing, before publish read its output. SQLcl may already have finished: DEV may or may not run your source. Your old `application.apx` is put back. Commit your changes, run `scripts/team.sh export <id>`, and read the live version: the tag publish printed as stamped means the import completed. Then reconcile and commit. |
 | `SQLcl application import failed` | SQLcl exited with an error. Fix the reported problem and retry. |
 | `SQLcl reported a client or database error during the application import` | An `ORA-`, `SP2-`, `PLS-`, or `TNS-` error was printed. Fix it and retry. |
-| `SQLcl did not report a successful APEX import` | SQLcl skipped the import, for example because `dev.json` names a workspace that does not exist. Fix the descriptor. |
+| `SQLcl did not report a successful APEX import` | SQLcl skipped the import, for example because `dev.json` names a workspace that does not exist. Fix the descriptor. Publish requires SQLcl's `Import successful.` line as well as a visible app, because SQLcl can exit 0 without importing. |
 | `SQLcl did not verify the imported application` | The import result is unknown. Export and compare before retrying. |
+
+After a successful DEV import, `publish` exports the app again and compares the
+APEXlang file names and bytes with the local source, excluding the local deployment
+descriptors and export marker. It advances the drift baseline only when that source
+matches and the live Builder revision stayed stable during the verification export.
+If SQLcl reports an error, the source differs, or the revision is ambiguous, publish
+fails and leaves the old baseline in place. SQLcl can exit successfully without
+importing, for example when a descriptor names an unknown workspace, so publish also
+requires its `Import successful.` line.
 
 **After import.** The import has already changed DEV, but publish could not
 prove the result, so it keeps your old baseline and the next publish refuses.

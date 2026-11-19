@@ -372,9 +372,18 @@ There are two ways to change an app. Use whichever suits the task.
 
 ```bash
 scripts/team.sh export 100
+git status --short --untracked-files=all -- apps/DEMO/100/
 git diff apps/DEMO/100/
 git add apps/ && git commit -m "Change the dashboard title"
 ```
+
+Review the APEXlang changes before you commit them; `git status` also lists new
+files. Export captures the current Builder state and never imports the app back into
+Builder. It refuses to write over a local source folder that has uncommitted or
+untracked changes, so commit or stash your own edits first. It exports into
+`scratch/`, checks the SQLcl result and that Builder did not change while the export
+ran, and only then replaces the local source. The `deployments/*.json` descriptors you
+wrote are kept.
 
 ### B. Files first
 
@@ -390,7 +399,9 @@ scripts/team.sh publish 100 --env dev
 ```
 
 Publish refuses, with an explanation, if the live app changed since your last
-export. That is the safety net: run `export`, review, and try again. On success
+export. That is the safety net: run `export`, review, and try again. Every refusal,
+what it means, and what to do is in [publish-rules](publish-rules.md), which also
+explains the publish tag. On success
 it stamps your name and the date onto the app version, imports, re-exports the
 app to prove it matches your files, and ends with:
 

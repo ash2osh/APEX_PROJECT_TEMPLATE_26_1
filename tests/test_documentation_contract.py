@@ -128,14 +128,17 @@ class DocumentationContractTests(unittest.TestCase):
         ):
             with self.subTest(command=command):
                 self.assertIn(command, readme)
-        self.assertIn("After a successful DEV import", readme)
-        self.assertIn("APEXlang file names and bytes", readme)
-        self.assertIn("leaves the old baseline in place", readme)
+        # The publish flow moved from the README into its owning doc; the README now links to it.
+        publish_rules = contents[ROOT / "docs" / "publish-rules.md"]
+        self.assertIn("publish-rules.md", readme)
+        self.assertIn("After a successful DEV import", publish_rules)
+        self.assertIn("APEXlang file names and bytes", publish_rules)
+        self.assertIn("leaves the old baseline in place", publish_rules)
+        self.assertIn("APEX does not stamp `last_updated_on` while importing", publish_rules)
+        self.assertIn("[ASHARIF-2026-09-26r001]", publish_rules)
+        self.assertIn("Commit the stamped", publish_rules)
         self.assertIn("commands such as `SET DEFINE`", readme)
-        self.assertIn("APEX does not stamp `last_updated_on` while importing", readme)
         self.assertIn("`CREATE MLE MODULE`", readme)
-        self.assertIn("[ASHARIF-2026-09-26r001]", readme)
-        self.assertIn("Commit the stamped", readme)
         self.assertIn("DEVELOPER_NAME", contents[ROOT / "AGENTS.md"])
         self.assertIn("scripts/team.sh upgrade-template", readme)
         self.assertIn("AGENTS.project.md", readme)
