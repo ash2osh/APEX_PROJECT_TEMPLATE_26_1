@@ -152,24 +152,40 @@ files and resolve them before continuing. Keep the generated
 of installed template files. Review and commit the upgrade result in your own
 repository before cleaning it.
 
-Then remove the inherited maintenance files:
+Then perform the cleanup from file-level provenance, not broad directory sweeps:
+never delete a file simply because it lives under `tests/`, `.github/` or
+`docs/superpowers/`. Review each file against `template-manifest.json` and
+`.template-lock.json`:
 
 ```bash
-git rm -r --ignore-unmatch tests .github docs/superpowers
+# Workflows: list what this repository ships, then remove only the inherited template-maintenance workflows.
+# A project's own workflow, for example a deployment workflow, must be listed and kept before anything is removed.
+# Never remove by glob.
+git ls-files .github
+git rm --ignore-unmatch .github/workflows/template-checks.yml .github/dependabot.yml
+# Tests: the lock records each test the upgrade installed from the template. A project's own regression tests
+# are not in the lock. List the recorded tests, then remove by name only the inherited ones you reviewed.
+python3 -c 'import json; print("\n".join(sorted(p for p in json.load(open(".template-lock.json"))["files"] if p.startswith("tests/"))))'
+# Example, one reviewed path at a time: git rm --ignore-unmatch -- tests/test_name.py
+# Planning documents: docs/superpowers/ holds the template's historical plans (templateOnly in the manifest, so
+# upgrade-template does not install them). Remove only those by name after review; keep plans your project wrote.
 # The shared-core stamp belongs to the template repository's shared-core check. A project created from the
 # template inherits it, but it is not part of a downstream project; upgrade-template never ships it.
 git rm --ignore-unmatch .core-stamp.json
 git status --short
 ```
 
-This removes template tests, GitHub Actions workflows, Dependabot configuration
-and tracked historical planning/design documents if present. The daily team
-commands do not require those files. Keep `scripts/`, operational documentation,
-`.agents/`, `.claude/`, `template-manifest.json` and `.template-lock.json`; remove
-`.core-stamp.json` as shown above.
-Configure the credential-free root `.env` in step 6 and keep it in your own Git
-repository after validation. Review the cleanup, commit it, and then push to
-your downstream remote.
+Explicitly preserve:
+- Project-specific regression and unit tests in `tests/`, including any file the project added or depends on
+- Project-written plans, specs and other documents under `docs/`
+- `PROJECT.md`, `AGENTS.project.md`, `.agents/rules/project.md` and `TODO.md`
+- Operational configuration (`.env`), application source (`apps/`), migrations (`migrations/`), and migration receipts and recovery evidence
+
+Keep `scripts/`, operational documentation, `.agents/`, `.claude/`,
+`template-manifest.json` and `.template-lock.json`; remove `.core-stamp.json`
+as shown above. Configure the credential-free root `.env` in step 6 and keep it
+in your own Git repository after validation. Review the cleanup, commit it, and
+then push to your downstream remote.
 
 After this cleanup, `scripts/team.sh template-status` reports removed tests and
 `.github/` files as `removed-by-cleanup`. That state is informational, not drift:
@@ -188,8 +204,8 @@ precedence over the local manifest; an explicit `--source` takes precedence over
 both. With a clean working tree, review a dry-run and then apply the same source:
 
 ```bash
-scripts/team.sh upgrade-template --source https://github.com/ash2osh/APEX_PROJECT_TEMPLATE_26_1.git --dry-run
-scripts/team.sh upgrade-template --source https://github.com/ash2osh/APEX_PROJECT_TEMPLATE_26_1.git
+scripts/team.sh upgrade-template --source https://github.com/ash2osh/APEX_PROJECT_TEMPLATE_26_1.git --ref main --dry-run
+scripts/team.sh upgrade-template --source https://github.com/ash2osh/APEX_PROJECT_TEMPLATE_26_1.git --ref main
 ```
 
 Dry-run changes no files. Apply records the chosen source in the lock, preserves

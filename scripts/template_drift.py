@@ -70,6 +70,39 @@ def _git_config_path(repo_root: Path) -> Path | None:
         return None
 
 
+def _normalized_remote(value: object) -> tuple[str, str] | None:
+    """Reduce a Git remote to (lowercase host, path) so https, http, git, ssh and scp-style
+    spellings of one repository compare equal. A local absolute path has host "". Anything
+    else that is not a recognized remote returns None, which never equals another value."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or any(ord(char) < 32 or ord(char) == 127 for char in text):
+        return None
+    local = bool(re.match(r"^[A-Za-z]:[\\/]", text)) or text.startswith("/")
+    if local:
+        host, path = "", text.replace("\\", "/")
+    elif "://" in text:
+        try:
+            parsed = urlsplit(text)
+        except ValueError:
+            return None
+        if parsed.scheme not in ("https", "http", "git", "ssh"):
+            return None
+        host, path = parsed.hostname or "", parsed.path
+    else:
+        match = re.fullmatch(r"(?:[^@/\s]+@)?([^:/\s]+):(.+)", text)
+        if match is None:
+            return None
+        host, path = match.group(1), match.group(2)
+    path = path.strip("/")
+    if path.endswith(".git"):
+        path = path[: -len(".git")].rstrip("/")
+    if not path or (not local and not host):
+        return None
+    return host.lower(), path
+
+
 def is_original_template(repo_root: Path, manifest: dict) -> bool:
     """Recognize the original repository from its local origin URL and the manifest; never contact GitHub."""
     if not manifest or not isinstance(manifest.get("upstream"), str):
@@ -77,13 +110,15 @@ def is_original_template(repo_root: Path, manifest: dict) -> bool:
     config_path = _git_config_path(repo_root)
     if config_path is None:
         return False
-    configuration = configparser.ConfigParser(interpolation=None)
+    # strict=False: a remote may legitimately repeat `fetch`, and that must not break detection.
+    configuration = configparser.ConfigParser(interpolation=None, strict=False)
     try:
         configuration.read_string(config_path.read_text(encoding="utf-8"))
         origin = configuration.get('remote "origin"', "url")
     except (OSError, UnicodeError, configparser.Error):
         return False
-    return origin.rstrip("/").removesuffix(".git") == manifest["upstream"].rstrip("/").removesuffix(".git")
+    origin_key = _normalized_remote(origin)
+    return origin_key is not None and origin_key == _normalized_remote(manifest["upstream"])
 
 
 def _ref_is_valid(repo_root: Path, ref: str) -> bool:
@@ -128,9 +163,11 @@ def _local_file_state(repo_root: Path, relative: str, expected: str) -> dict:
     if pair is None:
         status = "removed-by-cleanup" if relative.startswith(CLEANUP_PREFIXES) else "missing"
         return {"path": relative, "status": status}
+    # Older locks recorded the raw digest, which the upgrade planner also accepts;
+    # either digest of the same bytes counts as the locked version.
     return {
         "path": relative,
-        "status": "matches-lock" if pair[1] == expected else "customized",
+        "status": "matches-lock" if expected in pair else "customized",
     }
 
 

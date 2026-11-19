@@ -122,3 +122,43 @@ Commands run from this checkout, in order, with results:
 - Virtual-column expression capture needs an edit in each template's `scripts/compare_env_catalog.sql` (not a shared core file).
 - Oracle's catalog representation of INVISIBLE columns was not verified against a live database.
 - The PowerShell backup change was verified on PowerShell 7.7 on Linux only, not Windows PowerShell 5.1.
+
+## 8. Review pass 2 ported from the sibling template
+
+**Observation:** the 26.2 template's second review pass had fixes this template did not have. A credential in `--source` could reach `.template-lock.json` and error text. A remote spelled another way, or a repeated `fetch` line, broke original-template detection. A lock with empty `files` or no `commit` read as current. `team.ps1` left `PROJECT_SCHEMA` set in a persistent PowerShell session after `--schema` or `targets`.
+
+| File | Change |
+| --- | --- |
+| `scripts/upgrade_template.py` | `_reject_credentials` refuses a password anywhere and a username on http(s). `ssh://user@host` and scp-style `user@host:path` stay allowed. It runs in `_normalize_source`, in `main` before any git command for an explicit `--source`, and in `_validated_lock` for the lock's upstream (the message adds "remove it from .template-lock.json"). `run_git` redacts `scheme://user[:password]@` in the arguments and stderr it prints. `read_lock_with_hash` refuses a lock whose `commit` is not a 40- or 64-hex string or whose `files` is empty. |
+| `scripts/template_drift.py` | `is_original_template` uses `ConfigParser(interpolation=None, strict=False)` and `_normalized_remote`, which compares (lowercase host, path) so https, http, git, ssh, ssh-with-port and scp-style spellings of one repository match. Unparsable values never match. `_local_file_state` reports `matches-lock` when the lock holds either the raw or the normalized digest. |
+| `scripts/team.ps1` | The caller's `PROJECT_SCHEMA` is saved at the top and restored by `Restore-CallerProjectSchema`, called from `Fail`, `Exit-Team`, the catch-block refusal exit and the outer `finally`. It is idempotent. |
+| `tests/test_upgrade_template.py` | `SourceCredentialTests` and `LockReadStateTests`. |
+| `tests/test_template_drift.py` | Five tests: legacy raw-hash CRLF match, unrelated hash, LF normalized match, empty `files`, missing `commit`. The fixture lock gained `"commit": "a" * 40`, because a lock without a commit is now invalid. |
+| `tests/test_verify_local.py` | `OriginalTemplateRemoteTests`: two `fetch` lines, equivalent spellings, a different repository or host, local path upstream, garbage origins, and the normalizer. It imports `_normalized_remote` from `scripts/template_drift.py`. |
+| `tests/test_team_cli.py` | `TeamPs1EnvironmentTests`: three PowerShell tests, skipped without `pwsh`. |
+| `README.md` | "Safety built in" row: production is never written without an explicit confirmation (a typed `y`, or `--confirm-target` naming the observed `db_unique_name`). The old phrase "production is read-only" was false for 26.1, which writes to production after confirmation. The two legacy-lock recovery commands gained `--ref main`. |
+| `docs/GETTING_STARTED.md` | The cleanup is selective. `git ls-files .github` lists what the template ships, and only `template-checks.yml` and `dependabot.yml` are removed by name. The tests the lock records are listed from `.template-lock.json`, and only reviewed names are removed. `docs/superpowers/` is removed by name after review. A list of preserved project data follows. The `.core-stamp.json` and `removed-by-cleanup` sentences are kept. The two legacy-lock recovery commands gained `--ref main`. |
+
+**Deviations from the 26.2 patch:**
+- In 26.1, `is_original_template` and `_normalized_remote` live in `scripts/template_drift.py`, so the change is there. `scripts/verify_local.py` is unchanged and still imports the function.
+- The cleanup text is 26.1's own. The 26.2 guide says to review `tests/` by hand. Here the lock's recorded `tests/` entries give the list, because `tests/**` is template-owned in the manifest and a project's own tests are not in the lock.
+- The README wording is the 26.2 sentence, checked against 26.1: `scripts/migrate.py` refuses `--yes` alone for production and accepts a typed `y` or a matching `--confirm-target`, and `scripts/deploy.sh` does the same.
+- Not ported: the `features/` and `releases/` protection (26.1 already has it) and the `application_lock.py` follow-ups (26.1 has no application lock script). `docs/publish-rules.md`, `TODO.md`, `template-manifest.json` and `docs/superpowers/*` were not touched.
+- The shared-core files were not edited. `scripts/sync_core.py check .` reports OK for 243 files.
+
+**Tests, before and after** (`python3 -m unittest discover -s tests -p <file>`):
+- `test_upgrade_template.py`: 62 OK before, 73 OK after.
+- `test_template_drift.py`: 7 OK before, 12 OK after.
+- `test_verify_local.py`: 39 OK before, 45 OK after.
+- `test_team_cli.py`: 75 OK (6 skipped) before, 78 OK (6 skipped) after. The three new PowerShell tests ran on PowerShell 7.7 on Linux.
+- `test_documentation_contract.py`: 30 OK before and after.
+- `test_template_update_notice.py`: 9 OK before and after.
+- `ruff check` on the seven touched Python files: all checks passed.
+
+**New tests against the old code** (scratch copy of `git archive HEAD` with the new test files, no stash):
+- `test_upgrade_template.py`: 7 failures and 10 errors. The errors are the credential tests, because `_reject_credentials` does not exist on HEAD. The failures are the CLI, `_lock_bytes`, lock-read and `run_git` redaction checks and the four lock-state refusals. The "normal lock still reads" test passes on HEAD, as intended.
+- `test_template_drift.py`: 3 failures (legacy raw-hash CRLF, empty `files`, missing `commit`).
+- `test_verify_local.py`: 7 failures and 1 error. The error is the normalizer import, because `_normalized_remote` does not exist on HEAD.
+- `test_team_cli.py`: 2 failures on the old `team.ps1` (the `targets --help` inherited-schema test and the refused `doctor --schema` test). The unset-schema guard passes on the old script, as intended.
+
+**Not verified:** Windows PowerShell 5.1 (PowerShell 7.7 on Linux only). No database, SQLcl, network, publish, migrate or deploy command ran. The full `scripts/ci_run_tests.py` suite was not run; only the six modules named above were run.
