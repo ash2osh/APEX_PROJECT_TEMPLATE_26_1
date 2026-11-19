@@ -195,6 +195,22 @@ An upgrade keeps previously installed files deleted (`KEEP-DELETED`), but may
 introduce new template test/workflow files. Review those after every upgrade.
 Do not delete your project's own regression tests as part of repeated cleanup.
 
+### Existing projects: picking up the 2026-11-19 fixes
+
+A project that finished its cleanup earlier gets these changes with
+`scripts/team.sh upgrade-template` (run `--dry-run` first and review it). Afterwards:
+
+- Remove an inherited `.core-stamp.json` (`git rm --ignore-unmatch .core-stamp.json`).
+  `pre_push_check` skips the shared-core check once `.template-lock.json` exists, but the
+  file is not part of a downstream project.
+- `scripts/team.sh template-status` now reports the tests and `.github/` files you removed
+  as `removed-by-cleanup`. That is informational; the status is no longer `attention` because of them.
+- A lock that does not record the installed commit, or lists no files, is refused when it is
+  read. Restore it from Git (`git checkout -- .template-lock.json`); do not delete it, because a
+  missing lock makes the next upgrade re-create everything you removed.
+- `--source` and a lock `upstream` that embed credentials are refused. Use a Git credential
+  helper or an SSH key instead, and remove the credential from `.template-lock.json`.
+
 ### Recover an existing 26.1 upgrade lock
 
 If your 26.1 project's `.template-lock.json` still records
