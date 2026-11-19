@@ -17,7 +17,7 @@ template upgrades.
 
 ## Open after the 2026-11-19 review fixes
 
-- Virtual-column expression capture needs an edit in each template's `scripts/compare_env_catalog.sql`. That file is not a shared core file, so this branch does not change it. Checked 2026-11-19 on Oracle 23ai Free: `ALL_TAB_COLS.DATA_DEFAULT_VC` returns the expression (`"ID"*2`), but the Oracle 12.1 reference does not list that column and no 19c database was available, so capture is not implemented; virtual columns stay refused as a reviewed migration.
+- Virtual-column expressions: captured from `ALL_TAB_COLS.DATA_DEFAULT_VC` on Oracle 23ai and newer (verified live 2026-11-20); on an older database the expression is not captured and a missing virtual column is still refused as a reviewed migration.
 - INVISIBLE columns: the catalog shows them as `HIDDEN_COLUMN = 'YES'` and `USER_GENERATED = 'YES'` (system-generated hidden columns have `USER_GENERATED = 'NO'`), verified 2026-11-19 on Oracle 23ai Free. The baseline generator now adds a missing one with `INVISIBLE` and refuses a visibility difference. Older Oracle releases were not available to check.
 - The PowerShell backup change (`scripts/backup_db.ps1`) was verified on PowerShell 7.7 on Linux only, not on Windows PowerShell 5.1.
 - SQLcl session cost, measured 2026-11-19 on the local Docker Oracle 23ai Free containers: about 2.1 s for one session (connect, one statement, exit). A flow that opens 13 sessions therefore costs about 27 s of session overhead on this setup; consolidating sessions was not attempted.
