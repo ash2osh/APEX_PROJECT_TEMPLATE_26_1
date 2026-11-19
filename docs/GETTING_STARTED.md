@@ -315,17 +315,11 @@ apps/DEMO/100/
 └── apex-team-export.json  records when the export was taken (used by publish)
 ```
 
-Commit the result:
-
-```bash
-git add apps/
-git commit -m "Export app 100"
-```
-
 ### Tell the template where the app deploys
 
-Publishing needs a small descriptor that names the workspace, the app ID, and
-the parsing schema. Copy the example and edit the three values:
+Publishing needs a small descriptor for each app that names the workspace, the app ID, and
+the parsing schema. For each app folder, copy the example and edit the three values
+(for another app, set its own `"id"`):
 
 ```bash
 cp apps/templates/deployments/dev.json apps/DEMO/100/deployments/dev.json
@@ -358,6 +352,14 @@ or setting to fix; the command exits 0 only when every line passes.
 lists `100,200`, so if you exported only app 100 you will still see
 `configured application 200 directory not found`. Export each ID you use
 (`scripts/team.sh export <app_id>`), or remove the IDs you do not use from `APEX_APP_ID`.
+[TROUBLESHOOTING.md](TROUBLESHOOTING.md#local-readiness) lists the fix for each line.
+
+Commit the exports and descriptors together:
+
+```bash
+git add apps/
+git commit -m "Export app 100"
+```
 
 After validation, review your root `.env` and version it in your own downstream
 Git repository. Keep only literal configuration and saved SQLcl connection
