@@ -30,6 +30,7 @@ from scripts.deployment_descriptor import read_descriptor
 from scripts.migration_manifest import MigrationManifestError, assert_single_layout, load_batch, validate_receipt as validate_migration_receipt
 from scripts.ords_export import OrdsExportError, check_no_oauth, check_structure, mask_sql
 from scripts.path_utils import relative_to_root
+from scripts.release_ownership import TargetWriterLease
 from scripts.sqlcl_session import ALIAS_RE, SqlclError, run_sqlcl, safe_rmtree
 from scripts.sqlcl_transport import generated_clob_assembly, lint_sqlcl_transport
 from scripts.validate_app_source import validate_app_source
@@ -1816,6 +1817,7 @@ def execute_step(
     confirm_target: str | None = None,
     rollout_confirmed_by: str | None = None,
     accept_pauses: bool = False,
+    writer_lease: TargetWriterLease | None = None,
 ) -> StepResult:
     """Execute one step using existing command or SQLcl paths."""
     kind = step["type"]
@@ -1841,6 +1843,7 @@ def execute_step(
                     expected_input_hashes=expected_input_hashes,
                     expected_db_unique_name=confirm_target,
                     rollout_confirmed_by=rollout_confirmed_by,
+                    writer_lease=writer_lease,
                 )
         else:
             arguments.extend(("--phase", step["phase"], "--format", "json"))
