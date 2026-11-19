@@ -295,6 +295,13 @@ A name that already exists as a migration family is refused; edit that folder, o
 
 ## Immutability and status receipts
 
+After confirmation, `migrate` acquires a checkout-local writer lock for the
+observed database, container, schema, and edition. It checks the selected
+folders' receipts and attempts again under the lock, then holds the lock
+through payload execution, verification, and receipt installation. A competing
+run from the same checkout refuses before SQL is applied. Other checkouts and
+direct database sessions still require coordination.
+
 Once a migration has been applied or a write attempt may have begun, keep its
 SQL bytes, names, order, and `checks.json` unchanged. A correction or recovery
 belongs in the next revision folder. A failed or ambiguous attempt may have

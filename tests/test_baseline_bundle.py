@@ -184,6 +184,34 @@ class BaselineBundleTests(unittest.TestCase):
         )
         self.assertEqual(retained.checks["preconditions"][0]["id"], "structure-exists")
 
+    def test_code_guard_precedes_structure_and_preserves_provenance_and_checks(self) -> None:
+        api = self.api()
+        guard = "BEGIN NULL; END;\n/\n"
+        code = self.component(
+            api, "code",
+            [("001-verify-code-before.sql", guard), ("002-source-package.sql", "SELECT 1 FROM DUAL;\n")],
+            preconditions=({"id": "before-source", "sql": "SELECT COUNT(*) FROM ALL_SOURCE", "expected": 1},),
+        )
+        structure = self.component(api, "structure", [("001-table.sql", "CREATE TABLE T (ID NUMBER);\n")])
+        grants = self.component(api, "grants", [("001-grant.sql", "GRANT SELECT ON T TO READER;\n")])
+
+        result = api.combine_baseline_components([grants, code, structure])
+
+        self.assertEqual(list(result.steps), [
+            "001-code-verify-code-before.sql", "002-structure-table.sql",
+            "003-grants-grant.sql", "004-code-source-package.sql",
+        ])
+        self.assertEqual(result.steps["001-code-verify-code-before.sql"], guard)
+        self.assertEqual(result.provenance[0], {
+            "kind": "code",
+            "originalName": "001-verify-code-before.sql",
+            "generatedName": "001-code-verify-code-before.sql",
+            "sqlSha256": hashlib.sha256(guard.encode("utf-8")).hexdigest(),
+        })
+        self.assertEqual(result.checks["preconditions"], [
+            {"id": "code-before-source", "sql": "SELECT COUNT(*) FROM ALL_SOURCE", "expected": 1},
+        ])
+
     def test_empty_components_and_limits(self):
         api = self.api()
 

@@ -32,6 +32,7 @@ class BundledBaseline:
 
 _BUNDLE_NAME_RE = re.compile(r"[a-z][a-z0-9]*(?:-[a-z0-9]+)*\Z", re.ASCII)
 _CATEGORY_ORDER = ("structure", "grants", "code")
+_CODE_BEFORE_STEP = "001-verify-code-before.sql"
 _CATEGORY_PREFIX = frozenset(_CATEGORY_ORDER)
 _MAX_STEPS = 999
 
@@ -126,31 +127,40 @@ def combine_baseline_components(components: Sequence[BaselineComponent]) -> Bund
     combined_preconditions: list[dict] = []
     combined_postconditions: list[dict] = []
     provenance: list[dict] = []
+    ordered_payload: list[tuple[str, str, str]] = []
 
     for kind in _CATEGORY_ORDER:
         component = by_kind.get(kind)
         if component is None:
             continue
-        if kind in {"grants", "code"} and component.preconditions:
+        component_steps = _validate_component_steps(component)
+        has_code_guard = kind == "code" and bool(component_steps) and component_steps[0][0] == _CODE_BEFORE_STEP
+        if kind != "structure" and component.preconditions and not has_code_guard:
             raise BaselineBundleError(f"{kind} components cannot add initial preconditions")
+        if has_code_guard:
+            # Observe the captured state before any structure or grant step can change it.
+            ordered_payload.insert(0, (kind, *component_steps[0]))
+            component_steps = component_steps[1:]
 
         combined_preconditions.extend(_validate_check_list(kind, "preconditions", component.preconditions))
         combined_postconditions.extend(_validate_check_list(kind, "postconditions", component.postconditions))
-        for original_name, sql in _validate_component_steps(component):
-            if len(combined_steps) >= _MAX_STEPS:
-                raise BaselineBundleError(f"a baseline bundle cannot contain more than {_MAX_STEPS} SQL steps")
-            match = SQL_FILE_RE.fullmatch(original_name)
-            assert match is not None  # validated above
-            generated_name = f"{len(combined_steps) + 1:03d}-{kind}-{match.group('name')}.sql"
-            combined_steps[generated_name] = sql
-            provenance.append(
-                {
-                    "kind": kind,
-                    "originalName": original_name,
-                    "generatedName": generated_name,
-                    "sqlSha256": hashlib.sha256(sql.encode("utf-8")).hexdigest(),
-                }
-            )
+        ordered_payload.extend((kind, *step) for step in component_steps)
+
+    if len(ordered_payload) > _MAX_STEPS:
+        raise BaselineBundleError(f"a baseline bundle cannot contain more than {_MAX_STEPS} SQL steps")
+    for number, (kind, original_name, sql) in enumerate(ordered_payload, start=1):
+        match = SQL_FILE_RE.fullmatch(original_name)
+        assert match is not None  # validated above
+        generated_name = f"{number:03d}-{kind}-{match.group('name')}.sql"
+        combined_steps[generated_name] = sql
+        provenance.append(
+            {
+                "kind": kind,
+                "originalName": original_name,
+                "generatedName": generated_name,
+                "sqlSha256": hashlib.sha256(sql.encode("utf-8")).hexdigest(),
+            }
+        )
 
     if combined_steps and not combined_postconditions:
         raise BaselineBundleError("a nonempty baseline bundle must include at least one postcondition")
