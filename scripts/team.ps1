@@ -117,8 +117,9 @@ Commands:
                                               Check .env, template lock, apps and descriptors offline (no database)
   template-status [--format text|json] [--upstream --ref <ref>]
                                               Inspect local template drift; fetch upstream only when requested
+  targets [--format text|json]                Show the schema, connection and login each operation uses (offline; no database)
 Options:
-  --schema <NAME>                             Run one configured schema (except upgrade-template, verify-local, template-status, migration-plan, archive-migrations, dev-test, skills, mcp, feature and reconcile-migration)
+  --schema <NAME>                             Run one configured schema (except upgrade-template, verify-local, template-status, targets, migration-plan, archive-migrations, dev-test, skills, mcp, feature and reconcile-migration)
   --help                                      Show this help
 Environment:
   MIGRATION_PREFLIGHT_INVENTORY_RETRIES        Retry changing live catalogs (default 3)
@@ -246,7 +247,7 @@ if ($Command -in @("--help", "-h")) {
 
 # --schema NAME is the one selection channel: strip it and set PROJECT_SCHEMA so
 # every child script's loader narrows to that schema.
-if ($Command -notin @("upgrade-template", "verify-local", "template-status", "migration-plan", "archive-migrations", "dev-test", "skills", "mcp", "feature", "reconcile-migration")) {
+if ($Command -notin @("upgrade-template", "verify-local", "template-status", "targets", "migration-plan", "archive-migrations", "dev-test", "skills", "mcp", "feature", "reconcile-migration")) {
   $schemaFiltered = @()
   for ($index = 0; $index -lt $Arguments.Count; $index++) {
     if ($Arguments[$index] -eq "--schema") {
@@ -625,6 +626,30 @@ try {
       $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
       & $python.Path @($python.Prefix) (Join-Path $PSScriptRoot "verify_local.py") --repo-root $repoRoot @Arguments
       Exit-Team $LASTEXITCODE
+    }
+    "targets" {
+      # Offline and read-only: the report reads the loaded .env values and never connects or starts SQLcl.
+      # It lists every configured schema, so --schema is refused here and an inherited PROJECT_SCHEMA is cleared.
+      foreach ($targetsArgument in $Arguments) {
+        if ($targetsArgument -eq "--schema" -or $targetsArgument -like "--schema=*") {
+          Fail "targets does not accept --schema: it reports every configured schema"
+        }
+      }
+      Remove-Item -LiteralPath Env:PROJECT_SCHEMA -ErrorAction SilentlyContinue
+      . (Join-Path $PSScriptRoot "load_env.ps1") -EnvFile $env:PROJECT_ENV_FILE
+      . (Join-Path $PSScriptRoot "resolve_python.ps1")
+      $python = Resolve-TeamPython
+      if ($null -eq $python) { Fail "Python 3.10 or newer is required to show the effective database targets (python3, python or py -3)" }
+      $repoRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
+      # The module is a package: it runs as -m from the repository root, as team.sh does.
+      Push-Location -LiteralPath $repoRoot
+      try {
+        & $python.Path @($python.Prefix) -m scripts.show_targets @Arguments
+        $targetsStatus = $LASTEXITCODE
+      } finally {
+        Pop-Location
+      }
+      Exit-Team $targetsStatus
     }
     "template-status" {
       . (Join-Path $PSScriptRoot "resolve_python.ps1")

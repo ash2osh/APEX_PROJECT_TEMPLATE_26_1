@@ -398,6 +398,12 @@ def heading_slugs(markdown: str) -> set[str]:
     return slugs
 
 
+def markdown_section(markdown: str, start: str, end: str) -> str:
+    """The text from the heading that starts with `start` up to the heading that starts with `end`."""
+    begin = markdown.index(start)
+    return markdown[begin:markdown.index(end, begin)]
+
+
 def team_commands() -> list[str]:
     """The command names `scripts/team.sh --help` lists."""
     help_text = subprocess.run(
@@ -457,6 +463,15 @@ class GuideContractTests(unittest.TestCase):
             for used in re.findall(r"scripts/team\.(?:sh|ps1) ([a-z][a-z-]+)", text):
                 with self.subTest(file=name, command=used):
                     self.assertIn(used, commands)
+
+    def test_migration_rules_say_which_profile_migrate_and_new_migration_use(self) -> None:
+        rules = (ROOT / "docs" / "migration-rules.md").read_text(encoding="utf-8")
+        environment = markdown_section(rules, "## Environment targets", "## Comparing selected live objects")
+        self.assertIn("`MIGRATION_SCHEMA`, `MIGRATION_SQLCL_CONNECTION` and `MIGRATION_EXPECTED_USER`", environment)
+        self.assertIn("`scripts/team.sh targets`", environment)
+        starting = markdown_section(rules, "## Starting a code migration from DEV", "## Immutability and status receipts")
+        self.assertIn("`new-migration` reads the code profile (`CODE_*`)", starting)
+        self.assertIn("`MIGRATION_*` owner", starting)
 
     def test_local_links_point_at_real_headings(self) -> None:
         for path in DOCS:

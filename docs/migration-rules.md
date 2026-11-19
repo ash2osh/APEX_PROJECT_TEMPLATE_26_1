@@ -290,6 +290,10 @@ It reads the stored source read-only, through the same identity-checked capture 
 - postconditions `valid-*`: each object VALID without compile errors. Add checks for what
   your change must do.
 
+`new-migration` reads the code profile (`CODE_*`) even when a `MIGRATION_*` owner is
+configured for `migrate`, so a split owner needs both profiles to match (see
+[Environment targets](#environment-targets)).
+
 A name that already exists as a migration family is refused; edit that folder, or use
 `scripts/team.sh revise` after a write attempt.
 
@@ -478,7 +482,13 @@ scripts/team.sh migrate \
   migrations/2026-09-27_create-customers-r001 --env prod
 ```
 
-DEV uses `CODE_SQLCL_CONNECTION`, `CODE_EXPECTED_USER`, and `CODE_SCHEMA`.
+`migrate` uses the optional migration owner when its three keys are configured:
+`MIGRATION_SCHEMA`, `MIGRATION_SQLCL_CONNECTION` and `MIGRATION_EXPECTED_USER` for DEV,
+or the `STAGING_MIGRATION_*` or `PROD_MIGRATION_*` keys for those targets. Without a
+migration owner, DEV uses `CODE_SQLCL_CONNECTION`, `CODE_EXPECTED_USER`, and `CODE_SCHEMA`.
+`new-migration` always reads the code profile; `scripts/team.sh targets` prints both
+profiles, offline, and marks a split owner's refused rows.
+
 Staging and production reuse `STAGING_SQLCL_CONNECTION` /
 `STAGING_EXPECTED_USER` and `PROD_SQLCL_CONNECTION` / `PROD_EXPECTED_USER`,
 with explicit `STAGING_SCHEMA` and `PROD_SCHEMA`. Set the schema separately

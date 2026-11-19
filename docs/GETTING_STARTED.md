@@ -247,6 +247,9 @@ The example uses the same schema, connection and user for tables, code and APEX,
 which is right for most projects. If you work with an AI assistant, you can ask
 it to run `/init` and it will ask these questions for you.
 
+To see which schema, connection and login each operation will use, run
+`scripts/team.sh targets`. It reads `.env` only and never connects.
+
 ## 7. Check the connection
 
 First check your files without touching a database. It reads `.env`, the template lock,
@@ -448,6 +451,7 @@ revision folder instead (`...-r002`). Commit the folder.
 | --- | --- |
 | check my setup | `scripts/team.sh doctor` |
 | check my files without a database | `scripts/team.sh verify-local` |
+| see which schema, connection and login each operation uses | `scripts/team.sh targets` (offline) |
 | copy a live app into Git | `scripts/team.sh export <app-id>` |
 | push my edited files to the live app | `scripts/team.sh publish <app-id> --env dev` |
 | refresh the read-only database copy | `scripts/team.sh backup-db` |

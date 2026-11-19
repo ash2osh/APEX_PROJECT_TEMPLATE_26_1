@@ -84,8 +84,9 @@ Commands:
                                               Check .env, template lock, apps and descriptors offline (no database)
   template-status [--format text|json] [--upstream --ref <ref>]
                                               Inspect local template drift; fetch upstream only when requested
+  targets [--format text|json]                Show the schema, connection and login each operation uses (offline; no database)
 Options:
-  --schema <NAME>                             Run one configured schema (except upgrade-template, verify-local, template-status, migration-plan, archive-migrations, dev-test, skills, mcp, feature and reconcile-migration)
+  --schema <NAME>                             Run one configured schema (except upgrade-template, verify-local, template-status, targets, migration-plan, archive-migrations, dev-test, skills, mcp, feature and reconcile-migration)
   --help                                      Show this help
 Environment:
   MIGRATION_PREFLIGHT_INVENTORY_RETRIES        Retry changing live catalogs (default 3)
@@ -128,7 +129,7 @@ command_name="$1"
 shift
 # --schema NAME is the one selection channel: strip it and export PROJECT_SCHEMA
 # so every child script's loader narrows to that schema.
-if [ "$command_name" != upgrade-template ] && [ "$command_name" != verify-local ] && [ "$command_name" != template-status ] && [ "$command_name" != migration-plan ] && [ "$command_name" != archive-migrations ] && [ "$command_name" != dev-test ] && [ "$command_name" != skills ] && [ "$command_name" != mcp ] && [ "$command_name" != feature ] && [ "$command_name" != reconcile-migration ]; then
+if [ "$command_name" != upgrade-template ] && [ "$command_name" != verify-local ] && [ "$command_name" != template-status ] && [ "$command_name" != targets ] && [ "$command_name" != migration-plan ] && [ "$command_name" != archive-migrations ] && [ "$command_name" != dev-test ] && [ "$command_name" != skills ] && [ "$command_name" != mcp ] && [ "$command_name" != feature ] && [ "$command_name" != reconcile-migration ]; then
   schema_filtered=()
   while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -287,6 +288,21 @@ case "$command_name" in
     [ "$#" -ge 1 ] || fail "usage: scripts/team.sh check-conflicts <migration-folder> [...] (--env dev|staging|prod | --local)"
     PROJECT_ENV_FILE="${PROJECT_ENV_FILE:-$REPO_ROOT/.env}" \
       exec "$REPO_ROOT/scripts/check_conflicts.sh" "$@"
+    ;;
+  targets)
+    # Offline and read-only: the report reads the loaded .env values and never connects or starts SQLcl.
+    # It lists every configured schema, so --schema is refused here and an inherited PROJECT_SCHEMA is cleared.
+    for targets_argument in "$@"; do
+      case "$targets_argument" in
+        --schema|--schema=*) fail "targets does not accept --schema: it reports every configured schema" ;;
+      esac
+    done
+    unset PROJECT_SCHEMA
+    PROJECT_ENV_FILE="${PROJECT_ENV_FILE:-$REPO_ROOT/.env}"
+    # shellcheck source=load_env.sh
+    source "$REPO_ROOT/scripts/load_env.sh" "$PROJECT_ENV_FILE"
+    cd "$REPO_ROOT"
+    exec python3 -m scripts.show_targets "$@"
     ;;
   migration-plan)
     migration_plan_root="$REPO_ROOT"
