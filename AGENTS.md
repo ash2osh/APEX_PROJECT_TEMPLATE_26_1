@@ -145,10 +145,13 @@ owner-only commands retain their owner-login checks. See
   [docs/migration-rules.md](docs/migration-rules.md) for naming, ordering,
   recovery, and detection limits.
 - **Feature releases:** For new work that benefits from complete stored-unit source
-  (packages, types, triggers, procedures, functions) and a focused release capsule, use mutable `features/<slug>/<SCHEMA>/` files,
+  (packages, types, triggers, procedures, functions, dedicated views) and a focused release capsule, use mutable `features/<slug>/<SCHEMA>/` files,
   `scripts/team.sh feature capture` for reviewed DEV capture, and `feature diff`
-  for the daily readable source diff. Replace the scaffold check, commit all
-  selected sources and the version-2 manifest, then `feature freeze` before
+  for the daily readable source diff. Replace the scaffold check before DEV
+  prepare. Review the plan, then use `feature apply --execute-plan FILE` for
+  an explicitly authorized DEV write. Use `feature apply --status` offline
+  and `feature reconcile-run --env dev --evidence FILE` for a pending attempt.
+  Commit all selected sources and the version-2 manifest, then `feature freeze` before
   preparing a staging or production target. Review the target plan and digests;
   production also requires verified staging proof for the same capsule. An
   interrupted or unknown attempt needs reconciliation before recovery. Capsule
