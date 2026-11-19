@@ -546,13 +546,18 @@ same payload from staging to production:
 scripts/team.sh feature init inventory --schema APP_CODE
 scripts/team.sh feature capture inventory --package ITEM_LOOKUP --schema APP_CODE --env dev
 scripts/team.sh feature capture inventory --trigger ORDERS_TRG --schema APP_CODE --env dev
+scripts/team.sh feature apply inventory --schema APP_CODE --env dev --unit "PACKAGE BODY:ITEM_LOOKUP" --prepare
+scripts/team.sh feature apply inventory --schema APP_CODE --env dev --execute-plan scratch/feature-dev/prepare-example/plan.json
+scripts/team.sh feature apply inventory --schema APP_CODE --env dev --status
 scripts/team.sh feature diff inventory --schema APP_CODE
 scripts/team.sh feature freeze releases/current.json
 scripts/team.sh rollout releases/current.json --env staging --dry-run --capsule <capsule-dir>
 scripts/team.sh rollout releases/current.json --env staging --prepare --capsule <capsule-dir> --report scratch/staging-prepare.json
 ```
 
-`feature freeze` is offline unless a DEV profile is configured. Then it reads
+Review the prepared plan and coordinate shared DEV writes before executing it.
+The [feature guide](docs/feature-releases.md) explains baseline review and
+reconciliation. `feature freeze` is offline unless a DEV profile is configured. Then it reads
 the selected stored-unit files from DEV, read-only, and stops (exit 2) if that
 read fails; pass `--no-live "<reason>"` to skip the read with a recorded reason.
 See [feature ownership and DEV drift](docs/feature-ownership.md).

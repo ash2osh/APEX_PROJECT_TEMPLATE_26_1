@@ -13,13 +13,14 @@ migrations for one-time data and schema changes.
 - `feature capture` reads one stored unit: a package or type (specification and
   body), or a single trigger, procedure or function. Put each separately
   selected view in `views/<name>.sql` with one `CREATE OR REPLACE VIEW` and
-  explicit projected columns. Declare `DEFAULT COLLATION` when the catalog
-  reports it for the view. Destructive DDL (`DROP`, `RENAME`, `TRUNCATE`) and
+  explicit projected columns. Prepare binds and verifies the effective
+  default collation when the source omits it. Destructive DDL (`DROP`, `RENAME`, `TRUNCATE`) and
   anything the DDL forms refuse stay in dated migrations started with
   `scripts/team.sh new-migration --source`.
 - `feature apply --prepare` reads the configured DEV target and saves a private
-  plan and source review. An existing definition needs retained evidence or
-  explicit `--accept-live-baseline` adoption. Review the plan and coordinate
+  plan and source review. `PROJECT_ENV_FILE` must be inside the checkout.
+  A missing or drifted baseline requires a fresh review and explicit
+  `--accept-live-baseline` with the displayed digest. Review the plan and coordinate
   before executing the authorized write with `--execute-plan FILE`.
   A verified write saves the prepared diff in the [daily change record](daily-change-record.md).
 - `feature apply --status` reports pending attempts offline, including when
