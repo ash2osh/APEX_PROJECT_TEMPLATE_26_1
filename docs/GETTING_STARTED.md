@@ -354,6 +354,11 @@ scripts/team.sh verify-local
 Every line should say `PASS`. A line that says `ATTENTION` or `FAIL` names the file
 or setting to fix; the command exits 0 only when every line passes.
 
+`verify-local` expects an app folder for every ID in `APEX_APP_ID`. The example `.env`
+lists `100,200`, so if you exported only app 100 you will still see
+`configured application 200 directory not found`. Export each ID you use
+(`scripts/team.sh export <app_id>`), or remove the IDs you do not use from `APEX_APP_ID`.
+
 After validation, review your root `.env` and version it in your own downstream
 Git repository. Keep only literal configuration and saved SQLcl connection
 names in it; credentials stay in SQLcl's secure store. The root `.env` is
