@@ -14,3 +14,9 @@ template upgrades.
 - `team.ps1` on native Windows: the `-y` and `--confirm-target` flags, `reconcile-migration` and the `archive-migrations` options (`--preserve-unresolved`, `--skip-refused`, `--all`) are covered by the CI PowerShell parse step and offline tests only. Run them on a Windows 11 machine against the disposable Docker schemas before relying on them there.
 - Offline-only coverage: `_refuse_body_outside_release` (`scripts/feature_release.py`) and the superseded-cleanup rule (`_superseded_reconciliations` in `scripts/release_cleanup.py`) have unit tests but no scenario in `tests/test_live_feature_release.py`.
 - `baseline export-grants` is not covered by `tests/test_live_baseline.py`: its system-privilege part needs a DBA login, which the disposable connections do not have.
+
+## Open after the 2026-11-19 review fixes
+
+- Virtual-column expression capture needs an edit in each template's `scripts/compare_env_catalog.sql`. That file is not a shared core file, so this branch does not change it.
+- Oracle's catalog representation of INVISIBLE columns was not verified against a live database.
+- The PowerShell backup change (`scripts/backup_db.ps1`) was verified on PowerShell 7.7 on Linux only, not on Windows PowerShell 5.1.
