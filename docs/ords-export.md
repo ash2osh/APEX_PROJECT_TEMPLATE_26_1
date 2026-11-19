@@ -141,8 +141,8 @@ several mirrors in one run all of them are installed or none.
 | Run | Replaced | Untouched |
 | --- | --- | --- |
 | `backup-ords` | `database/<SCHEMA>/ords/` for each exported schema | every other file in `database/` |
-| `backup-db`, schema has tables or code scopes and ORDS is selected | `database/<SCHEMA>/` as a whole, including `ords/` | other schemas |
-| `backup-db`, schema has tables or code scopes, ORDS not selected (no profile, or `--schema` outside it) | `database/<SCHEMA>/` as a whole, **except** its existing `ords/`, which is carried over unchanged | other schemas |
+| `backup-db`, schema has tables or code scopes and ORDS is selected | `database/<SCHEMA>/` as a whole, including `ords/`; a table or code scope this run did not refresh for the schema is carried over unchanged (its directories and manifest) | other schemas |
+| `backup-db`, schema has tables or code scopes, ORDS not selected (no profile, or `--schema` outside it) | `database/<SCHEMA>/` as a whole, **except** its existing `ords/`, which is carried over unchanged; a table or code scope this run did not refresh is carried over the same way | other schemas |
 | `backup-db`, schema only in the ORDS profile | `database/<SCHEMA>/ords/` | that schema's other mirrors |
 
 A dirty `database/<SCHEMA>/ords/` (uncommitted or untracked changes) blocks both
