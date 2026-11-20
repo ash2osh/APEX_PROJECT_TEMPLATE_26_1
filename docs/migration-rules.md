@@ -36,7 +36,7 @@ refused. With one schema, keep each migration family in one layout: `migrate`
 and `check-conflicts` refuse a family that appears both flat and under
 `migrations/<SCHEMA>/` for that schema, because both folders target it and
 could apply the same revision twice. The same family under another schema's
-folder targets a different schema and is allowed. The date is the folder creation date and stays the same when the
+folder targets a different schema and is allowed. `new-migration` always writes the schema-folder layout, even with one schema, so a project with flat folders ends up with both layouts. It refuses a name that an existing migration folder already uses, in either layout. `revise` writes the next revision in the family's own layout. The date is the folder creation date and stays the same when the
 migration is promoted. The ISO date prefix sorts newer dates ahead when a file
 browser is sorted descending; the name cannot set the browser's sort direction.
 Folders created on the same date have a name-based tie-break, not an
@@ -89,6 +89,10 @@ repository-relative `destination`. Records written from this version also carry
 an optional `evidence` list with the plan's evidence strings; an index without
 that key loads unchanged. Unknown keys or malformed records make migration
 discovery refuse the index.
+
+A folder with no attempt or receipt evidence, such as one that was never applied, is not
+refused. Its dry-run plan shows the evidence `no-attempt-or-receipt`; check that line before
+you add `--yes`.
 
 A folder with an attempt record but no verified receipt is refused, and the
 refusal names the `reconcile-migration` command. Three ways through:
@@ -506,6 +510,8 @@ SQL file (`ORA-20987`), and every precondition and postcondition session
 reports its identity too, so results observed on a different database are
 refused. Receipts are written only for verified applies.
 
+When DEV and staging point at one database, a folder applied to DEV is already in place when the staging run starts. Preflight then refuses that run with exit 1 before the prompt, and before `--yes` or `--confirm-target` takes effect. For the first selected folder, its absence precondition reports `CHECK_FAILED`; a `CREATE` of an object that already exists is also reported as `LIVE_NAMESPACE_OCCUPIED`. A later folder's precondition runs at its apply boundary, after the confirmation. This is a limit of rehearsing on one shared database, not a confirmation problem: use a separate staging database, as the [live feature-release checks](live-feature-tests.md) do.
+
 A connection name, database name, unique name or service name that looks like
 production (`prod`, `prd`, `production` or `live` as a word, `PRODDB`,
 `ERPPROD`, `erpprod.example.com`) is refused unless the selected target is
@@ -552,7 +558,10 @@ the display, `--format json` emits a machine-readable report, and `--jobs N`
 limits parallel read-only check sessions. Each session is bounded by the
 configured driver size and timeout. Exit status 1 means one or more checks
 returned false; status 2 means the target or verification could not be
-confirmed. Failed reports retain private diagnostics under `scratch/`.
+confirmed. Failed reports retain private diagnostics under `scratch/`. The default is `both`,
+which also evaluates preconditions. After a migration has applied, they usually fail (for example
+an absence check), so `both` usually exits 1 for an applied folder; use `--phase post` to check one.
+A folder with an empty `preconditions` list has no precondition check that can fail.
 
 ## Rehearsal
 

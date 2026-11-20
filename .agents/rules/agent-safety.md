@@ -39,7 +39,10 @@
   tell it was not typed. Without `--yes` the acknowledgment is still typed at a terminal.
 - `-y` / `--yes` answers a staging or production `[y/N]` prompt only when the developer asked in the
   conversation for that run to be unattended. Production also needs `--confirm-target` with the name the
-  developer typed for the run. `TEAM_ACK_FROM_STDIN` is retired and ignored; piped or redirected acknowledgments stay refused, and `--yes` is the recorded route.
+  developer typed for the run. For DEV, staging or a disposable/test target, an agent may also pass
+  `--confirm-target`, but only with the `db_unique_name` it read from that same target in that run with a
+  read-only query, and only when the developer asked for that run to be unattended (see `AGENTS.md`).
+  `TEAM_ACK_FROM_STDIN` is retired and ignored; piped or redirected acknowledgments stay refused, and `--yes` is the recorded route.
 - Use `scripts/team.sh compare-schema` with exact names or object prefixes for
   read-only live drift reports. Receipts and resulting DDL cannot reliably
   identify one unique migration file.

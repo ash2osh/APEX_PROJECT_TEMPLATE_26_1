@@ -115,7 +115,7 @@ def is_original_template(repo_root: Path, manifest: dict) -> bool:
     try:
         configuration.read_string(config_path.read_text(encoding="utf-8"))
         origin = configuration.get('remote "origin"', "url")
-    except (OSError, UnicodeError, configparser.Error):
+    except (OSError, UnicodeError, ValueError, configparser.Error):
         return False
     origin_key = _normalized_remote(origin)
     return origin_key is not None and origin_key == _normalized_remote(manifest["upstream"])

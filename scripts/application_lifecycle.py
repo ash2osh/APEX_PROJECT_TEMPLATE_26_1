@@ -34,8 +34,8 @@ def _positive(value):
 def validate_snapshot(data: Mapping) -> None:
     if not isinstance(data, Mapping) or type(data.get('schemaVersion')) is not int or data['schemaVersion'] != 1:
         raise ValueError('unsupported lifecycle snapshot')
-    if not isinstance(data.get('release'), str) or not re.fullmatch(r'26\.1(?:\.[0-9]+)*',data['release'],re.ASCII):
-        raise ValueError('lifecycle observation requires APEX 26.1')
+    if not isinstance(data.get('release'), str) or not re.fullmatch(r'26\.[12](?:\.[0-9]+)*',data['release'],re.ASCII):
+        raise ValueError('lifecycle observation requires APEX 26.1 or 26.2')
     identity=data.get('identity')
     if not isinstance(identity,Mapping) or any(not isinstance(identity.get(key),str) or not identity[key].strip() for key in IDENTITY):
         raise ValueError('lifecycle identity is incomplete')

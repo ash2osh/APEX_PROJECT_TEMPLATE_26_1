@@ -64,7 +64,7 @@ def run_live_doctor(repo_root: Path, env_file: Path | None = None) -> dict:
         env["PROJECT_ENV_FILE"] = str(env_file)
 
     try:
-        res = subprocess.run(cmd, cwd=repo_root, env=env, capture_output=True, text=True, check=False)
+        res = subprocess.run(cmd, cwd=repo_root, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
         stdout = res.stdout or ""
         stderr = res.stderr or ""
         if res.returncode == 0:
@@ -73,13 +73,26 @@ def run_live_doctor(repo_root: Path, env_file: Path | None = None) -> dict:
                 "message": "live database identity and APEX access verified",
             }
         combined = (stdout + "\n" + stderr).lower()
+        if "workspace user check unavailable" in combined:
+            # doctor.sql refuses (ORA-20073) when no configured app is visible in the schema, for
+            # example before the first export. SQLcl and the database were reached; only the
+            # workspace-user check cannot run, so the message must not blame the connection.
+            return {
+                "status": "unavailable",
+                "message": "live doctor verification unavailable: no configured APEX app is visible in the schema, "
+                "so the workspace user check cannot run",
+            }
         if (
             "command not found" in combined
-            or "not found" in combined
+            or "sql: not found" in combined
             or "cannot find" in combined
-            or "unknown" in combined
-            or "unavailable" in combined
             or "no such file or directory" in combined
+            or "unknown connection" in combined
+            or "ora-12541" in combined
+            or "ora-12514" in combined
+            or "connection refused" in combined
+            or "tns-" in combined
+            or "unavailable" in combined
         ):
             return {
                 "status": "unavailable",
@@ -441,6 +454,8 @@ def build_report(
                     cwd=repo_root,
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=30,
                 )
                 if res.returncode == 0:
