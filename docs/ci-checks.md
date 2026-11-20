@@ -13,8 +13,9 @@ agreed way to stop that.
 
 The jobs are `offline` (Linux, Python 3.10), `offline (latest Python 3.x)` (Linux, the newest Python 3.x, with the same
 compile and behavioural-test steps, plus the newest Graphify release (the optional `graph` extra) so the Graphify pipeline tests run instead of
-skipping; no lint or other checks), `windows-offline` and `macos-installer`. The full suite takes about 10 minutes on
-Linux and 20 to 30 on Windows.
+skipping; no lint or other checks), `windows-offline`, `windows-powershell-51` and `macos-installer`. The full suite
+takes about 10 minutes on Linux and 20 to 30 on Windows.
+The `windows-powershell-51` job runs the fast steps of `scripts/windows_check.ps1` (all but the tests and the pre-push check) under Windows PowerShell 5.1; see [Windows verification](windows-verification.md).
 
 The Graphify step is not pinned. When a new Graphify release moves the code `scripts/setup_graphify_apx.py` patches,
 that job fails on every pull request until the script is updated: fix the script (its tests are in
@@ -28,7 +29,8 @@ The `offline` job also runs these two checks, after the shell syntax check and b
 - **PowerShell parse** of every `scripts/*.ps1`, with `[System.Management.Automation.Language.Parser]::ParseFile`. It
   finds syntax errors only, not runtime errors. It fails when a file has a parse error or when no `.ps1` file is found.
   `windows-offline` runs the same parse step. CI parses with pwsh 7 only, so this step does not check Windows PowerShell
-  5.1; that engine has its own check, described in [Windows verification](windows-verification.md).
+  5.1. The `windows-powershell-51` job runs the readiness script's fast steps, including its parse step, under 5.1; see
+  [Windows verification](windows-verification.md).
 
 ## Before you push
 
@@ -43,7 +45,9 @@ you changed, in about a second to a minute. Existing problems in other files do 
 project created from the template. `--all` checks every file under `scripts/`, `tools/` and `tests/`, as CI does; use it
 before opening a pull request for a broad change. It does not run the whole suite or any Windows check.
 
-ShellCheck runs only when `shellcheck` is on `PATH`, and the PowerShell parse only when `pwsh` is on `PATH`. When a tool
+ShellCheck runs only when `shellcheck` is on `PATH`, and the PowerShell parse only when `pwsh` is on `PATH`; on Windows,
+Windows PowerShell is the parser when `pwsh` is missing. The shell syntax check uses Git Bash on Windows, never the WSL
+launcher in System32, and prints a note when no Git Bash is found. When a tool
 is missing, the check prints a one-line note and does not fail, so the local check stays usable on a machine without it;
 CI still runs both. When a step fails, the output ends with `CHECKS FAILED:` and the names of the failed steps.
 
@@ -128,6 +132,7 @@ Set these in GitHub (Settings, Branches), they are not in the repository:
 - Require the status checks `offline`, `offline (latest Python 3.x)`, `windows-offline` and `macos-installer` to pass.
   GitHub lists a check as a requirement only after it has run once, so add `offline (latest Python 3.x)` after the
   first run of the workflow that contains it.
+  `windows-powershell-51` is not yet a required check; the maintainer decides whether to add it.
 - Do not allow administrators to bypass these rules, so no pull request merges before its checks pass.
 - Allow auto-merge and turn it on for each pull request (`gh pr merge --auto --merge`): GitHub merges it when the
   checks pass, and nobody has to wait for the run.

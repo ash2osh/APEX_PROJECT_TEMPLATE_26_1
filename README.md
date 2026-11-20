@@ -163,7 +163,7 @@ pwsh -File scripts/team.ps1 doctor
 `powershell.exe` (Windows PowerShell 5.1) works the same way. Windows also
 needs Git for Windows (the migration, comparison and deployment helpers run in
 its Bash), Python 3.10 or newer, and SQLcl on `PATH` for database operations.
-Offline `migration-plan` needs no SQLcl. Four things trip people up there:
+Offline `migration-plan` needs no SQLcl. Five things trip people up there:
 
 - **Script policy.** Windows PowerShell 5.1 on a client Windows starts with the
   `Restricted` policy and refuses to run any `.ps1`. Allow your own account to
@@ -190,6 +190,10 @@ Offline `migration-plan` needs no SQLcl. Four things trip people up there:
   them as wildcards in many cmdlets and Git Bash does not convert such a path
   for native programs; the scripts work around both, but your own commands in
   that folder may not (`Set-Location "C:\work [1]"` fails; use `-LiteralPath`).
+- **Arguments under Windows PowerShell 5.1.** Windows PowerShell 5.1 cannot pass an empty argument, a double quote
+  (`"`), or a value that contains a space and ends in a backslash to Git Bash or Python intact, so `team.ps1` refuses
+  such an argument there and names the fix: run the command with PowerShell 7.3 or newer (`pwsh`), or `scripts/team.sh`
+  in Git Bash. A single quote in an argument for Git Bash is refused on Windows under every engine, as before.
 
 `team.ps1` accepts a migration folder as `migrations\2026-10-02_name-r001`,
 `.\migrations\2026-10-02_name-r001\` or an absolute path inside the checkout.
