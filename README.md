@@ -2,7 +2,7 @@
 
 This template supports APEX 26.1+ applications authored as APEXlang. It uses
 plain Git source, explicit deployment JSON, and dated, ordered SQL migration
-folders. No custom team metadata schema or database lock tables are required.
+folders. No custom team metadata schema or database lock tables are required. Publish's lifecycle check accepts APEX 26.1 and 26.2 only; see [Known limitations](docs/known-limitations.md).
 
 **Supported databases:** Oracle Database 23ai and newer (this includes 26ai). The tools are tested only there. An older database such as 19c is not refused: `doctor` and the commands that write to a target print a warning and continue on a best-effort basis, and some features that need 23ai catalog columns (for example virtual-column expressions) are not available on it.
 
@@ -128,7 +128,7 @@ Choose Chrome, Firefox, both, or none for this checkout with `scripts/team.sh mc
 New here? Follow [Getting started](docs/GETTING_STARTED.md): it walks through
 everything below with the output you should see. You need SQLcl 26.1 or newer,
 Git, Python 3.10 or newer, Bash 4.4 or newer, and an Oracle database with
-APEX 26.1 or newer. To practice locally, the
+APEX 26.1 or newer (publish accepts 26.1 and 26.2 only; see [Known limitations](docs/known-limitations.md)). To practice locally, the
 [United Codes `uc-local-apex-dev`](https://github.com/United-Codes/uc-local-apex-dev)
 containers give you one.
 Live `compare-env` and `baseline` commands require SQLcl 26.3.0.0 or newer;

@@ -63,6 +63,7 @@ Check each row. The command in the last column prints the version.
 
 Notes:
 
+- **APEX:** `publish` and `deploy` accept APEX 26.1 and 26.2 only. A later release is refused with `ORA-20018` until it is qualified; see [Known limitations](known-limitations.md).
 - **macOS** ships Bash 3.2, which is too old. Install a current one with
   `brew install bash` and run the scripts with it.
 - **Windows** needs Git for Windows (it provides Bash). A Python from python.org

@@ -78,6 +78,7 @@ These lines come from `scripts/team.sh verify-local` (step 8 of the getting star
 | `ORA-20016: Live application changed after the Builder drift check` | Someone saved or imported the app in the moments between the drift check and the import. Nothing was imported. | `scripts/team.sh export <id>`, review and merge, publish again. |
 | `the application path contains characters SQLcl cannot pass` | The repository path contains `'`, `"` or `&`. | Move the checkout to a path without them. |
 | `SQLcl did not report a successful APEX import` | SQLcl exited without importing, for example because the workspace name in the descriptor is wrong. | Check `workspace.name` in the descriptor. |
+| `publish error: pre-publication lifecycle observation is unavailable; nothing imported` | The read-only lifecycle capture before the import failed. Nothing was imported. | Open `lifecycle-before/sqlcl-output.log` in the folder named by `publish: lifecycle diagnostics retained at ...`. `ORA-20018` there means the database runs an APEX release that this template's adapter does not accept. This template accepts APEX 26.1 and 26.2; use the template for that release. Delete the folder after reading it. |
 | `APEXlang source bytes do not match the post-import re-export` | APEX normalized the source on import. | Run `export`, commit the canonical source, and publish again. |
 
 ## Migrations
