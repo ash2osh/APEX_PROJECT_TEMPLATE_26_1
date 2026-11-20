@@ -337,6 +337,9 @@ $importAttempted = $false
 # Set once the import changed the target and cleared after its verification,
 # so a failure in between can say what to do next.
 $importUnverified = $false
+# Set when the pre-publication lifecycle observation fails. Its message names the SQLcl diagnostics file,
+# so the scratch folder is kept for that file rather than deleted under the message.
+$lifecycleDiagnostics = $false
 # Set while the import session runs and cleared once its output has been read: an
 # interrupt in between leaves the import's result unknown (SQLcl may have
 # finished it already).
@@ -395,7 +398,10 @@ try {
   $lifecycleArguments = @('--connection', $sqlclConnection, '--expected-user', $expectedUser, '--schema', $parsingSchema,
     '--workspace', [string]$deployment.workspace.name, '--app-id', $AppId, '--environment', $appEnvironment)
   & $lifecyclePython.Path @($lifecyclePython.Prefix) (Join-Path $PSScriptRoot 'application_lifecycle.py') capture @lifecycleArguments --run-dir (Join-Path $publishWorkDir 'lifecycle-before')
-  if ($LASTEXITCODE -ne 0) { throw 'publish error: pre-publication lifecycle observation is unavailable; nothing imported' }
+  if ($LASTEXITCODE -ne 0) {
+    $lifecycleDiagnostics = $true
+    throw 'publish error: pre-publication lifecycle observation is unavailable; nothing imported'
+  }
   $identitySnapshot = Join-Path $publishWorkDir 'lifecycle-before/lifecycle-snapshot.json'
   $identityJson = Get-Content -LiteralPath $identitySnapshot -Raw | ConvertFrom-Json
   $identityFields = @('db_unique_name','service_name','container_id','container_name','edition','server_host','session_user','current_schema')
@@ -600,6 +606,10 @@ try {
   if ($importAttempted) {
     $keepPublishWorkDir = $true
     [Console]::Error.WriteLine("WARNING: " + "publish: unverified import diagnostics retained at $publishWorkDir")
+  }
+  if ($lifecycleDiagnostics) {
+    $keepPublishWorkDir = $true
+    [Console]::Error.WriteLine("WARNING: " + "publish: lifecycle diagnostics retained at $publishWorkDir")
   }
   if (-not $keepPublishWorkDir -and (Test-Path -LiteralPath $publishWorkDir)) {
     Remove-Item -LiteralPath $publishWorkDir -Recurse -Force -ErrorAction SilentlyContinue
