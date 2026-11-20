@@ -122,3 +122,64 @@ Commands run from this checkout, in order, with results:
 - Virtual-column expression capture needs an edit in each template's `scripts/compare_env_catalog.sql` (not a shared core file).
 - Oracle's catalog representation of INVISIBLE columns was not verified against a live database.
 - The PowerShell backup change was verified on PowerShell 7.7 on Linux only, not Windows PowerShell 5.1.
+
+## 8. Review pass 2 ported from the sibling template
+
+**Observation:** the 26.2 template's second review pass had fixes this template did not have. A credential in `--source` could reach `.template-lock.json` and error text. A remote spelled another way, or a repeated `fetch` line, broke original-template detection. A lock with empty `files` or no `commit` read as current. `team.ps1` left `PROJECT_SCHEMA` set in a persistent PowerShell session after `--schema` or `targets`.
+
+| File | Change |
+| --- | --- |
+| `scripts/upgrade_template.py` | `_reject_credentials` refuses a password anywhere and a username on http(s). `ssh://user@host` and scp-style `user@host:path` stay allowed. It runs in `_normalize_source`, in `main` before any git command for an explicit `--source`, and in `_validated_lock` for the lock's upstream (the message adds "remove it from .template-lock.json"). `run_git` redacts `scheme://user[:password]@` in the arguments and stderr it prints. `read_lock_with_hash` refuses a lock whose `commit` is not a 40- or 64-hex string or whose `files` is empty. |
+| `scripts/template_drift.py` | `is_original_template` uses `ConfigParser(interpolation=None, strict=False)` and `_normalized_remote`, which compares (lowercase host, path) so https, http, git, ssh, ssh-with-port and scp-style spellings of one repository match. Unparsable values never match. `_local_file_state` reports `matches-lock` when the lock holds either the raw or the normalized digest. |
+| `scripts/team.ps1` | The caller's `PROJECT_SCHEMA` is saved at the top and restored by `Restore-CallerProjectSchema`, called from `Fail`, `Exit-Team`, the catch-block refusal exit and the outer `finally`. It is idempotent. |
+| `tests/test_upgrade_template.py` | `SourceCredentialTests` and `LockReadStateTests`. |
+| `tests/test_template_drift.py` | Five tests: legacy raw-hash CRLF match, unrelated hash, LF normalized match, empty `files`, missing `commit`. The fixture lock gained `"commit": "a" * 40`, because a lock without a commit is now invalid. |
+| `tests/test_verify_local.py` | `OriginalTemplateRemoteTests`: two `fetch` lines, equivalent spellings, a different repository or host, local path upstream, garbage origins, and the normalizer. It imports `_normalized_remote` from `scripts/template_drift.py`. |
+| `tests/test_team_cli.py` | `TeamPs1EnvironmentTests`: three PowerShell tests, skipped without `pwsh`. |
+| `README.md` | "Safety built in" row: production is never written without an explicit confirmation (a typed `y`, or `--confirm-target` naming the observed `db_unique_name`). The old phrase "production is read-only" was false for 26.1, which writes to production after confirmation. The two legacy-lock recovery commands gained `--ref main`. |
+| `docs/GETTING_STARTED.md` | The cleanup is selective. `git ls-files .github` lists what the template ships, and only `template-checks.yml` and `dependabot.yml` are removed by name. The tests the lock records are listed from `.template-lock.json`, and only reviewed names are removed. `docs/superpowers/` is removed by name after review. A list of preserved project data follows. The `.core-stamp.json` and `removed-by-cleanup` sentences are kept. The two legacy-lock recovery commands gained `--ref main`. |
+
+**Deviations from the 26.2 patch:**
+- In 26.1, `is_original_template` and `_normalized_remote` live in `scripts/template_drift.py`, so the change is there. `scripts/verify_local.py` is unchanged and still imports the function.
+- The cleanup text is 26.1's own. The 26.2 guide says to review `tests/` by hand. Here the lock's recorded `tests/` entries give the list, because `tests/**` is template-owned in the manifest and a project's own tests are not in the lock.
+- The README wording is the 26.2 sentence, checked against 26.1: `scripts/migrate.py` refuses `--yes` alone for production and accepts a typed `y` or a matching `--confirm-target`, and `scripts/deploy.sh` does the same.
+- Not ported: the `features/` and `releases/` protection (26.1 already has it) and the `application_lock.py` follow-ups (26.1 has no application lock script). `docs/publish-rules.md`, `TODO.md`, `template-manifest.json` and `docs/superpowers/*` were not touched.
+- The shared-core files were not edited. `scripts/sync_core.py check .` reports OK for 243 files.
+
+**Tests, before and after** (`python3 -m unittest discover -s tests -p <file>`):
+- `test_upgrade_template.py`: 62 OK before, 73 OK after.
+- `test_template_drift.py`: 7 OK before, 12 OK after.
+- `test_verify_local.py`: 39 OK before, 45 OK after.
+- `test_team_cli.py`: 75 OK (6 skipped) before, 78 OK (6 skipped) after. The three new PowerShell tests ran on PowerShell 7.7 on Linux.
+- `test_documentation_contract.py`: 30 OK before and after.
+- `test_template_update_notice.py`: 9 OK before and after.
+- `ruff check` on the seven touched Python files: all checks passed.
+
+**New tests against the old code** (scratch copy of `git archive HEAD` with the new test files, no stash):
+- `test_upgrade_template.py`: 7 failures and 10 errors. The errors are the credential tests, because `_reject_credentials` does not exist on HEAD. The failures are the CLI, `_lock_bytes`, lock-read and `run_git` redaction checks and the four lock-state refusals. The "normal lock still reads" test passes on HEAD, as intended.
+- `test_template_drift.py`: 3 failures (legacy raw-hash CRLF, empty `files`, missing `commit`).
+- `test_verify_local.py`: 7 failures and 1 error. The error is the normalizer import, because `_normalized_remote` does not exist on HEAD.
+- `test_team_cli.py`: 2 failures on the old `team.ps1` (the `targets --help` inherited-schema test and the refused `doctor --schema` test). The unset-schema guard passes on the old script, as intended.
+
+**Not verified:** Windows PowerShell 5.1 (PowerShell 7.7 on Linux only). No database, SQLcl, network, publish, migrate or deploy command ran. The full `scripts/ci_run_tests.py` suite was not run; only the six modules named above were run.
+
+## Live verification on local Docker Oracle (2026-11-19, pass 3)
+
+Targets: the three disposable scratch containers `fq-scratch-dev`, `fq-scratch-stg` and `fq-scratch-prod` (Oracle AI Database 26ai Free 23.26.3, schema `FEATURE_QA`, saved connections `fqdev`, `fqstg`, `fqtarget3`). The persistent `local-26ai` container was not written to. The scratch containers were started for this run and stopped afterwards.
+
+- **Repository live modules, run from throwaway clones of the final branch:** `tests/test_live_baseline.py` 14 tests OK; `tests/test_live_feature_release.py` 22 tests OK with the three-target proof, the dedicated long-view and the staging benchmark scenarios enabled (1 skipped: the two-schema scenario needs a second schema).
+- **Generator checks written for this pass (32, all OK):** the CHECK replacement block compiles and runs on Oracle (reviewed replace, idempotent re-run, refusal with -20994 for a stale review or changed status, -20993 for a primary key of the same name, DISABLED stays DISABLED, quoted identifiers compare by their text, the precondition query counts violating rows, and the known drop-then-add hazard is confirmed so the precondition is what prevents it); the sequence block restores the target's own increment; an owner-qualified object-type column adds and checks; catalog-shaped foreign-key order creates parent first; `ALL_TAB_PRIVS.GRANTABLE` exists; GRANT ALL and column grants are not recorded as ALL or UPDATE(col); INVISIBLE columns add with `INVISIBLE` (also before an identity clause) and the postcondition checks `HIDDEN_COLUMN`.
+- **What the catalog showed:** an INVISIBLE user column is `HIDDEN_COLUMN=YES`, `USER_GENERATED=YES`; a function-based index column is hidden, `USER_GENERATED=NO`, virtual; `ALL_TAB_COLS.DATA_DEFAULT_VC` returns a virtual column's expression on 23ai (not confirmed on older releases, so expression capture is not implemented). `DATA_DEFAULT` is a LONG and cannot be used in a SQL expression.
+- **SQLcl session cost:** about 2.1 s for connect, one statement, exit.
+- **Real project check:** `upgrade_template.py --dry-run` against a long-lived downstream project changed nothing in it (the working tree stayed clean) and found no mode-only updates.
+- **Not verified:** Windows PowerShell 5.1.
+
+## Second live round and the 23ai floor (2026-11-20)
+
+- **Supported databases:** Oracle 23ai and newer. An older database is not refused: `doctor` and the `migrate` and feature paths print a warning and continue. The floor is documented in the README, `known-limitations.md` and `.env.example`.
+- **DEV shorthand:** `DEV_SCHEMA`, `DEV_SQLCL_CONNECTION` and `DEV_EXPECTED_USER` (all three or none) fill the TABLES, CODE and APEX profiles that have none of their own keys, in the Python, Bash and PowerShell loaders; the expected user is never defaulted. Checked live: a `.env` with only these three keys plus the project keys passed `targets` (bash and PowerShell) and `doctor` against the local demo database in both templates.
+- **Virtual columns:** the catalog captures `virtual_expression` (`ALL_TAB_COLS.DATA_DEFAULT_VC`; NULL where the database has no such column) and the baseline generator adds a missing virtual column, also an invisible one, with `GENERATED ALWAYS AS (...) VIRTUAL`. Live run: the baseline module added both a virtual and an INVISIBLE column to staging and the checks passed.
+- **Bug found by the live run:** an INVISIBLE user column has no `COLUMN_ID`, so the compare-env columns check failed with "omitted required column position evidence" for any schema that had one. The catalog now carries `INTERNAL_COLUMN_ID` and the check accepts a hidden user column that has one.
+- **Upgrade:** the post-upgrade sync no longer sets up Graphify in a project that does not use it; an upstream executable-bit change now reaches a project's copy of a script (a dry run against a long-lived downstream project found no mode-only updates).
+- **Verified live on Oracle 23ai Free:** `tests/test_live_baseline.py` 14 of 14 and `tests/test_live_feature_release.py` 22 of 22 (1 skipped: the two-schema scenario) on both templates, on the final commits, from throwaway clones. The doctor warning branch was run with its threshold raised and printed the expected text.
+- **Not verified:** Windows PowerShell 5.1 (to be run on a Windows machine), a database older than 23ai (no such instance), and SQLcl session consolidation (not attempted; about 2.1 s per session was measured).

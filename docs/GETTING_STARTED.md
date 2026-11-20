@@ -152,24 +152,40 @@ files and resolve them before continuing. Keep the generated
 of installed template files. Review and commit the upgrade result in your own
 repository before cleaning it.
 
-Then remove the inherited maintenance files:
+Then perform the cleanup from file-level provenance, not broad directory sweeps:
+never delete a file simply because it lives under `tests/`, `.github/` or
+`docs/superpowers/`. Review each file against `template-manifest.json` and
+`.template-lock.json`:
 
 ```bash
-git rm -r --ignore-unmatch tests .github docs/superpowers
+# Workflows: list what this repository ships, then remove only the inherited template-maintenance workflows.
+# A project's own workflow, for example a deployment workflow, must be listed and kept before anything is removed.
+# Never remove by glob.
+git ls-files .github
+git rm --ignore-unmatch .github/workflows/template-checks.yml .github/dependabot.yml
+# Tests: the lock records each test the upgrade installed from the template. A project's own regression tests
+# are not in the lock. List the recorded tests, then remove by name only the inherited ones you reviewed.
+python3 -c 'import json; print("\n".join(sorted(p for p in json.load(open(".template-lock.json"))["files"] if p.startswith("tests/"))))'
+# Example, one reviewed path at a time: git rm --ignore-unmatch -- tests/test_name.py
+# Planning documents: docs/superpowers/ holds the template's historical plans (templateOnly in the manifest, so
+# upgrade-template does not install them). Remove only those by name after review; keep plans your project wrote.
 # The shared-core stamp belongs to the template repository's shared-core check. A project created from the
 # template inherits it, but it is not part of a downstream project; upgrade-template never ships it.
 git rm --ignore-unmatch .core-stamp.json
 git status --short
 ```
 
-This removes template tests, GitHub Actions workflows, Dependabot configuration
-and tracked historical planning/design documents if present. The daily team
-commands do not require those files. Keep `scripts/`, operational documentation,
-`.agents/`, `.claude/`, `template-manifest.json` and `.template-lock.json`; remove
-`.core-stamp.json` as shown above.
-Configure the credential-free root `.env` in step 6 and keep it in your own Git
-repository after validation. Review the cleanup, commit it, and then push to
-your downstream remote.
+Explicitly preserve:
+- Project-specific regression and unit tests in `tests/`, including any file the project added or depends on
+- Project-written plans, specs and other documents under `docs/`
+- `PROJECT.md`, `AGENTS.project.md`, `.agents/rules/project.md` and `TODO.md`
+- Operational configuration (`.env`), application source (`apps/`), migrations (`migrations/`), and migration receipts and recovery evidence
+
+Keep `scripts/`, operational documentation, `.agents/`, `.claude/`,
+`template-manifest.json` and `.template-lock.json`; remove `.core-stamp.json`
+as shown above. Configure the credential-free root `.env` in step 6 and keep it
+in your own Git repository after validation. Review the cleanup, commit it, and
+then push to your downstream remote.
 
 After this cleanup, `scripts/team.sh template-status` reports removed tests and
 `.github/` files as `removed-by-cleanup`. That state is informational, not drift:
@@ -178,6 +194,22 @@ the status stays `current` when nothing else differs.
 An upgrade keeps previously installed files deleted (`KEEP-DELETED`), but may
 introduce new template test/workflow files. Review those after every upgrade.
 Do not delete your project's own regression tests as part of repeated cleanup.
+
+### Existing projects: picking up the 2026-11-19 fixes
+
+A project that finished its cleanup earlier gets these changes with
+`scripts/team.sh upgrade-template` (run `--dry-run` first and review it). Afterwards:
+
+- Remove an inherited `.core-stamp.json` (`git rm --ignore-unmatch .core-stamp.json`).
+  `pre_push_check` skips the shared-core check once `.template-lock.json` exists, but the
+  file is not part of a downstream project.
+- `scripts/team.sh template-status` now reports the tests and `.github/` files you removed
+  as `removed-by-cleanup`. That is informational; the status is no longer `attention` because of them.
+- A lock that does not record the installed commit, or lists no files, is refused when it is
+  read. Restore it from Git (`git checkout -- .template-lock.json`); do not delete it, because a
+  missing lock makes the next upgrade re-create everything you removed.
+- `--source` and a lock `upstream` that embed credentials are refused. Use a Git credential
+  helper or an SSH key instead, and remove the credential from `.template-lock.json`.
 
 ### Recover an existing 26.1 upgrade lock
 
@@ -188,8 +220,8 @@ precedence over the local manifest; an explicit `--source` takes precedence over
 both. With a clean working tree, review a dry-run and then apply the same source:
 
 ```bash
-scripts/team.sh upgrade-template --source https://github.com/ash2osh/APEX_PROJECT_TEMPLATE_26_1.git --dry-run
-scripts/team.sh upgrade-template --source https://github.com/ash2osh/APEX_PROJECT_TEMPLATE_26_1.git
+scripts/team.sh upgrade-template --source https://github.com/ash2osh/APEX_PROJECT_TEMPLATE_26_1.git --ref main --dry-run
+scripts/team.sh upgrade-template --source https://github.com/ash2osh/APEX_PROJECT_TEMPLATE_26_1.git --ref main
 ```
 
 Dry-run changes no files. Apply records the chosen source in the lock, preserves
@@ -254,6 +286,8 @@ do not add spaces or trailing comments.
 The example uses the same schema, connection and user for tables, code and APEX,
 which is right for most projects. If you work with an AI assistant, you can ask
 it to run `/init` and it will ask these questions for you.
+
+To keep `.env` short for one DEV connection, set `DEV_SCHEMA`, `DEV_SQLCL_CONNECTION` and `DEV_EXPECTED_USER` together (all three or none) and leave out the `TABLES_*`, `CODE_*` and `APEX_*` profile keys. Every profile that has none of its own keys takes these three values, and `TABLES_PREFIXES` and `CODE_PREFIXES` default to `*`. The expected user is never defaulted. A profile that sets some of its own keys keeps its own checks, and the staging, production, migration and ORDS profiles are unchanged.
 
 To see which schema, connection and login each operation will use, run
 `scripts/team.sh targets`. It reads `.env` only and never connects.
