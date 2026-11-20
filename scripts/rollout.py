@@ -908,11 +908,11 @@ def _markdown_report(report: dict) -> str:
         "| ---: | --- | --- | --- | --- | --- | ---: | --- |",
     ))
     for step in report.get("steps", []):
-        evidence = ", ".join(f"`{path}`" for path in step.get("evidencePaths", [])) or "—"
+        evidence = ", ".join(f"`{path}`" for path in step.get("evidencePaths", [])) or "-"
         lines.append(
             f"| {step['number']} | `{step['type']}` | {step['status']} | `{step['sha256']}` | "
-            f"{step.get('startedAt') or '—'} | {step.get('endedAt') or '—'} | "
-            f"{step.get('durationSeconds') if step.get('durationSeconds') is not None else '—'} | {evidence} |"
+            f"{step.get('startedAt') or '-'} | {step.get('endedAt') or '-'} | "
+            f"{step.get('durationSeconds') if step.get('durationSeconds') is not None else '-'} | {evidence} |"
         )
     if report.get("error"):
         lines.extend(("", "## Error", "", report["error"]))
@@ -1174,9 +1174,9 @@ def _confirmation_text(manifest: RolloutManifest, plan: Sequence[dict], environm
     ]
     for item in plan:
         state = "already receipted" if item["number"] < from_step else "to run"
-        lines.append(f"Step {item['number']:02d} [{state}] {item['description']} — SHA-256 {item['sha256']}")
+        lines.append(f"Step {item['number']:02d} [{state}] {item['description']} - SHA-256 {item['sha256']}")
         for file in item["inputHashes"]:
-            lines.append(f"  {file['path']} — SHA-256 {file['sha256']}")
+            lines.append(f"  {file['path']} - SHA-256 {file['sha256']}")
     if question:
         lines.append("Continue with this rollout? [y/N]")
     return "\n".join(lines)
@@ -2103,9 +2103,9 @@ def _run_legacy_rollout(
             _finish_report(report, started, "planned", 0)
             print(f"Rollout dry run for {environment.upper()} (manifest SHA-256 {manifest.sha256})")
             for item in plan:
-                print(f"Step {item['number']:02d}: {item['description']} — SHA-256 {item['sha256']}")
+                print(f"Step {item['number']:02d}: {item['description']} - SHA-256 {item['sha256']}")
                 for source in item["inputHashes"]:
-                    print(f"  {source['path']} — SHA-256 {source['sha256']}")
+                    print(f"  {source['path']} - SHA-256 {source['sha256']}")
             _write_reports(report, report_paths)
             _announce_report_paths(report_paths, root)
             return 0
