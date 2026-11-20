@@ -64,7 +64,7 @@ def run_live_doctor(repo_root: Path, env_file: Path | None = None) -> dict:
         env["PROJECT_ENV_FILE"] = str(env_file)
 
     try:
-        res = subprocess.run(cmd, cwd=repo_root, env=env, capture_output=True, text=True, check=False)
+        res = subprocess.run(cmd, cwd=repo_root, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", check=False)
         stdout = res.stdout or ""
         stderr = res.stderr or ""
         if res.returncode == 0:
@@ -441,6 +441,8 @@ def build_report(
                     cwd=repo_root,
                     capture_output=True,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     timeout=30,
                 )
                 if res.returncode == 0:
