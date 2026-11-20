@@ -337,8 +337,8 @@ $importAttempted = $false
 # Set once the import changed the target and cleared after its verification,
 # so a failure in between can say what to do next.
 $importUnverified = $false
-# Set when the pre-publication lifecycle observation fails. Its message names the SQLcl diagnostics file,
-# so the scratch folder is kept for that file rather than deleted under the message.
+# Set while the pre-publication lifecycle capture runs and cleared once it succeeds. A failed capture's message
+# names the SQLcl diagnostics file, so the scratch folder is kept for that file rather than deleted under the message.
 $lifecycleDiagnostics = $false
 # Set while the import session runs and cleared once its output has been read: an
 # interrupt in between leaves the import's result unknown (SQLcl may have
@@ -397,11 +397,14 @@ try {
   if ($null -eq $lifecyclePython) { throw 'publish error: Python 3.10 or newer is required for lifecycle verification' }
   $lifecycleArguments = @('--connection', $sqlclConnection, '--expected-user', $expectedUser, '--schema', $parsingSchema,
     '--workspace', [string]$deployment.workspace.name, '--app-id', $AppId, '--environment', $appEnvironment)
+  # Set before the capture so that a non-zero exit is covered even when PowerShell's native-command error
+  # preference ends the script at the capture line, before $LASTEXITCODE is checked.
+  $lifecycleDiagnostics = $true
   & $lifecyclePython.Path @($lifecyclePython.Prefix) (Join-Path $PSScriptRoot 'application_lifecycle.py') capture @lifecycleArguments --run-dir (Join-Path $publishWorkDir 'lifecycle-before')
   if ($LASTEXITCODE -ne 0) {
-    $lifecycleDiagnostics = $true
     throw 'publish error: pre-publication lifecycle observation is unavailable; nothing imported'
   }
+  $lifecycleDiagnostics = $false
   $identitySnapshot = Join-Path $publishWorkDir 'lifecycle-before/lifecycle-snapshot.json'
   $identityJson = Get-Content -LiteralPath $identitySnapshot -Raw | ConvertFrom-Json
   $identityFields = @('db_unique_name','service_name','container_id','container_name','edition','server_host','session_user','current_schema')

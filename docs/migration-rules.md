@@ -559,8 +559,9 @@ limits parallel read-only check sessions. Each session is bounded by the
 configured driver size and timeout. Exit status 1 means one or more checks
 returned false; status 2 means the target or verification could not be
 confirmed. Failed reports retain private diagnostics under `scratch/`. The default is `both`,
-which also evaluates preconditions. After a migration has applied they are false by design, so
-`both` exits 1 for an applied folder; use `--phase post` to check an applied folder.
+which also evaluates preconditions. After a migration has applied, they usually fail (for example
+an absence check), so `both` usually exits 1 for an applied folder; use `--phase post` to check one.
+A folder with an empty `preconditions` list has no precondition check that can fail.
 
 ## Rehearsal
 
