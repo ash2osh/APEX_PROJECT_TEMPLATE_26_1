@@ -224,6 +224,11 @@ python3 -c 'import json; print("\n".join(sorted(p for p in json.load(open(".temp
 # Example, one reviewed path at a time: git rm --ignore-unmatch -- tests/test_name.py
 # Planning documents: docs/superpowers/ holds the template's historical plans (templateOnly in the manifest, so
 # upgrade-template does not install them). Remove only those by name after review; keep plans your project wrote.
+# Daily change records: a clone inherits the template's dated folders under ai_generate/ (each has a WALKTHROUGH.md,
+# and some have other files). Review each folder that `git ls-files ai_generate` lists, then remove it by name, one
+# command per folder, for example:
+git rm -r --ignore-unmatch ai_generate/2026-11-14
+# Keep ai_generate/.gitkeep and any folder the project wrote itself. Never remove by glob.
 # The shared-core stamp belongs to the template repository's shared-core check. A project created from the
 # template inherits it, but it is not part of a downstream project; upgrade-template never ships it.
 git rm --ignore-unmatch .core-stamp.json
@@ -235,6 +240,7 @@ Explicitly preserve:
 - Project-written plans, specs and other documents under `docs/`
 - `PROJECT.md`, `AGENTS.project.md`, `.agents/rules/project.md` and `TODO.md`
 - Operational configuration (`.env`), application source (`apps/`), migrations (`migrations/`), and migration receipts and recovery evidence
+- Daily change records the project wrote under `ai_generate/`, and `ai_generate/.gitkeep`
 
 Keep `scripts/`, operational documentation, `.agents/`, `.claude/`,
 `template-manifest.json` and `.template-lock.json`; remove `.core-stamp.json`
@@ -408,7 +414,7 @@ apps/DEMO/100/
 ├── shared-components/     authorizations, lists, LOVs, and so on
 ├── workspace-components/
 ├── .apex/apexlang.json    export metadata (commit it with the rest)
-├── deployments/           environment settings (next step; starts with default.json)
+├── deployments/           environment settings (next step); starts with default.json (git-ignored; do not commit)
 └── apex-team-export.json  records when the export was taken (used by publish)
 ```
 

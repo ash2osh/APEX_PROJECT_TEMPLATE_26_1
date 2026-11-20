@@ -90,6 +90,10 @@ an optional `evidence` list with the plan's evidence strings; an index without
 that key loads unchanged. Unknown keys or malformed records make migration
 discovery refuse the index.
 
+A folder with no attempt or receipt evidence, such as one that was never applied, is not
+refused. Its dry-run plan shows the evidence `no-attempt-or-receipt`; check that line before
+you add `--yes`.
+
 A folder with an attempt record but no verified receipt is refused, and the
 refusal names the `reconcile-migration` command. Three ways through:
 
@@ -552,7 +556,9 @@ the display, `--format json` emits a machine-readable report, and `--jobs N`
 limits parallel read-only check sessions. Each session is bounded by the
 configured driver size and timeout. Exit status 1 means one or more checks
 returned false; status 2 means the target or verification could not be
-confirmed. Failed reports retain private diagnostics under `scratch/`.
+confirmed. Failed reports retain private diagnostics under `scratch/`. The default is `both`,
+which also evaluates preconditions. After a migration has applied they are false by design, so
+`both` exits 1 for an applied folder; use `--phase post` to check an applied folder.
 
 ## Rehearsal
 
