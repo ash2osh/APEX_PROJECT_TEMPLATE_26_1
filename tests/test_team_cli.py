@@ -563,7 +563,7 @@ class TeamCliTests(unittest.TestCase):
         command = (
             "$ErrorActionPreference = 'Stop'; "
             f". '{helper.as_posix()}'; "
-            f"$values = ConvertFrom-Json -AsHashtable @'\n{encoded_arguments}\n'@; "
+            f"$values = ConvertFrom-Json @'\n{encoded_arguments}\n'@; "
             "$items = @(Get-MigrationPlanArgumentKinds -Values $values); "
             "$items | ConvertTo-Json -Compress -Depth 3"
         )
