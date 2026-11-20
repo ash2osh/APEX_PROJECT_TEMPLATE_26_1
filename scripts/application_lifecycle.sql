@@ -1,5 +1,5 @@
--- APEX 26.1 adapter: CAPTURE runs in a read-only transaction; RESTORE_CONTEXT
--- validates the target and sets the workspace context for the following API calls.
+-- APEX 26.1 and 26.2 adapter (the release gate below accepts both): CAPTURE runs in a read-only transaction;
+-- RESTORE_CONTEXT validates the target and sets the workspace context for the following API calls.
 DEFINE lifecycle_workspace_hex = '&1'
 DEFINE lifecycle_app_id = '&2'
 DEFINE lifecycle_action = '&3'
@@ -19,7 +19,7 @@ DECLARE
 BEGIN
   IF SYS_CONTEXT('USERENV','SESSION_USER')<>UTL_I18N.RAW_TO_CHAR(HEXTORAW('&&lifecycle_user_hex'),'AL32UTF8') OR SYS_CONTEXT('USERENV','CURRENT_SCHEMA')<>UTL_I18N.RAW_TO_CHAR(HEXTORAW('&&lifecycle_schema_hex'),'AL32UTF8') THEN RAISE_APPLICATION_ERROR(-20001,'Lifecycle database identity mismatch'); END IF;
   SELECT version_no INTO v_release FROM apex_release;
-  IF NOT REGEXP_LIKE(v_release,'^26[.]1([.][[:digit:]]+)*$') THEN RAISE_APPLICATION_ERROR(-20018,'Lifecycle adapter requires APEX 26.1'); END IF;
+  IF NOT REGEXP_LIKE(v_release,'^26[.][12]([.][[:digit:]]+)*$') THEN RAISE_APPLICATION_ERROR(-20018,'Lifecycle adapter requires APEX 26.1 or 26.2; found '||v_release); END IF;
   v_workspace_id := apex_util.find_security_group_id(v_workspace);
   IF v_workspace_id IS NULL OR v_workspace_id<=0 THEN RAISE_APPLICATION_ERROR(-20073,'Lifecycle workspace is not visible'); END IF;
   apex_util.set_security_group_id(v_workspace_id);
