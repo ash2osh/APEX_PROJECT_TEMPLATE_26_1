@@ -211,7 +211,7 @@ class TeamCliTests(unittest.TestCase):
                                             text=True, capture_output=True, check=False)
                     self.assertEqual(0, result.returncode, result.stdout + result.stderr)
                     self.assertIn("REFUSED: schema DEMO is not listed in MIGRATION_SCHEMA for dev", result.stdout)
-                    self.assertIn("migrate refuses a migration folder for DEMO", result.stdout)
+                    self.assertIn("`new-migration` and `migrate` refuse a migration folder for DEMO", result.stdout)
             self.assertFalse(calls.exists(), "targets started SQLcl")
 
     def test_targets_refuses_extra_arguments_and_schema_with_the_status_verify_local_uses(self) -> None:
