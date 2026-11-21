@@ -13,6 +13,9 @@ from fake_sqlcl import BASH
 
 ROOT = Path(__file__).resolve().parents[1]
 PWSH = _test_subprocess_safety.working_pwsh()
+# On Windows both wrappers pass '%' for the every-object prefix '*', because the SQLcl launcher there
+# expands an unquoted '*'; backup_db.sql treats the two the same.
+EVERY_PREFIX = "%" if os.name == "nt" else "*"
 
 
 def plain(text: str) -> str:
@@ -408,7 +411,7 @@ class BackupDbCliTests(unittest.TestCase):
             calls = self.sql_calls(log)
             # DEMO$ is in both profiles: the tables scope and the code scope both get TABLES_PREFIXES.
             self.assertEqual(calls["tables"][1:4], ["DEMO$", "ABSH_", "ABSH_"])
-            self.assertEqual(calls["code"][1:4], ["DEMO$", "*", "ABSH_"])
+            self.assertEqual(calls["code"][1:4], ["DEMO$", EVERY_PREFIX, "ABSH_"])
             # Each scope spools into its own staging directory.
             self.assertTrue(calls["tables"][4].endswith("-tables"), calls["tables"])
             self.assertTrue(calls["code"][4].endswith("-code"), calls["code"])
@@ -440,7 +443,7 @@ class BackupDbCliTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             calls = self.sql_calls(log)
             # DEMO$ has no tables scope in this run, so its code scope keeps every trigger ('-').
-            self.assertEqual(calls["code"][1:4], ["DEMO$", "*", "-"])
+            self.assertEqual(calls["code"][1:4], ["DEMO$", EVERY_PREFIX, "-"])
             self.assertEqual(calls["tables"][1], "TABLESONLY$")
 
     def test_bash_code_only_schema_passes_dash_as_tables_prefixes(self) -> None:
