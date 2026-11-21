@@ -1,4 +1,5 @@
 import os
+import re
 import shutil
 import subprocess
 import _test_subprocess_safety  # noqa: F401
@@ -12,6 +13,11 @@ from fake_sqlcl import BASH
 
 ROOT = Path(__file__).resolve().parents[1]
 PWSH = _test_subprocess_safety.working_pwsh()
+
+
+def plain(text: str) -> str:
+    text = re.sub(r"\x1b\[[0-9;]*m", "", text)
+    return re.sub(r"\s*\n\s*\|?\s*", " ", text)
 
 
 class BackupDbCliTests(unittest.TestCase):
@@ -80,6 +86,8 @@ class BackupDbCliTests(unittest.TestCase):
             "schema=\"$6\"\n"
             "scope=\"$7\"\n"
             "spool_schema=\"${11:-}\"\n"
+            "tables_prefixes=\"${12:-}\"\n"
+            "if [[ -n \"${FAKE_SQL_ARGS:-}\" ]]; then printf '%s|%s|%s|%s|%s\\n' \"$scope\" \"$schema\" \"${10:-}\" \"$tables_prefixes\" \"$spool_schema\" >> \"$FAKE_SQL_ARGS\"; fi\n"
             "if [[ -z \"$spool_schema\" || \"$spool_schema\" == *'$'* ]]; then\n"
             "  printf '%s\\n' 'SP2-0332: Cannot create spool file'\n"
             "  exit 0\n"
@@ -91,13 +99,18 @@ class BackupDbCliTests(unittest.TestCase):
             "esac\n"
             "mkdir -p \"database/$spool_schema/$scope_dir\"\n"
             "printf 'CREATE FAKE OBJECT;\\n' > \"database/$spool_schema/$scope_dir/$object.sql\"\n"
+            "# FAKE_SHARED_TRIGGER: both scopes write the same triggers/ file, which the merge must refuse.\n"
+            "if [[ -n \"${FAKE_SHARED_TRIGGER:-}\" ]]; then\n"
+            "  mkdir -p \"database/$spool_schema/triggers\"\n"
+            "  printf 'CREATE SHARED TRIGGER;\\n' > \"database/$spool_schema/triggers/SHARED_TRG.sql\"\n"
+            "fi\n"
             "# Mirrors the real driver's complete, alphabetically ordered type rows.\n"
             "if [[ -n \"${FAKE_MANIFEST_CODE:-}\" && \"$scope\" == code ]]; then\n"
             "  printf '%s' \"$FAKE_MANIFEST_CODE\" > \"database/$spool_schema/manifest-$scope.txt\"\n"
             "elif [[ -n \"${FAKE_MANIFEST_TABLES:-}\" && \"$scope\" == tables ]]; then\n"
             "  printf '%s' \"$FAKE_MANIFEST_TABLES\" > \"database/$spool_schema/manifest-$scope.txt\"\n"
             "elif [[ \"$scope\" == tables ]]; then\n"
-            "  printf 'TABLE=1\\n' > \"database/$spool_schema/manifest-$scope.txt\"\n"
+            "  printf 'SEQUENCE=0\\nTABLE=1\\nTRIGGER=0\\n' > \"database/$spool_schema/manifest-$scope.txt\"\n"
             "else\n"
             "  printf 'FUNCTION=0\\nPACKAGE=0\\nPACKAGE BODY=0\\nPROCEDURE=0\\nSYNONYM=0\\nTRIGGER=0\\nVIEW=1\\n' > \"database/$spool_schema/manifest-$scope.txt\"\n"
             "fi\n",
@@ -132,7 +145,7 @@ class BackupDbCliTests(unittest.TestCase):
     def assert_dollar_schema_mirror_installed(self, script: Path, output: str) -> None:
         mirror = script.parents[1] / "database" / "DEMO$"
         self.assertTrue(mirror.is_dir(), output)
-        self.assertEqual((mirror / "manifest-tables.txt").read_text(encoding="utf-8"), "TABLE=1\n")
+        self.assertEqual((mirror / "manifest-tables.txt").read_text(encoding="utf-8"), "SEQUENCE=0\nTABLE=1\nTRIGGER=0\n")
         self.assertEqual(
             (mirror / "manifest-code.txt").read_text(encoding="utf-8"),
             "FUNCTION=0\nPACKAGE=0\nPACKAGE BODY=0\nPROCEDURE=0\nSYNONYM=0\nTRIGGER=0\nVIEW=1\n",
@@ -239,7 +252,7 @@ class BackupDbCliTests(unittest.TestCase):
         script = (ROOT / "scripts" / "backup_db.sql").read_text(encoding="utf-8")
         self.assertIn("SPOOL database/&&spool_schema/synonyms/", script)
         self.assertIn("GET_DDL(''SYNONYM''", script)
-        self.assertIn("SELECT 'SYNONYM', 'code' FROM dual", script)
+        self.assertIn("SELECT 'SYNONYM', 'code', COUNT(*)", script)
         self.assertIn("'VIEW', 'PACKAGE', 'PACKAGE BODY', 'PROCEDURE', 'FUNCTION', 'TRIGGER', 'SYNONYM'", script)
         # Only the schema's own (private) synonyms: filtered by owner, never PUBLIC.
         self.assertIn(
@@ -247,10 +260,12 @@ class BackupDbCliTests(unittest.TestCase):
             script,
         )
 
-    # A committed DEMO$ mirror holding every output of both scopes, plus an ORDS export.
+    # A committed DEMO$ mirror holding every output of both scopes, plus an ORDS export. triggers/ is written by both
+    # scopes: a tables-only run must not carry the committed trigger over, and a both-scopes run replaces it.
     COMMITTED_MIRROR = {
         "tables/OLD_TABLE.sql": "CREATE TABLE OLD_TABLE (ID NUMBER);\n",
         "manifest-tables.txt": "TABLE=1\n",
+        "triggers/OLD_TRIGGER.sql": "CREATE TRIGGER OLD_TRIGGER;\n",
         "views/OLD_VIEW.sql": "CREATE VIEW OLD_VIEW AS SELECT 1 AS ID FROM dual;\n",
         "packages/OLD_PACKAGE.sql": "CREATE PACKAGE OLD_PACKAGE AS END;\n",
         "manifest-code.txt": "FUNCTION=0\nPACKAGE=1\nPACKAGE BODY=0\nPROCEDURE=0\nSYNONYM=0\nTRIGGER=0\nVIEW=1\n",
@@ -259,7 +274,7 @@ class BackupDbCliTests(unittest.TestCase):
     # What the fake SQLcl in make_checkout writes for each scope.
     TABLES_OUTPUT = {
         "tables/FAKE_TABLE.sql": "CREATE FAKE OBJECT;\n",
-        "manifest-tables.txt": "TABLE=1\n",
+        "manifest-tables.txt": "SEQUENCE=0\nTABLE=1\nTRIGGER=0\n",
     }
     CODE_OUTPUT = {
         "views/FAKE_VIEW.sql": "CREATE FAKE OBJECT;\n",
@@ -375,6 +390,117 @@ class BackupDbCliTests(unittest.TestCase):
     @unittest.skipUnless(PWSH, "PowerShell Core is not installed")
     def test_powershell_both_scopes_run_replaces_both_mirrors_and_their_stale_files(self) -> None:
         self.assert_both_scopes_replace_committed_mirror(powershell=True)
+
+    def sql_calls(self, log: Path) -> dict[str, list[str]]:
+        # One line per SQLcl call: scope|schema|prefixes|tables-prefixes|spool directory.
+        return {line.split("|")[0]: line.split("|") for line in log.read_text(encoding="utf-8").splitlines()}
+
+    def assert_both_profiles_pass_the_seventh_argument(self, powershell: bool) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            script = self.make_checkout(root, powershell=powershell)
+            env_path = root / ".env"
+            env_path.write_text(env_path.read_text(encoding="utf-8").replace("TABLES_PREFIXES=*", "TABLES_PREFIXES=ABSH_"), encoding="utf-8")
+            log = root / "sql-calls.txt"
+            result = self.run_backup(script, powershell=powershell, extra_env={"FAKE_SQL_ARGS": str(log)})
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            calls = self.sql_calls(log)
+            # DEMO$ is in both profiles: the tables scope and the code scope both get TABLES_PREFIXES.
+            self.assertEqual(calls["tables"][1:4], ["DEMO$", "ABSH_", "ABSH_"])
+            self.assertEqual(calls["code"][1:4], ["DEMO$", "*", "ABSH_"])
+            # Each scope spools into its own staging directory.
+            self.assertTrue(calls["tables"][4].endswith("-tables"), calls["tables"])
+            self.assertTrue(calls["code"][4].endswith("-code"), calls["code"])
+
+    def test_bash_driver_receives_tables_prefixes_as_seventh_argument(self) -> None:
+        self.assert_both_profiles_pass_the_seventh_argument(powershell=False)
+
+    @unittest.skipUnless(PWSH, "PowerShell Core is not installed")
+    def test_powershell_driver_receives_tables_prefixes_as_seventh_argument(self) -> None:
+        self.assert_both_profiles_pass_the_seventh_argument(powershell=True)
+
+    def assert_code_only_schema_passes_a_dash(self, powershell: bool) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            script = self.make_checkout(root, powershell=powershell)
+            env_path = root / ".env"
+            env_text = env_path.read_text(encoding="utf-8")
+            for old, new in {
+                "TABLES_SCHEMA=DEMO$": "TABLES_SCHEMA=TABLESONLY$",
+                "TABLES_EXPECTED_USER=DEMO": "TABLES_EXPECTED_USER=TABLESONLY$",
+                "TABLES_SQLCL_CONNECTION=docker-demo": "TABLES_SQLCL_CONNECTION=docker-tablesonly",
+            }.items():
+                self.assertIn(old, env_text)
+                env_text = env_text.replace(old, new)
+            env_path.write_text(env_text, encoding="utf-8")
+            log = root / "sql-calls.txt"
+            result = self.run_backup(script, powershell=powershell, extra_env={"FAKE_SQL_ARGS": str(log)})
+
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            calls = self.sql_calls(log)
+            # DEMO$ has no tables scope in this run, so its code scope keeps every trigger ('-').
+            self.assertEqual(calls["code"][1:4], ["DEMO$", "*", "-"])
+            self.assertEqual(calls["tables"][1], "TABLESONLY$")
+
+    def test_bash_code_only_schema_passes_dash_as_tables_prefixes(self) -> None:
+        self.assert_code_only_schema_passes_a_dash(powershell=False)
+
+    @unittest.skipUnless(PWSH, "PowerShell Core is not installed")
+    def test_powershell_code_only_schema_passes_dash_as_tables_prefixes(self) -> None:
+        self.assert_code_only_schema_passes_a_dash(powershell=True)
+
+    def assert_shared_trigger_refused_and_mirror_kept(self, powershell: bool) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            script = self.make_checkout(root, powershell=powershell)
+            old_file, old_content = self.seed_old_mirror(root)
+            result = self.run_backup(
+                script,
+                powershell=powershell,
+                extra_env={
+                    "FAKE_SHARED_TRIGGER": "1",
+                    # Each scope's manifest counts the shared trigger, so only the merge can refuse it.
+                    "FAKE_MANIFEST_TABLES": "SEQUENCE=0\nTABLE=1\nTRIGGER=1\n",
+                    "FAKE_MANIFEST_CODE": "FUNCTION=0\nPACKAGE=0\nPACKAGE BODY=0\nPROCEDURE=0\nSYNONYM=0\nTRIGGER=1\nVIEW=1\n",
+                },
+            )
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+            self.assertIn(
+                "both the tables and code exports wrote triggers/SHARED_TRG.sql for DEMO$; the mirror was not replaced",
+                plain(result.stderr),
+            )
+            self.assertFalse((root / ".replace_mirror_called").exists(), "replace_mirror was invoked")
+            self.assertEqual(old_file.read_text(encoding="utf-8"), old_content, "the committed mirror was overwritten")
+            self.assertFalse((root / "database" / "DEMO$" / "triggers").exists())
+
+    def test_bash_trigger_written_by_both_scopes_is_refused_and_mirror_kept(self) -> None:
+        self.assert_shared_trigger_refused_and_mirror_kept(powershell=False)
+
+    @unittest.skipUnless(PWSH, "PowerShell Core is not installed")
+    def test_powershell_trigger_written_by_both_scopes_is_refused_and_mirror_kept(self) -> None:
+        self.assert_shared_trigger_refused_and_mirror_kept(powershell=True)
+
+    def assert_tables_only_run_keeps_committed_code_triggers_out_of_the_mirror(self, powershell: bool) -> None:
+        # The tables scope owns triggers/: a tables-only run installs its own triggers/ and never the committed one.
+        files = self.backup_over_committed_mirror(
+            powershell,
+            env_changes={
+                "CODE_SCHEMA=DEMO$": "CODE_SCHEMA=CODEONLY$",
+                "CODE_EXPECTED_USER=DEMO": "CODE_EXPECTED_USER=CODEONLY$",
+                "CODE_SQLCL_CONNECTION=docker-demo": "CODE_SQLCL_CONNECTION=docker-codeonly",
+            },
+            extra_env={"PROJECT_SCHEMA": "DEMO$"},
+        )
+        self.assertNotIn("triggers/OLD_TRIGGER.sql", files)
+        self.assertNotIn("triggers", {path.split("/")[0] for path in files})
+
+    def test_bash_tables_only_run_does_not_carry_over_the_committed_triggers_folder(self) -> None:
+        self.assert_tables_only_run_keeps_committed_code_triggers_out_of_the_mirror(powershell=False)
+
+    @unittest.skipUnless(PWSH, "PowerShell Core is not installed")
+    def test_powershell_tables_only_run_does_not_carry_over_the_committed_triggers_folder(self) -> None:
+        self.assert_tables_only_run_keeps_committed_code_triggers_out_of_the_mirror(powershell=True)
 
 
 if __name__ == "__main__":

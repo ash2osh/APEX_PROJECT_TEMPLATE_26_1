@@ -504,8 +504,8 @@ class GuideContractTests(unittest.TestCase):
         self.assertIn("`MIGRATION_SCHEMA`, `MIGRATION_SQLCL_CONNECTION` and `MIGRATION_EXPECTED_USER`", environment)
         self.assertIn("`scripts/team.sh targets`", environment)
         starting = markdown_section(rules, "## Starting a code migration from DEV", "## Immutability and status receipts")
-        self.assertIn("`new-migration` reads the code profile (`CODE_*`)", starting)
-        self.assertIn("`MIGRATION_*` owner", starting)
+        self.assertIn("`new-migration` reads DEV with the code profile (`CODE_*`) when it lists the schema", starting)
+        self.assertIn("the migration profile\n(`MIGRATION_*`)", starting)
 
     def test_local_links_point_at_real_headings(self) -> None:
         for path in DOCS:
