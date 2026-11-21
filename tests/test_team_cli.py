@@ -1095,7 +1095,7 @@ class TeamCliTests(unittest.TestCase):
             with self.subTest(entry=command[-1]):
                 help_text = subprocess.run([*command, "--help"], text=True, capture_output=True, check=False, cwd=ROOT)
                 self.assertEqual(help_text.returncode, 0, help_text.stderr)
-                self.assertIn("feature init|capture|diff|doctor|freeze|clean-capsule|reconcile-run|convert-plan", help_text.stdout)
+                self.assertIn("feature <init|capture|diff|doctor|freeze|clean-capsule|reconcile-run|convert-plan|release-plan>", help_text.stdout)
                 self.assertIn("--stage-report FILE", help_text.stdout)
 
                 invalid_capture = subprocess.run(

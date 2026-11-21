@@ -131,7 +131,9 @@ owner-only commands retain their owner-login checks. See
   terminal. Start a code change with `scripts/team.sh new-migration
   <name> --source "PACKAGE BODY:<NAME>" --env dev`: it copies the live DEV
   source (not the mirror) into the steps, and its preconditions refuse the
-  apply if that source changes first. Run `scripts/team.sh check-conflicts <folder> --env dev`
+  apply if that source changes first. In a project with feature files it routes
+  stored units to features instead (`--feature <slug>` captures them;
+  `--dated-folder` keeps the dated folder). Run `scripts/team.sh check-conflicts <folder> --env dev`
   before applying with `scripts/team.sh migrate <folder> --env dev|staging|prod`.
   Checks cover only selected local migrations and observed live state; they
   cannot see another independent repository's pending files. Staging and
@@ -162,7 +164,12 @@ owner-only commands retain their owner-login checks. See
   interrupted or unknown attempt needs reconciliation before recovery. Capsule
   timing covers selected feature checkpoints and migrate steps, not app imports or
   excluded unclassified object steps. Existing migrations and version-1 rollouts keep their
-  current behavior. `feature convert-plan` plans offline how to move old folders into features. Follow [docs/feature-releases.md](docs/feature-releases.md).
+  current behavior. `feature convert-plan` plans offline how to move old folders into features.
+  `feature release-plan` writes the next manifest from what changed since the last
+  `release/*` tag, which a successful production rollout creates; review it before
+  freezing. Make a staging copy of production inert with `staging-neutralize` before
+  any rehearsal write there; its `--apply` follows the same target-name rule as `migrate`.
+  Follow [docs/feature-releases.md](docs/feature-releases.md).
 - **Schema comparison:** Use `scripts/team.sh compare-schema --env staging
   --object CUSTOMERS` or `--from dev --to prod --pattern 'HR_*'` to compare
   selected live objects. This reports schema drift; local receipts cannot
