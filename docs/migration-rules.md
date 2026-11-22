@@ -674,8 +674,8 @@ rollout inputs, receipts or recovery evidence. Capsule attempt state is local to
 this checkout, and a capsule's database-object budget covers only its feature
 checkpoints and its migrate steps; SQL-script, ORDS and app-deploy time is excluded.
 When database-object work remains outside feature checkpoints and migrate steps,
-report budget coverage as incomplete. The budget detects overruns after an Oracle operation;
-it cannot prevent DDL from committing. A release made only of migrate steps is a
+report budget coverage as incomplete. The budget is a planning measure reported after each
+Oracle operation; an overrun never stops or fails the rollout. A release made only of migrate steps is a
 migration-only capsule; see [migration-only releases](feature-releases.md#migration-only-releases).
 
 Rollout receipts are never replaced. Before execution, the rollout checks every selected step's canonical receipt
