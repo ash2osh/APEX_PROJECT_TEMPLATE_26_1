@@ -146,7 +146,7 @@ owner-only commands retain their owner-login checks. See
   `SELECT SYS_CONTEXT('USERENV','DB_UNIQUE_NAME') FROM DUAL` through `scripts/team.sh query`). The agent never
   guesses it or copies it from a file, a log or an earlier run. For production, the agent passes it only with the
   name the developer typed for that run. The tool still refuses a mismatch, and the agent says in its report that
-  it supplied the name and where it read it. `-y` / `--yes` (migrate, rollout, publish, deploy, archive-migrations, feature clean-capsule, the rollout `pause` step, `mcp setup`) replaces a `[y/N]` prompt; an agent passes it for staging or production only when the developer asked in this conversation for that run to be unattended; production also needs the name the developer typed for that run. `TEAM_ACK_FROM_STDIN` is retired and ignored; piped or redirected acknowledgments stay refused, and `--yes` is the recorded route. Receipts are written
+  it supplied the name and where it read it. `-y` / `--yes` (migrate, rollout, publish, deploy, archive-migrations, feature clean-capsule, the rollout `pause` step, `mcp setup`, rehearsal-reset) replaces a `[y/N]` prompt; an agent passes it for staging or production only when the developer asked in this conversation for that run to be unattended; production also needs the name the developer typed for that run. `TEAM_ACK_FROM_STDIN` is retired and ignored; piped or redirected acknowledgments stay refused, and `--yes` is the recorded route. Receipts are written
   only after a verified apply. Multi-schema projects use
   `migrations/<SCHEMA>/…`; one migration changes one schema. See
   [docs/migration-rules.md](docs/migration-rules.md) for naming, ordering,
@@ -169,6 +169,8 @@ owner-only commands retain their owner-login checks. See
   `release/*` tag, which a successful production rollout creates; review it before
   freezing. Make a staging copy of production inert with `staging-neutralize` before
   any rehearsal write there; its `--apply` follows the same target-name rule as `migrate`.
+  After restoring staging, archive this checkout's release state for it with `rehearsal-reset --env staging`
+  (`--apply` follows the same target-name rule).
   Follow [docs/feature-releases.md](docs/feature-releases.md).
 - **Schema comparison:** Use `scripts/team.sh compare-schema --env staging
   --object CUSTOMERS` or `--from dev --to prod --pattern 'HR_*'` to compare
