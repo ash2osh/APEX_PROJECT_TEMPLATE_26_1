@@ -78,11 +78,13 @@ OBSERVED_IDENTITY_FIELDS = (
 
 
 def _observe_target_identity(target: Target, run_dir: Path) -> dict[str, str]:
-    """Read the complete target identity through the existing catalog path."""
-    from scripts.schema_catalog import capture_inventory
+    """Read the complete target identity through the catalog's light identity phase (no object inventory)."""
+    from types import SimpleNamespace
 
-    inventory = capture_inventory(target, run_dir)
-    receipt_identity = migrate._identity_for_receipt(inventory, target)
+    from scripts.schema_catalog import capture_identity
+
+    identity = capture_identity(target, run_dir)
+    receipt_identity = migrate._identity_for_receipt(SimpleNamespace(identity=identity), target)
     return {field: receipt_identity[field] for field in OBSERVED_IDENTITY_FIELDS}
 
 
