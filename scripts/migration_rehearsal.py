@@ -23,7 +23,7 @@ from .migration_checks import (
 from .migration_manifest import Migration, MigrationManifestError
 from .path_utils import relative_to_root
 from .schema_catalog import CatalogError, capture_inventory
-from .sqlcl_session import SqlclError, run_sqlcl, safe_rmtree
+from .sqlcl_session import SqlclError, driver_epilogue, run_sqlcl, safe_rmtree
 
 
 DML_VERBS = {"INSERT", "UPDATE", "DELETE", "MERGE"}
@@ -178,7 +178,7 @@ def _render_driver(
         migration = item.staged
         if migration.folder.name in rollback_paths:
             lines.append(f"@@{rollback_paths[migration.folder.name]}")
-    lines.extend(("EXIT SUCCESS ROLLBACK", ""))
+    lines.extend((driver_epilogue(False), ""))
     driver = session_dir / "rehearsal-driver.sql"
     driver.write_text("\n".join(lines), encoding="utf-8", newline="\n")
     driver.chmod(0o600)
@@ -195,7 +195,7 @@ def _verify_autocommit_off(run_dir: Path, target: Target, session_runner: Callab
         "PROMPT MIGRATION_REHEARSAL_AUTOCOMMIT_BEGIN",
         "SHOW AUTOCOMMIT",
         "PROMPT MIGRATION_REHEARSAL_AUTOCOMMIT_END",
-        "EXIT SUCCESS ROLLBACK",
+        driver_epilogue(False),
         "",
     )), encoding="utf-8", newline="\n")
     probe.chmod(0o600)

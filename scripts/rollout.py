@@ -31,7 +31,8 @@ from scripts.migration_manifest import MigrationManifestError, assert_single_lay
 from scripts.ords_export import OrdsExportError, check_no_oauth, check_structure, mask_sql
 from scripts.path_utils import relative_to_root
 from scripts.release_ownership import TargetWriterLease
-from scripts.sqlcl_session import ALIAS_RE, SqlclError, run_sqlcl, safe_rmtree
+from scripts import sqlcl_pool
+from scripts.sqlcl_session import ALIAS_RE, SqlclError, driver_epilogue, run_sqlcl, safe_rmtree
 from scripts.sqlcl_transport import generated_clob_assembly, lint_sqlcl_transport
 from scripts.validate_app_source import validate_app_source
 from scripts.validate_migration import FIRST_WORD, mask_comments_and_literals, statement_spans, validate_sql_only
@@ -1525,7 +1526,7 @@ def _script_driver(
             "SET SQLBLANKLINES ON",
             "@@payload.sql",
             f"PROMPT ROLLOUT_SCRIPT_COMPLETED:{step_number:04d}",
-            "EXIT SUCCESS ROLLBACK",
+            driver_epilogue(False),
             "",
         )),
         encoding="utf-8",
@@ -2020,6 +2021,11 @@ def _finish_report(report: dict, started: float, status: str, exit_code: int) ->
     report["exitCode"] = exit_code
     report["endedAt"] = _utc_now()
     report["durationSeconds"] = round(time.perf_counter() - started, 3)
+    # How the scripts reached SQLcl; informational, never part of the stage proof (persistent sessions design).
+    pool = sqlcl_pool.sqlcl_session.active_pool()
+    report["sqlcl"] = pool.stats() if pool is not None else {
+        "mode": "one-shot", "fallbackReason": None, "processesStarted": None, "databaseSessions": None, "scripts": None,
+    }
 
 
 def _announce_report_paths(paths: tuple[Path, Path], root: Path) -> None:
@@ -2388,6 +2394,7 @@ def run_rollout(
         manifest_path, environment, from_step=from_step, dry_run=dry_run,
         report_path=report_path, repo_root=repo_root, confirm=confirm, yes=yes, confirm_target=confirm_target,
     )
+@sqlcl_pool.with_deployment_sessions
 def main(argv: Sequence[str] | None = None, *, repo_root: Path | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", type=Path, help="ordered rollout manifest JSON, relative to the repository root")
