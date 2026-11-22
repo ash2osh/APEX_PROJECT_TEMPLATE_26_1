@@ -51,7 +51,10 @@ class RolloutManifestTests(unittest.TestCase):
             "container_id": "3", "container_name": "APP_PDB", "edition": "ORA$BASE",
             "database_version": "19.0",
         }
-        with patch("scripts.schema_catalog.capture_inventory", return_value=object()) as capture, patch(
+        # S7: the light identity phase, not a full owner inventory.
+        with patch("scripts.schema_catalog.capture_identity", return_value=dict(identity)) as capture, patch(
+            "scripts.schema_catalog.capture_inventory", side_effect=AssertionError("no inventory for an identity probe"),
+        ), patch(
             "scripts.migrate._identity_for_receipt", return_value=identity,
         ) as validate_identity:
             observed = rollout._observe_target_identity(target, self.root / "identity")
