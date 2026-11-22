@@ -9,6 +9,8 @@ Then report that difference. Each entry says why it is kept and what to do inste
 
 | Behaviour | Why it is kept | What to do |
 | --- | --- | --- |
+| Persistent SQLcl sessions reuse database sessions; the reset cannot clear rows in a session-duration global temporary table, application contexts, `SET ROLE` or session events. | A reconnect costs about as much as a SQLcl start against a remote database; generated scripts use none of these. See [sqlcl-sessions.md](sqlcl-sessions.md). | Run such a project script with `SQLCL_PERSISTENT_SESSIONS=0`. |
+| On Windows a deployment starts one SQLcl per script. | The persistent session pool uses POSIX named pipes. | Nothing; behaviour is as before the pool. |
 | `publish` imports the files in the app folder whether or not they are committed. | The shared DEV database is the source of truth; Git records it. | Commit your edit and the stamped `application.apx` after publishing, before your next `export` of that app (export refuses to write over uncommitted files). |
 | Two developers publishing the same app at the same instant can both import; there is no lock. | `AGENTS.md` forbids team mutexes, checkout rosters and metadata tables. | Tell the team which app you are publishing. The drift guard catches every import that is not simultaneous. |
 | The first publish of an app made with `apex generate` stops at the post-import byte check and records no baseline. | Loosening the exact-bytes check for that case would weaken the main safety guard. | Follow "A new app from `apex generate`" in [publish-rules.md](publish-rules.md): commit, export, commit, publish again. |
