@@ -177,7 +177,12 @@ owner-only commands retain their owner-login checks. See
 - **Schema comparison:** Use `scripts/team.sh compare-schema --env staging
   --object CUSTOMERS` or `--from dev --to prod --pattern 'HR_*'` to compare
   selected live objects. This reports schema drift; local receipts cannot
-  reliably attribute a shape to one migration file.
+  reliably attribute a shape to one migration file. Keep it narrow: a schema can
+  hold thousands of objects, so never compare a whole schema (no `--pattern '*'`,
+  no unfiltered run). Name the objects a change creates or changes (`--object`,
+  repeated) or use a narrow pattern. For a readiness check, read only the
+  change's own objects with one read-only query (`all_objects`, `all_synonyms`,
+  `dba_source`), and check the synonym and source before calling an object missing.
 - **Daily change record:** A package migration holds the whole source, so Git
   cannot show what changed. For each day with code work, keep
   `ai_generate/YYYY-MM-DD/` with the readable diff of each migration
