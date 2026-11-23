@@ -277,39 +277,24 @@ class DatabaseMirror:
         target_entry = index.get(target[0])
         return target_entry[kind].get(target[1]) if target_entry else None
 
-    def _resolve_unique_across_schemas(self, name: str, kind: str) -> str | None:
-        """Resolve an unqualified object name when exactly one mirrored schema defines it."""
-        matches = {
-            entry[kind][name]
-            for entry in self._index().values()
-            if name in entry.get(kind, {})
-        }
-        return next(iter(matches)) if len(matches) == 1 else None
-
-    def table(self, label: str, *, cross_schema_unique: bool = False) -> str | None:
+    def table(self, label: str) -> str | None:
         parts = label.upper().split(".")
         if len(parts) == 1:
             schema, name = (self.schema or ""), parts[0]
-            resolved = self._resolve(schema, name, "tables")
-            if resolved is None and cross_schema_unique:
-                return self._resolve_unique_across_schemas(name, "tables")
-            return resolved
+            return self._resolve(schema, name, "tables")
         if len(parts) == 2:
             schema, name = parts
             return self._resolve(schema, name, "tables")
         return None
 
-    def package(self, label: str, *, cross_schema_unique: bool = False) -> str | None:
+    def package(self, label: str) -> str | None:
         parts = label.upper().split(".")
         if len(parts) == 3:
             schema, name = parts[0], parts[1]
             return self._resolve(schema, name, "packages")
         if len(parts) == 2:
             schema, name = (self.schema or ""), parts[0]
-            resolved = self._resolve(schema, name, "packages")
-            if resolved is None and cross_schema_unique:
-                return self._resolve_unique_across_schemas(name, "packages")
-            return resolved
+            return self._resolve(schema, name, "packages")
         return None
 
 
@@ -405,14 +390,26 @@ def _navigation_application(segment: str | None, current_app_id: str) -> str | N
     return None
 
 
-def _strip_sql_comments_and_literals(text: str) -> str:
-    """Mask SQL comments and literals while preserving offsets and newlines."""
+_SQL_STRING_PATTERN = (
+    r"\bN?Q'(?:\[.*?\]'|\{.*?\}'|\(.*?\)'|<.*?>'"
+    r"|(?P<q_delimiter>[^\s'\[{(<]).*?(?-i:(?P=q_delimiter))')"
+    r"|(?:\bN)?'(?:''|[^'])*'"
+)
+_SQL_LEXICAL_RE = re.compile(
+    rf"(?P<comment>--[^\n]*|/\*.*?\*/)|(?P<literal>{_SQL_STRING_PATTERN})"
+    r'|(?P<identifier>"(?:[^"]|"")*")',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _mask_sql(text: str, *tokens: str) -> str:
+    """Blank selected SQL tokens while preserving offsets and line breaks."""
     masked = list(text)
-    pattern = re.compile(r"--[^\n]*|/\*.*?\*/|'(?:''|[^'])*'", re.DOTALL)
-    for match in pattern.finditer(text):
-        masked[match.start():match.end()] = [
-            "\n" if char == "\n" else " " for char in match.group(0)
-        ]
+    for match in _SQL_LEXICAL_RE.finditer(text):
+        if match.lastgroup in tokens:
+            masked[match.start():match.end()] = [
+                "\n" if char == "\n" else " " for char in match.group(0)
+            ]
     return "".join(masked)
 
 
@@ -509,7 +506,7 @@ def _qualified_members(text: str) -> set[str]:
     has neither parentheses nor a statement position, so the call patterns miss
     it. Whether ``a`` is a package is only knowable from the database mirror.
     """
-    clean = _strip_sql_comments_and_literals(text)
+    clean = _mask_sql(text, "comment", "literal")
     return {
         f"{match.group(1)}.{match.group(2)}".upper()
         for match in QUALIFIED_MEMBER_RE.finditer(clean)
@@ -517,7 +514,7 @@ def _qualified_members(text: str) -> set[str]:
 
 
 def _sql_dependencies(text: str) -> tuple[set[str], set[str], set[str]]:
-    clean = _strip_sql_comments_and_literals(text)
+    clean = _mask_sql(text, "comment", "literal")
     # DELETE FROM names a write target, not a queried source.
     reads_clean = _blank_out(r'\bDELETE\s+FROM\b', clean)
     reads_clean = _blank_out(r'\bEXTRACT\s*\([^()]*\)', reads_clean)
@@ -986,26 +983,48 @@ def _sql_object_node_id(result: dict, path: Path) -> str:
     return file_nid
 
 
-_ORDS_MODULE_RE = re.compile(
-    r"\bORDS\.DEFINE_MODULE\s*\(((?:'(?:''|[^'])*'|[^')])*)\)\s*;",
-    re.IGNORECASE | re.DOTALL,
-)
-_ORDS_HANDLER_RE = re.compile(
-    r"\bORDS\.DEFINE_HANDLER\s*\(((?:'(?:''|[^'])*'|[^')])*)\)\s*;",
-    re.IGNORECASE | re.DOTALL,
-)
+_ORDS_CALL_RE = re.compile(r"\bORDS\s*\.\s*DEFINE_(MODULE|HANDLER)\s*\(", re.IGNORECASE)
+_ORDS_ARG_BOUNDARY_RE = re.compile(r"[(),]")
+_SQL_STATEMENT_END_RE = re.compile(r"\s*;")
 _ORDS_NAMED_ARG_RE = re.compile(
-    r"\b(p_module_name|p_base_path|p_pattern|p_method|p_source_type|p_source)\s*=>\s*"
-    r"('(?:''|[^'])*'|NULL)",
+    r"\s*(p_module_name|p_base_path|p_pattern|p_method|p_source)\s*=>\s*"
+    rf"({_SQL_STRING_PATTERN}|NULL)\s*",
     re.IGNORECASE | re.DOTALL,
 )
 
 
 def _unquote_plsql_literal(literal: str) -> str:
-    literal = literal.strip()
-    if len(literal) >= 2 and literal[0] == "'" and literal[-1] == "'":
-        return literal[1:-1].replace("''", "'")
+    prefix, _, contents = literal.partition("'")
+    if prefix.lower() in {"q", "nq"}:
+        return contents[1:-2]
+    if contents:
+        return contents[:-1].replace("''", "'")
     return ""
+
+
+def _ords_calls(text: str):
+    """Yield static arguments and source offsets for ORDS module and handler calls."""
+    structure = _mask_sql(text, "comment", "literal", "identifier")
+    arguments = _mask_sql(text, "comment")
+    for call in _ORDS_CALL_RE.finditer(structure):
+        start = call.end()
+        depth = 0
+        args: dict[str, str] = {}
+        for boundary in _ORDS_ARG_BOUNDARY_RE.finditer(structure, start):
+            token = boundary.group()
+            if token == "(":
+                depth += 1
+            elif token == ")" and depth:
+                depth -= 1
+            elif depth == 0:
+                argument = _ORDS_NAMED_ARG_RE.fullmatch(arguments, start, boundary.start())
+                if argument:
+                    args[argument.group(1).lower()] = _unquote_plsql_literal(argument.group(2))
+                if token == ")":
+                    if _SQL_STATEMENT_END_RE.match(structure, boundary.end()):
+                        yield call.group(1).upper(), args, call.start()
+                    break
+                start = boundary.end()
 
 
 def _augment_mirror_sql(path: Path, result: dict, mirror: DatabaseMirror) -> None:
@@ -1025,11 +1044,7 @@ def _augment_mirror_sql(path: Path, result: dict, mirror: DatabaseMirror) -> Non
     }
 
     def add_reference_node(label: str, relation: str) -> str:
-        mirrored = (
-            mirror.package(label, cross_schema_unique=True)
-            if relation == "calls"
-            else mirror.table(label, cross_schema_unique=True)
-        )
+        mirrored = mirror.package(label) if relation == "calls" else mirror.table(label)
         if mirrored:
             return mirrored
         node_id = make_id(label)
@@ -1051,11 +1066,7 @@ def _augment_mirror_sql(path: Path, result: dict, mirror: DatabaseMirror) -> Non
 
     def emit_dependencies(owner_id: str, sql_block: str, line: int) -> None:
         reads, writes, calls = _sql_dependencies(sql_block)
-        calls |= {
-            name
-            for name in _qualified_members(sql_block)
-            if mirror.package(name, cross_schema_unique=True)
-        }
+        calls |= {name for name in _qualified_members(sql_block) if mirror.package(name)}
         for target in sorted(reads, key=str.casefold):
             add_edge(owner_id, add_reference_node(target, "reads_from"), "reads_from", line)
         for target in sorted(writes, key=str.casefold):
@@ -1068,20 +1079,16 @@ def _augment_mirror_sql(path: Path, result: dict, mirror: DatabaseMirror) -> Non
 
     if folder == "ords":
         module_paths: dict[str, str] = {}
-        for match in _ORDS_MODULE_RE.finditer(text):
-            args = {
-                m.group(1).lower(): _unquote_plsql_literal(m.group(2))
-                for m in _ORDS_NAMED_ARG_RE.finditer(match.group(1))
-            }
-            mod_name = args.get("p_module_name", "")
-            if mod_name:
-                module_paths[mod_name.upper()] = args.get("p_base_path", "")
+        handlers: list[tuple[dict[str, str], int]] = []
+        for kind, args, offset in _ords_calls(text):
+            if kind == "MODULE":
+                mod_name = args.get("p_module_name", "")
+                if mod_name:
+                    module_paths[mod_name.upper()] = args.get("p_base_path", "")
+            else:
+                handlers.append((args, offset))
 
-        for match in _ORDS_HANDLER_RE.finditer(text):
-            args = {
-                m.group(1).lower(): _unquote_plsql_literal(m.group(2))
-                for m in _ORDS_NAMED_ARG_RE.finditer(match.group(1))
-            }
+        for args, offset in handlers:
             mod_name = args.get("p_module_name", "")
             pattern = args.get("p_pattern", "")
             method = args.get("p_method", "GET").upper()
@@ -1092,7 +1099,7 @@ def _augment_mirror_sql(path: Path, result: dict, mirror: DatabaseMirror) -> Non
             full_route = "/" + "/".join(
                 part for part in (base_path.strip("/"), pattern.strip("/")) if part
             )
-            line = text.count("\n", 0, match.start()) + 1
+            line = text.count("\n", 0, offset) + 1
             handler_id = make_id(file_nid, "ords", method, full_route)
             label = f"ORDS {method} {full_route}"
             if handler_id not in node_by_id:
@@ -1117,7 +1124,7 @@ def _augment_mirror_sql(path: Path, result: dict, mirror: DatabaseMirror) -> Non
         owner_id = file_nid if folder == "packages" else _sql_object_node_id(result, path)
         if folder == "packages" and path.stem.upper().endswith("_BODY"):
             pkg_name = path.stem.upper()[: -len("_BODY")]
-            spec_id = mirror.package(f"{pkg_name}.SPEC", cross_schema_unique=True)
+            spec_id = mirror.package(f"{pkg_name}.SPEC")
             if spec_id and spec_id != file_nid:
                 add_edge(spec_id, file_nid, "calls", 1)
         emit_dependencies(owner_id, text, 1)
@@ -1151,32 +1158,28 @@ def extract_sql_linked(path: Path) -> dict:
     mirror = DatabaseMirror.for_database_file(path)
     if mirror.root is None:
         return result
-    _augment_mirror_sql(path, result, mirror)
     remap: dict[str, str] = {}
     for node in result.get("nodes", []):
         if node.get("source_file"):
             continue
         label = _reference_label(str(node.get("label", "")))
-        target = (
-            mirror.table(label, cross_schema_unique=True)
-            or mirror.package(label, cross_schema_unique=True)
-        )
+        target = mirror.table(label)
         if target and target != node.get("id"):
             remap[str(node["id"])] = target
-    if not remap:
-        return result
-    for edge in result.get("edges", []):
-        for end in ("source", "target"):
-            if edge.get(end) in remap:
-                edge[end] = remap[edge[end]]
-    referenced = {
-        edge.get(end) for edge in result.get("edges", []) for end in ("source", "target")
-    }
-    result["nodes"] = [
-        node
-        for node in result.get("nodes", [])
-        if node.get("id") not in remap or node.get("id") in referenced
-    ]
+    if remap:
+        for edge in result.get("edges", []):
+            for end in ("source", "target"):
+                if edge.get(end) in remap:
+                    edge[end] = remap[edge[end]]
+        referenced = {
+            edge.get(end) for edge in result.get("edges", []) for end in ("source", "target")
+        }
+        result["nodes"] = [
+            node
+            for node in result.get("nodes", [])
+            if node.get("id") not in remap or node.get("id") in referenced
+        ]
+    _augment_mirror_sql(path, result, mirror)
     return result
 
 

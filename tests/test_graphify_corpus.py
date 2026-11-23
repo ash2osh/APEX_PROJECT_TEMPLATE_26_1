@@ -312,6 +312,94 @@ class MirroredSqlLinkingTests(unittest.TestCase):
             edges,
         )
 
+    def test_unqualified_sql_links_require_local_objects_or_synonyms(self) -> None:
+        self.write_database_object("database/OTHER/tables/STAFF.sql")
+        self.write_database_object("database/OTHER/packages/API_PKG_SPEC.sql")
+        self.write_database_object(
+            "database/LOCAL/synonyms/STAFF_ALIAS.sql",
+            'CREATE SYNONYM "LOCAL"."STAFF_ALIAS" FOR "OTHER"."STAFF";',
+        )
+        result = self.linked_sql(
+            "database/LOCAL/procedures/LOAD_STAFF.sql",
+            {"nodes": [], "edges": []},
+            text=(
+                "BEGIN\n"
+                "  SELECT id INTO first_id FROM STAFF;\n"
+                "  SELECT id INTO second_id FROM STAFF_ALIAS;\n"
+                "  API_PKG.LOAD_STAFF();\n"
+                "  OTHER.API_PKG.LOAD_STAFF();\n"
+                "END;\n"
+            ),
+        )
+        targets = {(edge["relation"], edge["target"]) for edge in result["edges"]}
+        self.assertEqual(
+            targets,
+            {
+                ("reads_from", "staff"),
+                ("reads_from", "database_other_tables_staff_other_staff"),
+                ("calls", "api_pkg_load_staff"),
+                ("calls", "database_other_packages_api_pkg_spec"),
+            },
+        )
+
+    def test_ords_ignores_comments_and_strings_that_contain_calls(self) -> None:
+        result = self.linked_sql(
+            "database/LOCAL/ords/schema.sql",
+            {"nodes": [], "edges": []},
+            text=(
+                "BEGIN\n"
+                "  ORDS.DEFINE_MODULE(p_module_name => 'API', p_base_path => '/real/');\n"
+                "  /* ORDS.DEFINE_MODULE(p_module_name => 'API', p_base_path => '/fake/'); */\n"
+                "  -- ORDS.DEFINE_HANDLER(p_module_name => 'API', p_pattern => 'comment');\n"
+                "  debug(q'{ORDS.DEFINE_HANDLER(p_module_name => 'API', p_pattern => 'text');}');\n"
+                "  ORDS./* gap */DEFINE_HANDLER(p_module_name => 'API', p_pattern => 'staff');\n"
+                "END;\n"
+            ),
+        )
+        self.assertEqual(
+            [
+                (node["metadata"]["route"], node["source_location"])
+                for node in result["nodes"]
+                if node.get("metadata", {}).get("component_type") == "ords_handler"
+            ],
+            [("/real/staff", "L6")],
+        )
+
+    def test_ords_extracts_dependencies_from_alternative_quoted_sources(self) -> None:
+        self.write_database_object("database/LOCAL/tables/STAFF.sql")
+        self.write_database_object("database/LOCAL/packages/API_PKG_SPEC.sql")
+        result = self.linked_sql(
+            "database/LOCAL/ords/schema.sql",
+            {"nodes": [], "edges": []},
+            text=(
+                "BEGIN\n"
+                "  ORDS.DEFINE_HANDLER(p_pattern => 'staff',\n"
+                "    p_source => q'[SELECT id FROM STAFF WHERE name = 'O''Brien' "
+                "AND note = '/* FROM FAKE */']');\n"
+                "  ORDS.DEFINE_HANDLER(p_pattern => 'load', p_method => 'POST',\n"
+                "    p_source => nq'!BEGIN API_PKG.LOAD_STAFF('ready'); END;!');\n"
+                "END;\n"
+            ),
+        )
+        handlers = {
+            node["metadata"]["route"]: node["id"]
+            for node in result["nodes"]
+            if node.get("metadata", {}).get("component_type") == "ords_handler"
+        }
+        self.assertEqual(set(handlers), {"/staff", "/load"})
+        dependencies = {
+            (edge["source"], edge["relation"], edge["target"])
+            for edge in result["edges"]
+            if edge["relation"] != "contains"
+        }
+        self.assertEqual(
+            dependencies,
+            {
+                (handlers["/staff"], "reads_from", "database_local_tables_staff_local_staff"),
+                (handlers["/load"], "calls", "database_local_packages_api_pkg_spec"),
+            },
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
