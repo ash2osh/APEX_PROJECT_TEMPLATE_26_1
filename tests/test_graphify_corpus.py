@@ -3,17 +3,22 @@
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import shutil
 import subprocess
+import sys
 import _test_subprocess_safety  # noqa: F401
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 IGNORE_PATH = REPO_ROOT / ".graphifyignore"
+EXTRACTOR_PATH = REPO_ROOT / "scripts" / "graphify_apexlang_extractor.py"
 
 INCLUDED_PATHS = (
     "apps/DEMO/102/pages/p00004-home.apx",
@@ -176,6 +181,224 @@ print(json.dumps({path: _is_ignored(root / path, root, patterns) for path in pat
         self.assertIn('`AGENTS.md` "Optional Tooling"', rules)
         self.assertIn("uv tool install graphifyy --with tree-sitter-sql", rules)
         self.assertIn("python3 scripts/setup_graphify_apx.py --verify", rules)
+
+
+@unittest.skipUnless(EXTRACTOR_PATH.is_file(), "canonical extractor is missing")
+class MirroredSqlLinkingTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        sys.dont_write_bytecode = True
+        spec = importlib.util.spec_from_file_location("graphify_apexlang_extractor_sql_links", EXTRACTOR_PATH)
+        assert spec and spec.loader
+        cls.module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = cls.module
+        spec.loader.exec_module(cls.module)
+
+    def setUp(self) -> None:
+        self.module.DatabaseMirror.clear_cache()
+        self.root = Path(tempfile.mkdtemp(prefix="graphify-sql-links."))
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+
+    def write_database_object(self, relative: str, text: str = "-- ddl\n") -> Path:
+        path = self.root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def linked_sql(self, relative: str, result: dict, text: str = "-- ddl\n") -> dict:
+        self.module.DatabaseMirror.clear_cache()
+        path = self.write_database_object(relative, text)
+        fake_package = types.ModuleType("graphify")
+        fake_extractors = types.ModuleType("graphify.extractors")
+        fake_sql = types.ModuleType("graphify.extractors.sql")
+        fake_sql.extract_sql = lambda _path: result
+        modules = {
+            "graphify": fake_package,
+            "graphify.extractors": fake_extractors,
+            "graphify.extractors.sql": fake_sql,
+        }
+        with mock.patch.dict(sys.modules, modules):
+            return self.module.extract_sql_linked(path)
+
+    def test_package_body_and_view_emit_mirrored_database_and_package_edges(self) -> None:
+        self.write_database_object("database/DEMO/tables/STAFF.sql")
+        self.write_database_object("database/DEMO/tables/STAFF_LOAD.sql")
+        self.write_database_object("database/DEMO/views/STAFF_SERVICES_V.sql")
+        self.write_database_object("database/DEMO/packages/HELPER_PKG_SPEC.sql")
+        self.write_database_object("database/DEMO/packages/WORKER_PKG_SPEC.sql")
+        body_sql = (
+            'CREATE OR REPLACE PACKAGE BODY "DEMO"."WORKER_PKG" AS\n'
+            "  PROCEDURE assign_worker IS\n"
+            "  BEGIN\n"
+            "    FOR r IN (SELECT s.id FROM staff s JOIN staff_services_v v ON v.id = s.id) LOOP\n"
+            "      helper_pkg.check_worker(r.id);\n"
+            "      UPDATE staff_load SET total = total + 1 WHERE id = r.id;\n"
+            "    END LOOP;\n"
+            "  END assign_worker;\n"
+            "END worker_pkg;\n"
+        )
+        initial = {
+            "nodes": [
+                {
+                    "id": "database_demo_packages_worker_pkg_body",
+                    "label": "WORKER_PKG_BODY.sql",
+                    "source_file": "database/DEMO/packages/WORKER_PKG_BODY.sql",
+                    "source_location": None,
+                }
+            ],
+            "edges": [],
+        }
+        result = self.linked_sql(
+            "database/DEMO/packages/WORKER_PKG_BODY.sql", initial, text=body_sql
+        )
+        edges = {(e["source"], e["relation"], e["target"]) for e in result["edges"]}
+        body_id = "database_demo_packages_worker_pkg_body"
+        self.assertIn(("database_demo_packages_worker_pkg_spec", "calls", body_id), edges)
+        self.assertIn((body_id, "calls", "database_demo_packages_helper_pkg_spec"), edges)
+        self.assertIn((body_id, "reads_from", "database_demo_tables_staff_demo_staff"), edges)
+        self.assertIn(
+            (body_id, "reads_from", "database_demo_views_staff_services_v_demo_staff_services_v"),
+            edges,
+        )
+        self.assertIn(
+            (body_id, "writes_to", "database_demo_tables_staff_load_demo_staff_load"),
+            edges,
+        )
+
+    def test_ords_schema_extracts_handlers_and_package_calls(self) -> None:
+        self.write_database_object("database/DEMO_CODE/packages/API_PKG_SPEC.sql")
+        self.write_database_object("database/DEMO_DATA/tables/LOB_STORE.sql")
+        ords_sql = (
+            "BEGIN\n"
+            "  ORDS.DEFINE_MODULE(\n"
+            "      p_module_name => 'PUBLIC_API',\n"
+            "      p_base_path   => '/public/');\n"
+            "  ORDS.DEFINE_HANDLER(\n"
+            "      p_module_name => 'PUBLIC_API',\n"
+            "      p_pattern     => 'workers/list',\n"
+            "      p_method      => 'POST',\n"
+            "      p_source_type => 'plsql/block',\n"
+            "      p_source      => 'BEGIN :status := DEMO_CODE.API_PKG.GET_WORKERS(:body_text); END;');\n"
+            "  ORDS.DEFINE_HANDLER(\n"
+            "      p_module_name => 'PUBLIC_API',\n"
+            "      p_pattern     => 'media/:token',\n"
+            "      p_method      => 'GET',\n"
+            "      p_source_type => 'resource/lob',\n"
+            "      p_source      => 'SELECT mime_type, blob_c FROM DEMO_DATA.LOB_STORE WHERE token = :token');\n"
+            "END;\n"
+        )
+        initial = {
+            "nodes": [
+                {
+                    "id": "database_demo_api_ords_schema",
+                    "label": "schema.sql",
+                    "source_file": "database/DEMO_API/ords/schema.sql",
+                    "source_location": None,
+                }
+            ],
+            "edges": [],
+        }
+        result = self.linked_sql("database/DEMO_API/ords/schema.sql", initial, text=ords_sql)
+        labels = {node["label"]: node["id"] for node in result["nodes"]}
+        self.assertIn("ORDS POST /public/workers/list", labels)
+        self.assertIn("ORDS GET /public/media/:token", labels)
+        post_id = labels["ORDS POST /public/workers/list"]
+        get_id = labels["ORDS GET /public/media/:token"]
+        edges = {(e["source"], e["relation"], e["target"]) for e in result["edges"]}
+        self.assertIn(("database_demo_api_ords_schema", "contains", post_id), edges)
+        self.assertIn((post_id, "calls", "database_demo_code_packages_api_pkg_spec"), edges)
+        self.assertIn(
+            (get_id, "reads_from", "database_demo_data_tables_lob_store_demo_data_lob_store"),
+            edges,
+        )
+
+    def test_unqualified_sql_links_require_local_objects_or_synonyms(self) -> None:
+        self.write_database_object("database/OTHER/tables/STAFF.sql")
+        self.write_database_object("database/OTHER/packages/API_PKG_SPEC.sql")
+        self.write_database_object(
+            "database/LOCAL/synonyms/STAFF_ALIAS.sql",
+            'CREATE SYNONYM "LOCAL"."STAFF_ALIAS" FOR "OTHER"."STAFF";',
+        )
+        result = self.linked_sql(
+            "database/LOCAL/procedures/LOAD_STAFF.sql",
+            {"nodes": [], "edges": []},
+            text=(
+                "BEGIN\n"
+                "  SELECT id INTO first_id FROM STAFF;\n"
+                "  SELECT id INTO second_id FROM STAFF_ALIAS;\n"
+                "  API_PKG.LOAD_STAFF();\n"
+                "  OTHER.API_PKG.LOAD_STAFF();\n"
+                "END;\n"
+            ),
+        )
+        targets = {(edge["relation"], edge["target"]) for edge in result["edges"]}
+        self.assertEqual(
+            targets,
+            {
+                ("reads_from", "staff"),
+                ("reads_from", "database_other_tables_staff_other_staff"),
+                ("calls", "api_pkg_load_staff"),
+                ("calls", "database_other_packages_api_pkg_spec"),
+            },
+        )
+
+    def test_ords_ignores_comments_and_strings_that_contain_calls(self) -> None:
+        result = self.linked_sql(
+            "database/LOCAL/ords/schema.sql",
+            {"nodes": [], "edges": []},
+            text=(
+                "BEGIN\n"
+                "  ORDS.DEFINE_MODULE(p_module_name => 'API', p_base_path => '/real/');\n"
+                "  /* ORDS.DEFINE_MODULE(p_module_name => 'API', p_base_path => '/fake/'); */\n"
+                "  -- ORDS.DEFINE_HANDLER(p_module_name => 'API', p_pattern => 'comment');\n"
+                "  debug(q'{ORDS.DEFINE_HANDLER(p_module_name => 'API', p_pattern => 'text');}');\n"
+                "  ORDS./* gap */DEFINE_HANDLER(p_module_name => 'API', p_pattern => 'staff');\n"
+                "END;\n"
+            ),
+        )
+        self.assertEqual(
+            [
+                (node["metadata"]["route"], node["source_location"])
+                for node in result["nodes"]
+                if node.get("metadata", {}).get("component_type") == "ords_handler"
+            ],
+            [("/real/staff", "L6")],
+        )
+
+    def test_ords_extracts_dependencies_from_alternative_quoted_sources(self) -> None:
+        self.write_database_object("database/LOCAL/tables/STAFF.sql")
+        self.write_database_object("database/LOCAL/packages/API_PKG_SPEC.sql")
+        result = self.linked_sql(
+            "database/LOCAL/ords/schema.sql",
+            {"nodes": [], "edges": []},
+            text=(
+                "BEGIN\n"
+                "  ORDS.DEFINE_HANDLER(p_pattern => 'staff',\n"
+                "    p_source => q'[SELECT id FROM STAFF WHERE name = 'O''Brien' "
+                "AND note = '/* FROM FAKE */']');\n"
+                "  ORDS.DEFINE_HANDLER(p_pattern => 'load', p_method => 'POST',\n"
+                "    p_source => nq'!BEGIN API_PKG.LOAD_STAFF('ready'); END;!');\n"
+                "END;\n"
+            ),
+        )
+        handlers = {
+            node["metadata"]["route"]: node["id"]
+            for node in result["nodes"]
+            if node.get("metadata", {}).get("component_type") == "ords_handler"
+        }
+        self.assertEqual(set(handlers), {"/staff", "/load"})
+        dependencies = {
+            (edge["source"], edge["relation"], edge["target"])
+            for edge in result["edges"]
+            if edge["relation"] != "contains"
+        }
+        self.assertEqual(
+            dependencies,
+            {
+                (handlers["/staff"], "reads_from", "database_local_tables_staff_local_staff"),
+                (handlers["/load"], "calls", "database_local_packages_api_pkg_spec"),
+            },
+        )
 
 
 if __name__ == "__main__":
