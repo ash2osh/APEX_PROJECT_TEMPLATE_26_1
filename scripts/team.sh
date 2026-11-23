@@ -52,6 +52,8 @@ Commands:
          [--capsule DIR] [--stage-report FILE] [--recover ATTEMPT] [--report <file>]
          [--yes|-y] [--confirm-target <db_unique_name>]
                                               Confirm and execute a frozen deployment manifest
+  rollout --env prod --capsule DIR --retry-release-tag RUN_ID
+                                              Retry Git tagging from verified production evidence
   compare-env --from <env> --to <env> [--section <name>] [...] [--format text|json|markdown]
               [--emit-dba-script <file>]
                                               Compare complete environment catalogs by name, read-only
@@ -87,13 +89,17 @@ Commands:
                                               Inspect local template drift; fetch upstream only when requested
   targets [--format text|json]                Show the schema, connection and login each operation uses (offline; no database)
   staging-neutralize --capture|--check|--apply|--restore FILE [--confirm-target <db_unique_name>] [--yes|-y]
-  rehearsal-reset --env staging [--apply --confirm-target <db_unique_name> [--yes|-y]]
                                               Report, check, disable or undo a restored staging copy's jobs,
                                               APEX automations and network grants (DBA alias)
+  rehearsal-reset --env staging [--schema NAME] [--target-profile read|migration]
+         [--initialize-proof | --begin-restore --operation-id UUID | --apply --operation-id UUID]
+         [--confirm-target <db_unique_name>] [--yes|-y]
+                                              Archive local rollout and migration evidence after a staging restore
 Options:
   --schema <NAME>                             Run one configured schema (except upgrade-template, verify-local, template-status, targets, migration-plan, archive-migrations, dev-test, skills, mcp, feature, reconcile-migration, staging-neutralize and rehearsal-reset)
   --help                                      Show this help
 Environment:
+  APEX_RELEASE_PROOF_REGISTRY                 Absolute shared staging proof registry file
   MIGRATION_PREFLIGHT_INVENTORY_RETRIES        Retry changing live catalogs (default 3)
   <ENV>_DBA_SQLCL_CONNECTION                   Read-only compare-env and baseline grant-export connection
 USAGE
@@ -552,7 +558,7 @@ case "$command_name" in
     PROJECT_ENV_FILE="$staging_neutralize_env" exec python3 -m scripts.staging_neutralize "$@"
     ;;
   rehearsal-reset)
-    [ "$#" -ge 1 ] || fail "usage: scripts/team.sh rehearsal-reset --env staging [--apply --confirm-target <db_unique_name> [--yes|-y]]"
+    [ "$#" -ge 1 ] || fail "usage: scripts/team.sh rehearsal-reset --env staging --help"
     rehearsal_reset_env="${PROJECT_ENV_FILE:-$REPO_ROOT/.env}"
     case "$(uname -s 2>/dev/null)" in
       MINGW*|MSYS*|CYGWIN*)
