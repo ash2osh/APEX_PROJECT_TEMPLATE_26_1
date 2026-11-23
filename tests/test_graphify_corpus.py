@@ -253,7 +253,7 @@ class MirroredSqlLinkingTests(unittest.TestCase):
         )
         edges = {(e["source"], e["relation"], e["target"]) for e in result["edges"]}
         body_id = "database_demo_packages_worker_pkg_body"
-        self.assertIn((body_id, "calls", "database_demo_packages_worker_pkg_spec"), edges)
+        self.assertIn(("database_demo_packages_worker_pkg_spec", "calls", body_id), edges)
         self.assertIn((body_id, "calls", "database_demo_packages_helper_pkg_spec"), edges)
         self.assertIn((body_id, "reads_from", "database_demo_tables_staff_demo_staff"), edges)
         self.assertIn(

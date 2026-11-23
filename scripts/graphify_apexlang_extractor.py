@@ -1117,9 +1117,9 @@ def _augment_mirror_sql(path: Path, result: dict, mirror: DatabaseMirror) -> Non
         owner_id = file_nid if folder == "packages" else _sql_object_node_id(result, path)
         if folder == "packages" and path.stem.upper().endswith("_BODY"):
             pkg_name = path.stem.upper()[: -len("_BODY")]
-            spec_id = mirror.package(f"{pkg_name}.SPEC")
+            spec_id = mirror.package(f"{pkg_name}.SPEC", cross_schema_unique=True)
             if spec_id and spec_id != file_nid:
-                add_edge(file_nid, spec_id, "calls", 1)
+                add_edge(spec_id, file_nid, "calls", 1)
         emit_dependencies(owner_id, text, 1)
 
 
