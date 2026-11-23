@@ -90,11 +90,11 @@ WRITE_RE = re.compile(
     re.IGNORECASE,
 )
 PAREN_CALL_RE = re.compile(
-    rf'\b({SQL_IDENTIFIER}\s*\.\s*(?:"[^"]+"|[A-Za-z][A-Za-z0-9_$#]*))\s*\(',
+    rf'(?<![\w$#".:])({SQL_IDENTIFIER}\s*\.\s*(?:"[^"]+"|[A-Za-z_][A-Za-z0-9_$#]*))\s*\(',
     re.IGNORECASE,
 )
 STATEMENT_CALL_RE = re.compile(
-    rf'^\s*({SQL_IDENTIFIER}\s*\.\s*(?:"[^"]+"|[A-Za-z][A-Za-z0-9_$#]*))\s*;',
+    rf'^\s*({SQL_IDENTIFIER}\s*\.\s*(?:"[^"]+"|[A-Za-z_][A-Za-z0-9_$#]*))\s*;',
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -277,25 +277,40 @@ class DatabaseMirror:
         target_entry = index.get(target[0])
         return target_entry[kind].get(target[1]) if target_entry else None
 
-    def table(self, label: str) -> str | None:
+    def _resolve_unique_across_schemas(self, name: str, kind: str) -> str | None:
+        """Resolve an unqualified object name when exactly one mirrored schema defines it."""
+        matches = {
+            entry[kind][name]
+            for entry in self._index().values()
+            if name in entry.get(kind, {})
+        }
+        return next(iter(matches)) if len(matches) == 1 else None
+
+    def table(self, label: str, *, cross_schema_unique: bool = False) -> str | None:
         parts = label.upper().split(".")
         if len(parts) == 1:
             schema, name = (self.schema or ""), parts[0]
-        elif len(parts) == 2:
+            resolved = self._resolve(schema, name, "tables")
+            if resolved is None and cross_schema_unique:
+                return self._resolve_unique_across_schemas(name, "tables")
+            return resolved
+        if len(parts) == 2:
             schema, name = parts
-        else:
-            return None
-        return self._resolve(schema, name, "tables")
+            return self._resolve(schema, name, "tables")
+        return None
 
-    def package(self, label: str) -> str | None:
+    def package(self, label: str, *, cross_schema_unique: bool = False) -> str | None:
         parts = label.upper().split(".")
         if len(parts) == 3:
             schema, name = parts[0], parts[1]
-        elif len(parts) == 2:
+            return self._resolve(schema, name, "packages")
+        if len(parts) == 2:
             schema, name = (self.schema or ""), parts[0]
-        else:
-            return None
-        return self._resolve(schema, name, "packages")
+            resolved = self._resolve(schema, name, "packages")
+            if resolved is None and cross_schema_unique:
+                return self._resolve_unique_across_schemas(name, "packages")
+            return resolved
+        return None
 
 
 def _clean_identifier(value: str | None, fallback: str) -> str:
@@ -947,14 +962,176 @@ def _get_project_delegate(source_path: Path) -> object | None:
     return None
 
 
+def _sql_file_node_id(result: dict, path: Path) -> str:
+    """Return the top-level file node id of an extracted SQL result."""
+    for node in result.get("nodes", []):
+        if node.get("source_file") and node.get("source_location") is None:
+            return str(node["id"])
+    for node in result.get("nodes", []):
+        if node.get("source_file"):
+            return str(node["id"])
+    return make_id(str(path))
+
+
+def _sql_object_node_id(result: dict, path: Path) -> str:
+    """Return the primary declared object node id (view, trigger, function, package) or the file node id."""
+    file_nid = _sql_file_node_id(result, path)
+    declared = [
+        str(node["id"])
+        for node in result.get("nodes", [])
+        if node.get("source_file") and str(node.get("id")) != file_nid
+    ]
+    if len(declared) == 1:
+        return declared[0]
+    return file_nid
+
+
+_ORDS_MODULE_RE = re.compile(
+    r"\bORDS\.DEFINE_MODULE\s*\(((?:'(?:''|[^'])*'|[^')])*)\)\s*;",
+    re.IGNORECASE | re.DOTALL,
+)
+_ORDS_HANDLER_RE = re.compile(
+    r"\bORDS\.DEFINE_HANDLER\s*\(((?:'(?:''|[^'])*'|[^')])*)\)\s*;",
+    re.IGNORECASE | re.DOTALL,
+)
+_ORDS_NAMED_ARG_RE = re.compile(
+    r"\b(p_module_name|p_base_path|p_pattern|p_method|p_source_type|p_source)\s*=>\s*"
+    r"('(?:''|[^'])*'|NULL)",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _unquote_plsql_literal(literal: str) -> str:
+    literal = literal.strip()
+    if len(literal) >= 2 and literal[0] == "'" and literal[-1] == "'":
+        return literal[1:-1].replace("''", "'")
+    return ""
+
+
+def _augment_mirror_sql(path: Path, result: dict, mirror: DatabaseMirror) -> None:
+    """Add dependency and ORDS handler edges for mirrored Oracle SQL/PLSQL files."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return
+
+    source_path = str(path)
+    nodes: list[dict] = result.setdefault("nodes", [])
+    edges: list[dict] = result.setdefault("edges", [])
+    node_by_id: dict[str, dict] = {str(node["id"]): node for node in nodes if "id" in node}
+    edge_keys: set[tuple[str, str, str]] = {
+        (str(edge.get("source", "")), str(edge.get("target", "")), str(edge.get("relation", "")))
+        for edge in edges
+    }
+
+    def add_reference_node(label: str, relation: str) -> str:
+        mirrored = (
+            mirror.package(label, cross_schema_unique=True)
+            if relation == "calls"
+            else mirror.table(label, cross_schema_unique=True)
+        )
+        if mirrored:
+            return mirrored
+        node_id = make_id(label)
+        if node_id not in node_by_id:
+            node = _node(node_id, label, "", None, origin_file=source_path)
+            node["source_location"] = ""
+            node["type"] = SHARED_ANCHOR_TYPE
+            node_by_id[node_id] = node
+            nodes.append(node)
+        return node_id
+
+    def add_edge(source: str, target: str, relation: str, line: int) -> None:
+        if not source or not target or source == target:
+            return
+        key = (source, target, relation)
+        if key not in edge_keys:
+            edge_keys.add(key)
+            edges.append(_edge(source, target, relation, source_path, line))
+
+    def emit_dependencies(owner_id: str, sql_block: str, line: int) -> None:
+        reads, writes, calls = _sql_dependencies(sql_block)
+        calls |= {
+            name
+            for name in _qualified_members(sql_block)
+            if mirror.package(name, cross_schema_unique=True)
+        }
+        for target in sorted(reads, key=str.casefold):
+            add_edge(owner_id, add_reference_node(target, "reads_from"), "reads_from", line)
+        for target in sorted(writes, key=str.casefold):
+            add_edge(owner_id, add_reference_node(target, "writes_to"), "writes_to", line)
+        for target in sorted(calls, key=str.casefold):
+            add_edge(owner_id, add_reference_node(target, "calls"), "calls", line)
+
+    file_nid = _sql_file_node_id(result, path)
+    folder = path.parent.name.lower()
+
+    if folder == "ords":
+        module_paths: dict[str, str] = {}
+        for match in _ORDS_MODULE_RE.finditer(text):
+            args = {
+                m.group(1).lower(): _unquote_plsql_literal(m.group(2))
+                for m in _ORDS_NAMED_ARG_RE.finditer(match.group(1))
+            }
+            mod_name = args.get("p_module_name", "")
+            if mod_name:
+                module_paths[mod_name.upper()] = args.get("p_base_path", "")
+
+        for match in _ORDS_HANDLER_RE.finditer(text):
+            args = {
+                m.group(1).lower(): _unquote_plsql_literal(m.group(2))
+                for m in _ORDS_NAMED_ARG_RE.finditer(match.group(1))
+            }
+            mod_name = args.get("p_module_name", "")
+            pattern = args.get("p_pattern", "")
+            method = args.get("p_method", "GET").upper()
+            handler_sql = args.get("p_source", "")
+            if not pattern:
+                continue
+            base_path = module_paths.get(mod_name.upper(), f"/{mod_name.lower()}/" if mod_name else "/")
+            full_route = "/" + "/".join(
+                part for part in (base_path.strip("/"), pattern.strip("/")) if part
+            )
+            line = text.count("\n", 0, match.start()) + 1
+            handler_id = make_id(file_nid, "ords", method, full_route)
+            label = f"ORDS {method} {full_route}"
+            if handler_id not in node_by_id:
+                node = _node(
+                    handler_id,
+                    label,
+                    source_path,
+                    line,
+                    component_type="ords_handler",
+                    module_name=mod_name,
+                    method=method,
+                    route=full_route,
+                )
+                node_by_id[handler_id] = node
+                nodes.append(node)
+            add_edge(file_nid, handler_id, "contains", line)
+            if handler_sql:
+                emit_dependencies(handler_id, handler_sql, line)
+        return
+
+    if folder in {"packages", "views", "triggers", "functions", "procedures"}:
+        owner_id = file_nid if folder == "packages" else _sql_object_node_id(result, path)
+        if folder == "packages" and path.stem.upper().endswith("_BODY"):
+            pkg_name = path.stem.upper()[: -len("_BODY")]
+            spec_id = mirror.package(f"{pkg_name}.SPEC")
+            if spec_id and spec_id != file_nid:
+                add_edge(file_nid, spec_id, "calls", 1)
+        emit_dependencies(owner_id, text, 1)
+
+
 def extract_sql_linked(path: Path) -> dict:
-    """Graphify's SQL extraction, with foreign keys pointed at mirrored tables.
+    """Graphify's SQL extraction, with foreign keys and PL/SQL/ORDS links pointed at mirrored objects.
 
     The SQL extractor leaves a foreign key's parent table as a sourceless stub
     and Graphify cannot rewire it onto the parent's real node, because a
     schema-qualified label such as "DEMO"."USERS" contains a dot. The stub is
     replaced here by the parent's node id whenever the parent is mirrored under
-    ``database/<schema>/``; anything else is left exactly as extracted.
+    ``database/<schema>/``; mirrored packages, views, triggers, functions and
+    ORDS handlers also emit their database and package edges.
     """
     # ASHARIF 2026-10-24: Delegate to workspace extractor if present
     global _DISPATCHING
@@ -974,11 +1151,16 @@ def extract_sql_linked(path: Path) -> dict:
     mirror = DatabaseMirror.for_database_file(path)
     if mirror.root is None:
         return result
+    _augment_mirror_sql(path, result, mirror)
     remap: dict[str, str] = {}
     for node in result.get("nodes", []):
         if node.get("source_file"):
             continue
-        target = mirror.table(_reference_label(str(node.get("label", ""))))
+        label = _reference_label(str(node.get("label", "")))
+        target = (
+            mirror.table(label, cross_schema_unique=True)
+            or mirror.package(label, cross_schema_unique=True)
+        )
         if target and target != node.get("id"):
             remap[str(node["id"])] = target
     if not remap:
