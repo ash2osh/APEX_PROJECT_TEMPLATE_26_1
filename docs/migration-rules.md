@@ -543,6 +543,12 @@ scripts/team.sh compare-schema --from staging --to prod \
 scripts/team.sh compare-schema --env prod --pattern 'HR_*'
 ```
 
+Keep comparisons narrow. A schema can hold thousands of objects, so do not
+compare a whole schema: never use `--pattern '*'` or an unfiltered run. Name the
+objects a change creates or changes with `--object`, or use a narrow pattern.
+For a readiness check, read only the change's own objects with one read-only
+query, then check the synonym and the source before calling an object missing.
+
 The short form compares DEV with the selected `--env`. Repeat `--object` for
 exact object names and `--pattern` for uppercase names using `*` as the only
 wildcard. `_` is literal, so `HR_*` does not select `HRX_EMPLOYEES`. Selection
