@@ -106,7 +106,7 @@ if "RELEASE_FETCH_BEGIN" in driver:
     print("RELEASE_FETCH_VERIFIED")
     sys.exit(0)
 
-if "RELEASE_BEFORE_INVALID_BEGIN" in driver:
+if "RELEASE_BEFORE_INVALID_BEGIN" in driver and "RELEASE_POST_APPLY_BEGIN" in driver:
     if env_state.get("failDdl"):
         print("ORA-00955: name is already used by an existing object")
         sys.exit(1)
@@ -116,6 +116,29 @@ if "RELEASE_BEFORE_INVALID_BEGIN" in driver:
     print(json.dumps(before_payload))
     print("RELEASE_BEFORE_INVALID_END")
     print("RELEASE_BEFORE_INVALID_VERIFIED")
+    print("RELEASE_POST_APPLY_BEGIN")
+    print(json.dumps(post_payload))
+    print("RELEASE_POST_APPLY_END")
+    print("RELEASE_POST_APPLY_VERIFIED")
+    sys.exit(0)
+
+if "RELEASE_BEFORE_INVALID_BEGIN" in driver:
+    before_payload = {"identity": identity, "invalids": env_state.get("beforeInvalids", [])}
+    print("RELEASE_BEFORE_INVALID_BEGIN")
+    print(json.dumps(before_payload))
+    print("RELEASE_BEFORE_INVALID_END")
+    print("RELEASE_BEFORE_INVALID_VERIFIED")
+    sys.exit(0)
+
+if "RELEASE_BATCH_APPLIED" in driver:
+    if env_state.get("failDdl"):
+        print("ORA-00955: name is already used by an existing object")
+        sys.exit(1)
+    print("RELEASE_BATCH_APPLIED")
+    sys.exit(0)
+
+if "RELEASE_POST_APPLY_BEGIN" in driver:
+    post_payload = {"errors": env_state.get("codeErrors", []), "invalids": env_state.get("afterInvalids", [])}
     print("RELEASE_POST_APPLY_BEGIN")
     print(json.dumps(post_payload))
     print("RELEASE_POST_APPLY_END")
@@ -219,10 +242,10 @@ class ReleaseBundleTests(unittest.TestCase):
     def _env(self) -> dict[str, str]:
         return fake_sqlcl.environment(self.bin_dir, SQLCL_PERSISTENT_SESSIONS="0")
 
-    def _run_cli(self, argv: list[str], *, app_deployer=None) -> tuple[int, str, str]:
+    def _run_cli(self, argv: list[str], *, app_deployer=None, environ: dict[str, str] | None = None) -> tuple[int, str, str]:
         out, err = io.StringIO(), io.StringIO()
         proc_env = self._env()
-        kwargs: dict = {"environ": dict(BASE_ENV)}
+        kwargs: dict = {"environ": dict(BASE_ENV if environ is None else environ)}
         if app_deployer is not None:
             kwargs["app_deployer"] = app_deployer
         with (
@@ -565,6 +588,147 @@ class ReleaseBundleTests(unittest.TestCase):
         code, _, err = self._run_cli(["check", "edge-rel", "--env", "staging"])
         self.assertEqual(code, 1)
         self.assertIn("invalid file path", err)
+
+    def test_multi_schema_executes_all_ddl_before_any_code_and_preserves_code_order(self) -> None:
+        multi_env = {
+            **BASE_ENV,
+            "CODE_SCHEMA": "RUNERP_CUSTDATA,RUNERP_CODE",
+            "CODE_PREFIXES": "*,*",
+            "CODE_SQLCL_CONNECTION": "dev_cust,dev_code",
+            "CODE_EXPECTED_USER": "RUNERP_CUSTDATA,RUNERP_CODE",
+            "TABLES_SCHEMA": "RUNERP_CUSTDATA,RUNERP_CODE",
+            "TABLES_PREFIXES": "*,*",
+            "TABLES_SQLCL_CONNECTION": "dev_cust,dev_code",
+            "TABLES_EXPECTED_USER": "RUNERP_CUSTDATA,RUNERP_CODE",
+            "APEX_PARSING_SCHEMA": "RUNERP_CODE",
+            "APEX_SQLCL_CONNECTION": "dev_code",
+            "APEX_EXPECTED_USER": "RUNERP_CODE",
+            "STAGING_SCHEMA": "RUNERP_CUSTDATA,RUNERP_CODE",
+            "STAGING_SQLCL_CONNECTION": "stg_cust,stg_code",
+            "STAGING_EXPECTED_USER": "DEPLOYER,DEPLOYER",
+        }
+        state = {
+            "connMap": {"stg_cust": "stg_cust", "stg_code": "stg_code"},
+            "envs": {
+                "stg_cust": {
+                    "identity": {
+                        "session_user": "DEPLOYER",
+                        "current_schema": "RUNERP_CUSTDATA",
+                        "db_name": "STAGEDB",
+                        "db_unique_name": "STAGEDB_UNQ",
+                        "service_name": "stage_svc",
+                        "con_name": "STAGEPDB",
+                    },
+                    "objects": {},
+                    "beforeInvalids": [],
+                    "afterInvalids": [],
+                    "codeErrors": [],
+                },
+                "stg_code": {
+                    "identity": {
+                        "session_user": "DEPLOYER",
+                        "current_schema": "RUNERP_CODE",
+                        "db_name": "STAGEDB",
+                        "db_unique_name": "STAGEDB_UNQ",
+                        "service_name": "stage_svc",
+                        "con_name": "STAGEPDB",
+                    },
+                    "objects": {},
+                    "beforeInvalids": [],
+                    "afterInvalids": [],
+                    "codeErrors": [],
+                },
+            },
+        }
+        self._write_state(state)
+
+        code, _, err = self._run_cli(["new", "cross-schema-rel"], environ=multi_env)
+        self.assertEqual(code, 0, err)
+        bundle = self.root / "releases" / "cross-schema-rel"
+        (bundle / "01-ddl" / "001-cust-table.sql").write_text("CREATE TABLE cust_t (id NUMBER);\n", encoding="utf-8", newline="\n")
+        (bundle / "02-code" / "01-code-spec.sql").write_text(
+            "CREATE OR REPLACE PACKAGE code_pkg AS PROCEDURE p; END code_pkg;\n/\n", encoding="utf-8", newline="\n"
+        )
+        (bundle / "02-code" / "02-code-body.sql").write_text(
+            "CREATE OR REPLACE PACKAGE BODY code_pkg AS PROCEDURE p IS BEGIN NULL; END; END code_pkg;\n/\n", encoding="utf-8", newline="\n"
+        )
+        (bundle / "02-code" / "03-cust-trg.sql").write_text(
+            "CREATE OR REPLACE TRIGGER cust_t_trg BEFORE INSERT ON cust_t FOR EACH ROW BEGIN NULL; END;\n/\n", encoding="utf-8", newline="\n"
+        )
+        (bundle / "03-ords" / "01-api.sql").write_text("BEGIN NULL; END;\n/\n", encoding="utf-8", newline="\n")
+
+        manifest = {
+            "schemaVersion": 1,
+            "slug": "cross-schema-rel",
+            "status": "draft",
+            "createdAt": "2026-11-24T00:00:00Z",
+            "schemas": ["RUNERP_CUSTDATA", "RUNERP_CODE"],
+            "ddl": [
+                {"schema": "RUNERP_CUSTDATA", "file": "01-ddl/001-cust-table.sql"},
+            ],
+            "code": [
+                {
+                    "schema": "RUNERP_CODE",
+                    "file": "02-code/01-code-spec.sql",
+                    "objectType": "PACKAGE",
+                    "objectName": "CODE_PKG",
+                    "mode": "new",
+                },
+                {
+                    "schema": "RUNERP_CODE",
+                    "file": "02-code/02-code-body.sql",
+                    "objectType": "PACKAGE BODY",
+                    "objectName": "CODE_PKG",
+                    "mode": "new",
+                },
+                {
+                    "schema": "RUNERP_CUSTDATA",
+                    "file": "02-code/03-cust-trg.sql",
+                    "objectType": "TRIGGER",
+                    "objectName": "CUST_T_TRG",
+                    "mode": "new",
+                },
+            ],
+            "ords": [
+                {"schema": "RUNERP_CODE", "file": "03-ords/01-api.sql"},
+            ],
+            "verify": [],
+            "apps": [],
+            "forbiddenPatterns": [],
+        }
+        (bundle / "release.json").write_text(json.dumps(manifest), encoding="utf-8", newline="\n")
+
+        code, out, err = self._run_cli(
+            ["run", "cross-schema-rel", "--env", "staging", "--confirm-target", "STAGEDB_UNQ", "--skip-backup"],
+            environ=multi_env,
+        )
+        self.assertEqual(code, 0, f"out={out}\nerr={err}")
+
+        calls = self._read_state()["calls"]
+        # First 2 calls are preflight fetch sessions (one per schema).
+        apply_phase_calls = calls[2:]
+        driver_sequence = [(c["conn"], c["driverName"]) for c in apply_phase_calls]
+        self.assertEqual(
+            driver_sequence,
+            [
+                ("stg_cust", "release-before-invalids.sql"),
+                ("stg_code", "release-before-invalids.sql"),
+                ("stg_cust", "release-apply-ddl-RUNERP_CUSTDATA.sql"),
+                ("stg_code", "release-apply-code-RUNERP_CODE.sql"),
+                ("stg_cust", "release-apply-code-RUNERP_CUSTDATA.sql"),
+                ("stg_code", "release-apply-ords-RUNERP_CODE.sql"),
+                ("stg_cust", "release-post-apply.sql"),
+                ("stg_code", "release-post-apply.sql"),
+            ],
+        )
+        # Consecutive RUNERP_CODE 02-code steps were batched into 1 SQLcl session in exact order.
+        code_batch_driver = apply_phase_calls[3]["driver"]
+        self.assertIn("RELEASE_STEP_START:02-code/01-code-spec.sql", code_batch_driver)
+        self.assertIn("RELEASE_STEP_START:02-code/02-code-body.sql", code_batch_driver)
+        self.assertLess(
+            code_batch_driver.index("RELEASE_STEP_START:02-code/01-code-spec.sql"),
+            code_batch_driver.index("RELEASE_STEP_START:02-code/02-code-body.sql"),
+        )
 
 
 if __name__ == "__main__":

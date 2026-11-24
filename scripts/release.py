@@ -22,6 +22,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from itertools import groupby
 from pathlib import Path
 from typing import Any
 
@@ -1067,13 +1068,7 @@ def _render_backup_driver(target: Target, existing_items: Sequence[tuple[str, st
     return _render_fetch_objects_driver(target, existing_items, include_ddl=True)
 
 
-def _render_apply_driver(target: Target, schema_steps: Sequence[BundleStep]) -> str:
-    """Render 1 SQLcl driver per schema: before-invalids, 01-ddl -> 02-code -> 03-ords, ALL_ERRORS, after-invalids."""
-    q_schema = _sql_literal(target.schema)
-    ddl_steps = [s for s in schema_steps if s.section == "ddl"]
-    code_steps = [s for s in schema_steps if s.section == "code"]
-    ords_steps = [s for s in schema_steps if s.section == "ords"]
-
+def _apply_session_prelude(target: Target) -> list[str]:
     lines = [
         "SET ECHO OFF",
         "SET FEEDBACK OFF",
@@ -1086,9 +1081,12 @@ def _render_apply_driver(target: Target, schema_steps: Sequence[BundleStep]) -> 
     ]
     if target.acts_as_other_schema:
         lines.append(f"ALTER SESSION SET CURRENT_SCHEMA = {target.schema};")
+    return lines
 
-    # 1. Identity & before invalid-object snapshot
-    lines.extend([
+
+def _before_invalids_lines(target: Target) -> list[str]:
+    q_schema = _sql_literal(target.schema)
+    return [
         "DECLARE",
         "  l_payload JSON_OBJECT_T := JSON_OBJECT_T();",
         "  l_id      JSON_OBJECT_T := JSON_OBJECT_T();",
@@ -1109,30 +1107,27 @@ def _render_apply_driver(target: Target, schema_steps: Sequence[BundleStep]) -> 
         *_plsql_emit_clob_lines("l_out", "BEFORE_INVALID"),
         "END;",
         "/",
-    ])
+    ]
 
-    def append_sql_steps(section_steps: Sequence[BundleStep]) -> None:
-        for step in section_steps:
-            text = step.path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
-            lines.extend([
-                "SET DEFINE OFF",
-                "SET SQLBLANKLINES ON",
-                "WHENEVER SQLERROR EXIT SQL.SQLCODE",
-                f"PROMPT RELEASE_STEP_START:{step.rel_file}",
-                text.rstrip("\n"),
-                f"PROMPT RELEASE_STEP_END:{step.rel_file}",
-            ])
 
-    # 2. 01-ddl -> 02-code -> 03-ords
-    if ddl_steps:
-        append_sql_steps(ddl_steps)
-    if code_steps:
-        append_sql_steps(code_steps)
-    if ords_steps:
-        append_sql_steps(ords_steps)
+def _sql_step_lines(section_steps: Sequence[BundleStep]) -> list[str]:
+    lines: list[str] = []
+    for step in section_steps:
+        text = step.path.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
+        lines.extend([
+            "SET DEFINE OFF",
+            "SET SQLBLANKLINES ON",
+            "WHENEVER SQLERROR EXIT SQL.SQLCODE",
+            f"PROMPT RELEASE_STEP_START:{step.rel_file}",
+            text.rstrip("\n"),
+            f"PROMPT RELEASE_STEP_END:{step.rel_file}",
+        ])
+    return lines
 
-    # 3. Query ALL_ERRORS for code objects + after invalid-object snapshot
-    lines.extend([
+
+def _post_apply_lines(target: Target, code_steps: Sequence[BundleStep]) -> list[str]:
+    q_schema = _sql_literal(target.schema)
+    lines = [
         "SET DEFINE OFF",
         "WHENEVER SQLERROR EXIT FAILURE ROLLBACK",
         "DECLARE",
@@ -1142,7 +1137,7 @@ def _render_apply_driver(target: Target, schema_steps: Sequence[BundleStep]) -> 
         "  l_row     JSON_OBJECT_T;",
         "  l_out     CLOB;",
         "BEGIN",
-    ])
+    ]
     unique_code = list(dict.fromkeys((s.object_type, s.object_name) for s in code_steps if s.object_type and s.object_name))
     if unique_code:
         pairs = ", ".join(f"({_sql_literal(t)}, {_sql_literal(n)})" for t, n in unique_code)
@@ -1172,9 +1167,52 @@ def _render_apply_driver(target: Target, schema_steps: Sequence[BundleStep]) -> 
         *_plsql_emit_clob_lines("l_out", "POST_APPLY"),
         "END;",
         "/",
-        driver_epilogue(True),
-        "",
     ])
+    return lines
+
+
+def _render_apply_driver(target: Target, schema_steps: Sequence[BundleStep]) -> str:
+    """Render 1 SQLcl driver for single-schema bundles: before-invalids, 01-ddl -> 02-code -> 03-ords, ALL_ERRORS, after-invalids."""
+    ddl_steps = [s for s in schema_steps if s.section == "ddl"]
+    code_steps = [s for s in schema_steps if s.section == "code"]
+    ords_steps = [s for s in schema_steps if s.section == "ords"]
+
+    lines = _apply_session_prelude(target)
+    lines.extend(_before_invalids_lines(target))
+    if ddl_steps:
+        lines.extend(_sql_step_lines(ddl_steps))
+    if code_steps:
+        lines.extend(_sql_step_lines(code_steps))
+    if ords_steps:
+        lines.extend(_sql_step_lines(ords_steps))
+    lines.extend(_post_apply_lines(target, code_steps))
+    lines.extend([driver_epilogue(True), ""])
+    return "\n".join(lines)
+
+
+def _render_before_invalids_driver(target: Target) -> str:
+    """Render read-only invalid-object baseline driver for multi-schema bundles."""
+    lines = _apply_session_prelude(target)
+    lines.append("SET TRANSACTION READ ONLY;")
+    lines.extend(_before_invalids_lines(target))
+    lines.extend([driver_epilogue(False), ""])
+    return "\n".join(lines)
+
+
+def _render_batch_apply_driver(target: Target, batch_steps: Sequence[BundleStep]) -> str:
+    """Render 1 SQLcl apply driver for one consecutive schema batch within a phase."""
+    lines = _apply_session_prelude(target)
+    lines.extend(_sql_step_lines(batch_steps))
+    lines.extend(["PROMPT RELEASE_BATCH_APPLIED", driver_epilogue(True), ""])
+    return "\n".join(lines)
+
+
+def _render_post_apply_driver(target: Target, code_steps: Sequence[BundleStep]) -> str:
+    """Render read-only ALL_ERRORS and after-invalids check driver for multi-schema bundles."""
+    lines = _apply_session_prelude(target)
+    lines.append("SET TRANSACTION READ ONLY;")
+    lines.extend(_post_apply_lines(target, code_steps))
+    lines.extend([driver_epilogue(False), ""])
     return "\n".join(lines)
 
 
@@ -1320,18 +1358,37 @@ def cmd_run(
             _write_json_lf(backup_dir / "backup-manifest.json", {"slug": slug, "environment": env, "objects": backed_up})
         timings["backup"] = round(time.monotonic() - t1, 3)
 
-        # Step 4: Execute 01-ddl -> 02-code -> 03-ords (1 SQLcl session per schema) + invalid delta
+        # Step 4: Execute all 01-ddl -> all 02-code -> all 03-ords (consecutive schema batches) + invalid delta
         t2 = time.monotonic()
-        before_invalids: dict[str, set[tuple[str, str]]] = {}
-        after_invalids: dict[str, set[tuple[str, str]]] = {}
-        new_invalids: dict[str, list[tuple[str, str]]] = {}
-        for schema in schemas:
+        before_invalids: dict[str, set[tuple[str, str]]] = {schema: set() for schema in schemas}
+        after_invalids: dict[str, set[tuple[str, str]]] = {schema: set() for schema in schemas}
+        new_invalids: dict[str, list[tuple[str, str]]] = {schema: [] for schema in schemas}
+        apply_schemas = [
+            schema for schema in schemas
+            if any(s.schema == schema and s.section in {"ddl", "code", "ords"} for s in steps)
+        ]
+
+        def _check_post_apply(schema: str, post_payload: Mapping[str, Any]) -> None:
+            code_errors = post_payload.get("errors") or []
+            if code_errors:
+                formatted_errs = [
+                    f"{e.get('objectType')} {e.get('objectName')} L{e.get('line')}:{e.get('position')}: {e.get('text')}"
+                    for e in code_errors
+                ]
+                raise ReleaseError(f"Compilation errors in {schema}:\n  - " + "\n  - ".join(formatted_errs))
+
+            before_set = before_invalids[schema]
+            after_set = _invalid_set(post_payload.get("invalids") or [])
+            delta = sorted(after_set - before_set)
+            after_invalids[schema] = after_set
+            new_invalids[schema] = delta
+            if delta:
+                names = ", ".join(f"{t} {n}" for t, n in delta)
+                raise ReleaseError(f"New invalid objects appeared in {schema}: {names}")
+
+        if len(apply_schemas) == 1:
+            schema = apply_schemas[0]
             schema_apply_steps = [s for s in steps if s.schema == schema and s.section in {"ddl", "code", "ords"}]
-            if not schema_apply_steps:
-                before_invalids[schema] = set()
-                after_invalids[schema] = set()
-                new_invalids[schema] = []
-                continue
             driver_sql = _render_apply_driver(targets[schema], schema_apply_steps)
             output = _run_driver(
                 runner,
@@ -1344,25 +1401,59 @@ def cmd_run(
             )
             before_payload = _extract_framed_json(output, "BEFORE_INVALID")
             _verify_live_identity(before_payload.get("identity") or {}, targets[schema])
+            before_invalids[schema] = _invalid_set(before_payload.get("invalids") or [])
             post_payload = _extract_framed_json(output, "POST_APPLY")
+            _check_post_apply(schema, post_payload)
+        elif len(apply_schemas) > 1:
+            # 4a. Capture before invalid-object baselines for all touched schemas before any DDL runs.
+            for schema in apply_schemas:
+                driver_sql = _render_before_invalids_driver(targets[schema])
+                output = _run_driver(
+                    runner,
+                    targets[schema],
+                    tmp_path / f"before-invalids-{schema}",
+                    "release-before-invalids.sql",
+                    driver_sql,
+                    phase="preconditions",
+                    environ=values,
+                )
+                before_payload = _extract_framed_json(output, "BEFORE_INVALID")
+                _verify_live_identity(before_payload.get("identity") or {}, targets[schema])
+                before_invalids[schema] = _invalid_set(before_payload.get("invalids") or [])
 
-            code_errors = post_payload.get("errors") or []
-            if code_errors:
-                formatted_errs = [
-                    f"{e.get('objectType')} {e.get('objectName')} L{e.get('line')}:{e.get('position')}: {e.get('text')}"
-                    for e in code_errors
-                ]
-                raise ReleaseError(f"Compilation errors in {schema}:\n  - " + "\n  - ".join(formatted_errs))
+            # 4b. Execute strictly by phase (ddl -> code -> ords), grouping consecutive same-schema steps.
+            batch_num = 0
+            for section in ("ddl", "code", "ords"):
+                phase_steps = [s for s in steps if s.section == section]
+                for batch_schema, batch_iter in groupby(phase_steps, key=lambda s: s.schema):
+                    batch_num += 1
+                    batch_steps = list(batch_iter)
+                    driver_sql = _render_batch_apply_driver(targets[batch_schema], batch_steps)
+                    _run_driver(
+                        runner,
+                        targets[batch_schema],
+                        tmp_path / f"apply-{batch_num:02d}-{section}-{batch_schema}",
+                        f"release-apply-{section}-{batch_schema}.sql",
+                        driver_sql,
+                        phase="apply",
+                        environ=values,
+                    )
 
-            before_set = _invalid_set(before_payload.get("invalids") or [])
-            after_set = _invalid_set(post_payload.get("invalids") or [])
-            delta = sorted(after_set - before_set)
-            before_invalids[schema] = before_set
-            after_invalids[schema] = after_set
-            new_invalids[schema] = delta
-            if delta:
-                names = ", ".join(f"{t} {n}" for t, n in delta)
-                raise ReleaseError(f"New invalid objects appeared in {schema}: {names}")
+            # 4c. After all apply phases finish, check ALL_ERRORS and invalid-object delta per schema.
+            for schema in apply_schemas:
+                schema_code_steps = [s for s in steps if s.schema == schema and s.section == "code"]
+                driver_sql = _render_post_apply_driver(targets[schema], schema_code_steps)
+                output = _run_driver(
+                    runner,
+                    targets[schema],
+                    tmp_path / f"post-apply-{schema}",
+                    "release-post-apply.sql",
+                    driver_sql,
+                    phase="postconditions",
+                    environ=values,
+                )
+                post_payload = _extract_framed_json(output, "POST_APPLY")
+                _check_post_apply(schema, post_payload)
         timings["apply"] = round(time.monotonic() - t2, 3)
 
         # Step 4b: 04-verify smoke scripts (read-only)
