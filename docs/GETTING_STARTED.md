@@ -294,6 +294,25 @@ their recorded source unless explicitly overridden. See
 [lock recovery](../README.md#recover-an-older-template-lock) for conflict and
 version-selection details.
 
+### Upgrade a pre-Lean 26.1 downstream project past retired paths
+
+If your 26.1 downstream project has an older `.template-lock.json` that still
+lists retired migration/rollout paths and `APEX_PROJECT_TEMPLATE_26_1` `main`
+already ships Lean Release, running the old local `scripts/team.sh upgrade-template`
+will refuse those retired paths. Run the fixed `scripts/upgrade_template.py` from
+a separate checkout of `APEX_PROJECT_TEMPLATE_26_1` instead:
+
+```bash
+git clone https://github.com/ash2osh/APEX_PROJECT_TEMPLATE_26_1.git ../apex-template-26.1
+python3 ../apex-template-26.1/scripts/upgrade_template.py \
+  --project-root . --ref main --dry-run
+python3 ../apex-template-26.1/scripts/upgrade_template.py \
+  --project-root . --ref main
+```
+
+Once applied, your downstream project has the updated `scripts/upgrade_template.py`
+and subsequent upgrades can use `scripts/team.sh upgrade-template` directly.
+
 ## 5. Save your SQLcl connection
 
 SQLcl keeps the password in its own secure store. Save one connection for your
