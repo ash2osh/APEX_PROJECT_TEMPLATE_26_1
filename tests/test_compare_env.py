@@ -18,7 +18,7 @@ from unittest.mock import patch
 
 import _no_real_sqlcl  # noqa: F401
 from tests import fake_sqlcl
-from scripts import compare_schema, migration_runtime
+from scripts import compare_schema
 from scripts.db_targets import Target
 from scripts.compare_schema import (
     COMPARE_ENV_SECTIONS,
@@ -551,7 +551,7 @@ class EnvironmentComparisonTests(unittest.TestCase):
         self.assertEqual(len(identity_versions), 2)
         for value in identity_versions:
             self.assertEqual(value.strip(), expression)
-        self.assertIn(expression, (ROOT / "scripts" / "migration_checks.py").read_text(encoding="utf-8"))
+        self.assertIn(expression, (ROOT / "scripts" / "dev_test_checks.py").read_text(encoding="utf-8"))
 
     def test_every_compare_env_query_binds_scope_once_for_its_positional_arguments(self) -> None:
         # append_rows passes the scope JSON, the schema and the page window in fixed
@@ -586,7 +586,7 @@ class EnvironmentComparisonTests(unittest.TestCase):
 
                 with (
                     tempfile.TemporaryDirectory() as temporary,
-                    patch.object(migration_runtime, "require_migration_sqlcl_version"),
+                    patch.object(compare_schema, "require_sqlcl_26_3"),
                     redirect_stdout(io.StringIO()),
                     redirect_stderr(io.StringIO()),
                 ):
@@ -1306,7 +1306,7 @@ class EnvironmentComparisonCliTests(unittest.TestCase):
 
         with (
             tempfile.TemporaryDirectory() as temporary,
-            patch.object(migration_runtime, "require_migration_sqlcl_version", side_effect=check_version),
+            patch.object(compare_schema, "require_sqlcl_26_3", side_effect=check_version),
             redirect_stdout(stdout),
             redirect_stderr(stderr),
         ):
@@ -1328,7 +1328,7 @@ class EnvironmentComparisonCliTests(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         with (
-            patch.object(migration_runtime, "require_migration_sqlcl_version") as check_version,
+            patch.object(compare_schema, "require_sqlcl_26_3") as check_version,
             redirect_stdout(stdout),
             redirect_stderr(stderr),
         ):
@@ -1344,9 +1344,9 @@ class EnvironmentComparisonCliTests(unittest.TestCase):
         stderr = io.StringIO()
         with (
             patch.object(
-                migration_runtime,
-                "require_migration_sqlcl_version",
-                side_effect=migration_runtime.MigrationRuntimeError("SQLcl floor required"),
+                compare_schema,
+                "require_sqlcl_26_3",
+                side_effect=RuntimeError("SQLcl floor required"),
             ),
             patch.object(compare_schema, "capture_environment_catalog") as capture,
             redirect_stdout(stdout),
@@ -1371,7 +1371,7 @@ class EnvironmentComparisonCliTests(unittest.TestCase):
 
         with (
             tempfile.TemporaryDirectory() as temporary,
-            patch.object(migration_runtime, "require_migration_sqlcl_version"),
+            patch.object(compare_schema, "require_sqlcl_26_3"),
             redirect_stdout(stdout),
             redirect_stderr(stderr),
         ):

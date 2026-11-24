@@ -10,10 +10,6 @@ ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_IDS = (
     "datatype-roundtrip",
     "compiler-settings",
-    "sqlcl-delivery",
-    "migration-success",
-    "migration-refusal",
-    "invalid-view",
 )
 
 

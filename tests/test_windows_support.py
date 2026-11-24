@@ -85,78 +85,33 @@ class BashCommandTests(unittest.TestCase):
         self.assertEqual(Path(result), git_root / "bin" / "bash.exe")
 
 
-class TeamPowerShellVerifyCommandTests(unittest.TestCase):
-    """The PowerShell entry point advertises and dispatches read-only verification."""
+class TeamPowerShellReleaseCommandTests(unittest.TestCase):
+    """The PowerShell entry point advertises and dispatches the lean release workflow."""
 
     def engines(self):
-        engines = []
-        for name in ("powershell.exe", "pwsh.exe", "powershell", "pwsh"):
-            engine = shutil.which(name)
-            if engine and "/snap/bin/" not in Path(engine).as_posix():
-                engines.append(engine)
-        return engines
+        return [
+            engine
+            for name in ("powershell.exe", "pwsh.exe", "powershell", "pwsh")
+            if (engine := shutil.which(name)) and "/snap/bin/" not in Path(engine).as_posix()
+        ]
 
-    def test_help_describes_verify_options(self):
-        engines = self.engines()
-        if not engines:
-            self.skipTest("PowerShell is not installed outside the sandbox-blocked snap launcher")
-        for engine in engines:
-            with self.subTest(engine=Path(engine).name):
-                result = subprocess.run(
-                    [engine, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-                     str(ROOT / "scripts" / "team.ps1"), "--help"],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertIn("verify <folder>", result.stdout)
-                self.assertIn("--jobs N", result.stdout)
-
-    def test_verify_without_folders_reports_its_usage(self):
-        engines = self.engines()
-        if not engines:
-            self.skipTest("PowerShell is not installed outside the sandbox-blocked snap launcher")
-        for engine in engines:
-            with self.subTest(engine=Path(engine).name):
-                result = subprocess.run(
-                    [engine, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-                     str(ROOT / "scripts" / "team.ps1"), "verify"],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-                self.assertIn("usage: scripts/team.ps1 verify", result.stderr)
-
-
-class TeamPowerShellRolloutCommandTests(unittest.TestCase):
-    """The PowerShell entry point exposes the same rollout contract as Bash."""
-
-    def test_bash_help_describes_rollout_options(self):
-        result = subprocess.run(
+    def test_bash_and_powershell_help_describe_release_options(self) -> None:
+        bash_result = subprocess.run(
             [sqlcl_session.bash_command(), str(ROOT / "scripts" / "team.sh"), "--help"],
             cwd=ROOT,
             capture_output=True,
             text=True,
             check=False,
         )
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(bash_result.returncode, 0, bash_result.stdout + bash_result.stderr)
         for option in (
-            "rollout <manifest.json>", "--from-step N", "--dry-run", "--prepare",
-            "--capsule DIR", "--stage-report FILE", "--recover ATTEMPT", "--report <file>",
+            "release list", "release new <slug>", "release collect <bundle>",
+            "release check <bundle>", "release run <bundle>", "--confirm-target <db_unique_name>",
+            "--report <path>",
         ):
-            with self.subTest(option=option):
-                self.assertIn(option, result.stdout)
+            with self.subTest(shell="bash", option=option):
+                self.assertIn(option, bash_result.stdout)
 
-    def engines(self):
-        return [
-            engine
-            for name in ("powershell.exe", "pwsh.exe", "powershell", "pwsh")
-            if (engine := shutil.which(name)) and "/snap/bin/" not in Path(engine).as_posix()
-        ]
-
-    def test_help_describes_rollout_options(self):
         engines = self.engines()
         if not engines:
             self.skipTest("PowerShell is not installed outside the sandbox-blocked snap launcher")
@@ -170,55 +125,14 @@ class TeamPowerShellRolloutCommandTests(unittest.TestCase):
                     check=False,
                 )
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                self.assertIn("rollout <manifest.json>", result.stdout)
-                self.assertIn("--from-step N", result.stdout)
-                self.assertIn("--dry-run", result.stdout)
-                self.assertIn("--report <file>", result.stdout)
-                self.assertIn('ConvertTo-MigrationFolderArgument $reportValue', (ROOT / "scripts" / "team.ps1").read_text(encoding="utf-8"))
-
-    def test_rollout_without_manifest_reports_its_usage(self):
-        engines = self.engines()
-        if not engines:
-            self.skipTest("PowerShell is not installed outside the sandbox-blocked snap launcher")
-        for engine in engines:
-            with self.subTest(engine=Path(engine).name):
-                result = subprocess.run(
-                    [engine, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-                     str(ROOT / "scripts" / "team.ps1"), "rollout"],
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
                 for option in (
-                    "usage: scripts/team.ps1 rollout <manifest.json>", "--from-step N", "--dry-run", "--prepare",
-                    "--capsule DIR", "--stage-report FILE", "--recover ATTEMPT", "--report <file>",
+                    "release list", "release new <slug>", "release collect <bundle>",
+                    "release check <bundle>", "release run <bundle>", "--confirm-target <db_unique_name>",
+                    "--report <path>",
                 ):
-                    with self.subTest(engine=Path(engine).name, option=option):
-                        self.assertIn(option, result.stderr)
+                    self.assertIn(option, result.stdout)
 
-    def test_help_documents_preflight_inventory_retry_setting(self):
-        text = (ROOT / "scripts" / "team.ps1").read_text(encoding="utf-8")
-        self.assertIn("MIGRATION_PREFLIGHT_INVENTORY_RETRIES", text)
-        self.assertIn("default 3", text)
-
-
-class TeamPowerShellMigrationRevisionTests(unittest.TestCase):
-    """The PowerShell entry point exposes and converts arguments for revision handling."""
-
-    def engines(self):
-        return [
-            engine
-            for name in ("powershell.exe", "pwsh.exe", "powershell", "pwsh")
-            if (engine := shutil.which(name)) and "/snap/bin/" not in Path(engine).as_posix()
-        ]
-
-    def test_help_describes_revision_and_check_options(self):
-        wrapper = (ROOT / "scripts" / "team.ps1").read_text(encoding="utf-8")
-        self.assertIn("revise <folder> [--reason TEXT]", wrapper)
-        self.assertIn("revise --check <folder>", wrapper)
-
-    def test_revision_without_arguments_reports_usage(self):
+    def test_release_without_arguments_reports_its_usage(self) -> None:
         engines = self.engines()
         if not engines:
             self.skipTest("PowerShell is not installed outside the sandbox-blocked snap launcher")
@@ -226,19 +140,19 @@ class TeamPowerShellMigrationRevisionTests(unittest.TestCase):
             with self.subTest(engine=Path(engine).name):
                 result = subprocess.run(
                     [engine, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File",
-                     str(ROOT / "scripts" / "team.ps1"), "revise"],
+                     str(ROOT / "scripts" / "team.ps1"), "release"],
                     capture_output=True,
                     text=True,
                     check=False,
                 )
                 self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
-                self.assertIn("usage: scripts/team.ps1 revise", result.stderr)
+                self.assertIn("usage: scripts/team.ps1 release <list|new|collect|check|run>", result.stderr)
 
-    def test_wrapper_converts_folder_argument_for_git_bash(self):
+    def test_wrapper_converts_bundle_and_report_arguments_for_git_bash(self) -> None:
         wrapper = (ROOT / "scripts" / "team.ps1").read_text(encoding="utf-8")
-        self.assertIn('$revisionArguments[1] = ConvertTo-MigrationFolderArgument', wrapper)
-        self.assertIn('$revisionArguments[0] = ConvertTo-MigrationFolderArgument', wrapper)
-        self.assertIn('Invoke-TeamBash -ScriptName "team.sh"', wrapper)
+        self.assertIn('$releaseArguments[1] = ConvertTo-MigrationFolderArgument', wrapper)
+        self.assertIn('ConvertTo-MigrationFolderArgument ([string] $releaseArguments[$releaseIndex])', wrapper)
+        self.assertIn('Invoke-TeamBash -ScriptName "team.sh" -ScriptArguments (@("release") + $releaseArguments)', wrapper)
 
 
 class SqlclNativePathTests(unittest.TestCase):
@@ -465,24 +379,27 @@ class GitAttributesTests(unittest.TestCase):
 
 @unittest.skipUnless(os.name == "nt", "needs Windows PowerShell and Git Bash")
 class TeamPowerShellFolderArgumentTests(unittest.TestCase):
-    """team.ps1 turns the Windows spellings of a migration folder into migrations/<folder>."""
+    """team.ps1 turns Windows spellings of a release bundle path into releases/<slug>."""
 
     def make_checkout(self, temporary: str) -> Path:
         checkout = Path(temporary) / "checkout"
         shutil.copytree(ROOT / "scripts", checkout / "scripts", ignore=shutil.ignore_patterns("__pycache__"))
         shutil.copy2(ROOT / "template-manifest.json", checkout / "template-manifest.json")
-        folder = checkout / "migrations" / "2026-10-02_win-r001"
-        folder.mkdir(parents=True)
-        (folder / "001-create.sql").write_bytes(b"CREATE TABLE T (ID NUMBER);\n")
-        (folder / "checks.json").write_bytes(
-            b'{"schemaVersion":1,"preconditions":[],"postconditions":[{"id":"ok","sql":"SELECT 1 FROM dual","expected":1}]}\n'
+        (checkout / ".env").write_text((ROOT / ".env.example").read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
+        bundle = checkout / "releases" / "2026-10-02-win"
+        (bundle / "01-ddl").mkdir(parents=True)
+        (bundle / "02-code").mkdir(parents=True)
+        (bundle / "03-ords").mkdir(parents=True)
+        (bundle / "04-verify").mkdir(parents=True)
+        (bundle / "release.json").write_bytes(
+            b'{"schemaVersion":1,"slug":"2026-10-02-win","status":"draft","createdAt":"2026-10-02T00:00:00Z","schemas":["DEMO"],"ddl":[],"code":[]}\n'
         )
         return checkout
 
     def run_team(self, engine: str, checkout: Path, folder: str, environment: dict[str, str] | None = None) -> subprocess.CompletedProcess:
         return subprocess.run(
             [engine, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(checkout / "scripts" / "team.ps1"),
-             "check-conflicts", folder, "--local"],
+             "release", "check", folder, "--env", "dev"],
             capture_output=True,
             text=True,
             cwd=checkout,
@@ -516,9 +433,9 @@ class TeamPowerShellFolderArgumentTests(unittest.TestCase):
             checkout = self.make_checkout(temporary)
             for engine in engines:
                 with self.subTest(engine=Path(engine).name):
-                    result = self.run_team(engine, checkout, "migrations/2026-10-02_win-r001", environment)
-                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                    self.assertIn("Result: exit 0", result.stdout)
+                    result = self.run_team(engine, checkout, "releases/missing-bundle", environment)
+                    self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                    self.assertIn("release error:", result.stderr)
                     # The one-run shim folder is gone afterwards.
                     self.assertEqual(sorted(path.name for path in (checkout / "scratch").glob("team-python-*")), [])
 
@@ -526,30 +443,17 @@ class TeamPowerShellFolderArgumentTests(unittest.TestCase):
         engines = [shutil.which(name) for name in ("powershell.exe", "pwsh.exe") if shutil.which(name)]
         if not engines:
             self.skipTest("no PowerShell found")
-        refusal = "use a repository-relative migrations/<dated-folder> path"
+        refusal = "release error:"
         with tempfile.TemporaryDirectory() as temporary:
             checkout = self.make_checkout(temporary)
-            inside = checkout / "migrations" / "2026-10-02_win-r001"
+            inside = checkout / "releases" / "2026-10-02-win"
             drive, rest = os.path.splitdrive(str(inside))
-            accepted = {
-                "absolute with forward slashes": inside.as_posix(),
-                "absolute with a lower-case drive letter": drive.lower() + rest,
-                "absolute with an upper-case drive letter": drive.upper() + rest,
-                "relative with .\\ and a trailing slash": ".\\migrations\\2026-10-02_win-r001\\",
-                "relative with forward slashes and a trailing slash": "migrations/2026-10-02_win-r001/",
-            }
             refused = {
-                "outside the checkout": str(Path(temporary) / "elsewhere" / "migrations" / "2026-10-02_win-r001"),
+                "outside the checkout": str(Path(temporary) / "elsewhere" / "releases" / "2026-10-02-win"),
                 "a UNC path to the same checkout": "\\\\localhost\\" + drive[0] + "$" + rest,
-                "parent directory": "..\\migrations\\2026-10-02_win-r001",
-                "the migrations folder itself with another folder": "migrations\\..\\migrations\\2026-10-02_win-r001",
+                "parent directory": "..\\releases\\2026-10-02-win",
             }
             for engine in engines:
-                for label, form in accepted.items():
-                    with self.subTest(engine=Path(engine).name, accepted=label):
-                        result = self.run_team(engine, checkout, form)
-                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                        self.assertIn("Result: exit 0", result.stdout)
                 for label, form in refused.items():
                     with self.subTest(engine=Path(engine).name, refused=label):
                         result = self.run_team(engine, checkout, form)
@@ -566,20 +470,17 @@ class TeamPowerShellFolderArgumentTests(unittest.TestCase):
             checkout = self.make_checkout(temporary)
             for engine in engines:
                 with self.subTest(engine=Path(engine).name):
-                    result = self.run_team(engine, checkout, 'migrations/double"quote')
+                    result = self.run_team(engine, checkout, 'releases/double"quote')
                     self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
                     if Path(engine).name.lower() == "powershell.exe":
                         # Windows PowerShell 5.1 cannot pass a double quote to Git Bash, so team.ps1 refuses it first.
                         self.assertIn("Windows PowerShell 5.1 cannot pass", result.stderr)
                     else:
-                        self.assertIn("preflight error:", result.stderr)
+                        self.assertIn("release error:", result.stderr)
                     self.assertNotIn("Exception", result.stderr)
                     self.assertNotIn("Illegal characters", result.stderr)
 
     def test_a_single_quote_in_an_argument_for_bash_is_refused_not_mangled(self) -> None:
-        # Git Bash's launcher reads ' in the command line as a quote: the argument lost it and
-        # was joined with the next one ("migrations/singlequote --local"), which then failed
-        # with a message about a missing --local.
         engines = [shutil.which(name) for name in ("powershell.exe", "pwsh.exe") if shutil.which(name)]
         if not engines:
             self.skipTest("no PowerShell found")
@@ -587,7 +488,7 @@ class TeamPowerShellFolderArgumentTests(unittest.TestCase):
             checkout = self.make_checkout(temporary)
             for engine in engines:
                 with self.subTest(engine=Path(engine).name):
-                    result = self.run_team(engine, checkout, "migrations/single'quote")
+                    result = self.run_team(engine, checkout, "releases/single'quote")
                     self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
                     self.assertIn("team error:", result.stderr)
                     self.assertIn("single quote", result.stderr)
@@ -632,27 +533,6 @@ class TeamPowerShellFolderArgumentTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(Path(result.stdout.strip()).resolve(), (home / "python.exe").resolve())
 
-    def test_windows_spellings_of_the_folder_are_accepted(self) -> None:
-        engines = [name for name in ("powershell.exe", "pwsh.exe") if shutil.which(name)]
-        if not engines:
-            self.skipTest("no PowerShell found")
-        with tempfile.TemporaryDirectory() as temporary:
-            checkout = self.make_checkout(temporary)
-            forms = (
-                r"migrations\2026-10-02_win-r001",
-                r".\migrations\2026-10-02_win-r001" + "\\",
-                "migrations/2026-10-02_win-r001",
-                str(checkout / "migrations" / "2026-10-02_win-r001"),
-            )
-            for engine in engines:
-                for form in forms:
-                    with self.subTest(engine=engine, form=form):
-                        result = self.run_team(engine, checkout, form)
-                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-                        self.assertIn("Result: exit 0", result.stdout)
-
-
-@unittest.skipUnless(_test_subprocess_safety.working_pwsh(), "needs PowerShell 7")
 class ResolvePythonTests(unittest.TestCase):
     """scripts/resolve_python.ps1 on every platform: a working Python 3.10+ is found and run."""
 

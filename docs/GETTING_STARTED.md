@@ -2,7 +2,7 @@
 
 This guide takes you from nothing to a working setup: a connection that
 passes its health check, your first export of an APEX app, your first change,
-and your first database migration. Plan on about 30 minutes, plus the time to
+and your first release bundle. Plan on about 30 minutes, plus the time to
 install anything you are missing.
 
 Every command is shown for Bash (Linux, macOS, Git Bash on Windows). On
@@ -17,7 +17,7 @@ Windows you can run `pwsh -File scripts/team.ps1 <command>` instead of
 │ your own Git repository    │         │ development Oracle database  │
 │  apps/       APEX source   │ export  │  + APEX workspace (Builder)  │
 │  database/   read-only copy│ ◄────── │                              │
-│  migrations/ your SQL      │ publish │   the source of truth        │
+│  releases/   release bundle│ publish │   the source of truth        │
 │                            │ ──────► │                              │
 └────────────────────────────┘         └──────────────────────────────┘
         the template's scripts reach the database through SQLcl
@@ -43,7 +43,7 @@ What each folder is for:
 | --- | --- | --- |
 | `apps/<SCHEMA>/<app-id>/` | One APEX app as APEXlang (`.apx`) files | `export` writes it; you edit it and `publish` it |
 | `database/<SCHEMA>/` | A read-only copy of your tables, views, code and synonyms (and, when configured, `ords/schema.sql`, the ORDS REST definition) | `backup-db` (and `backup-ords`) writes it; never edit by hand |
-| `migrations/` | Dated SQL changes you write, one folder each | you |
+| `releases/<slug>/` | Lean 6-step release bundles (`release.json`, `01-ddl/`, `02-code/`, `03-ords/`, `04-verify/`) | you and `scripts/team.sh release` |
 | `app_context/` | Notes about each app, for AI assistants | you |
 | `.env` | Literal configuration and SQLcl saved connection names (no credentials) | you; review and keep it in your own Git repository |
 | `scripts/`, operational `docs/`, `.agents/` | Command implementations and guidance | template upgrades |
@@ -532,60 +532,56 @@ git commit -m "Change the dashboard title (published r001)"
 
 ## 10. Make your first database change
 
-Database changes are dated folders of numbered SQL files, plus a `checks.json`
-that proves the change is safe and that it worked.
-
-```text
-migrations/2026-09-30_add-notes-to-hr-users-r001/
-├── 001-add-notes-column.sql
-└── checks.json
-```
-
-`001-add-notes-column.sql`:
-
-```sql
-ALTER TABLE HR_USERS ADD (NOTES VARCHAR2(200));
-```
-
-This example assumes the table `HR_USERS` already exists in your schema. If it
-does not, first apply a migration that creates it, or pick a table you have.
-The precondition below fails when the table is missing, which is what you want.
-
-`checks.json` (each check is a query that must return exactly one row containing
-the number `1`; `expected` is always `1`):
-
-```json
-{
-  "schemaVersion": 1,
-  "preconditions": [
-    {
-      "id": "notes-column-absent",
-      "sql": "SELECT CASE WHEN EXISTS (SELECT 1 FROM user_tables WHERE table_name = 'HR_USERS') AND NOT EXISTS (SELECT 1 FROM user_tab_columns WHERE table_name = 'HR_USERS' AND column_name = 'NOTES') THEN 1 ELSE 0 END FROM dual",
-      "expected": 1
-    }
-  ],
-  "postconditions": [
-    {
-      "id": "notes-column-present",
-      "sql": "SELECT CASE WHEN COUNT(*) = 1 THEN 1 ELSE 0 END FROM user_tab_columns WHERE table_name = 'HR_USERS' AND column_name = 'NOTES'",
-      "expected": 1
-    }
-  ]
-}
-```
-
-*Preconditions* must be true before the change runs; *postconditions* must be
-true afterwards. Check first, then apply:
+Database and stored-code changes live in focused release bundles under
+`releases/<slug>/`:
 
 ```bash
-scripts/team.sh check-conflicts migrations/2026-09-30_add-notes-to-hr-users-r001 --env dev
-scripts/team.sh migrate        migrations/2026-09-30_add-notes-to-hr-users-r001 --env dev
+scripts/team.sh release new 2026-11-24-add-notes
 ```
 
-`check-conflicts` reads only. `migrate` runs the SQL, then confirms the result
-through a fresh connection and writes `status.dev.json` next to your files as
-proof. Once you have tried to apply a migration, never edit it: add the next
-revision folder instead (`...-r002`). Commit the folder.
+This creates:
+
+```text
+releases/2026-11-24-add-notes/
+├── release.json
+├── 01-ddl/
+├── 02-code/
+├── 03-ords/
+└── 04-verify/
+```
+
+Add `01-ddl/001-add-notes-column.sql` (preferring an idempotent guard where
+appropriate):
+
+```sql
+DECLARE
+  v_count NUMBER;
+BEGIN
+  SELECT COUNT(*) INTO v_count
+  FROM user_tab_columns
+  WHERE table_name = 'HR_USERS' AND column_name = 'NOTES';
+  IF v_count = 0 THEN
+    EXECUTE IMMEDIATE 'ALTER TABLE HR_USERS ADD (NOTES VARCHAR2(200))';
+  END IF;
+END;
+/
+```
+
+Register `{"schema": "DEMO", "file": "01-ddl/001-add-notes-column.sql"}` under
+`"ddl"` in `release.json` (and use `scripts/team.sh release collect` for
+stored packages, views, or triggers). Check first, then execute with the live
+`DB_UNIQUE_NAME`:
+
+```bash
+scripts/team.sh release check 2026-11-24-add-notes --env dev
+scripts/team.sh release run   2026-11-24-add-notes --env dev --confirm-target <DB_UNIQUE_NAME>
+```
+
+`release check` is read-only. `release run` backs up existing touched objects to
+`scratch/backups/`, runs the bundle in 1 SQLcl session per schema, checks
+before/after invalid objects, runs any `04-verify/` scripts, and writes a
+markdown summary to `scratch/release-reports/`. See
+[release-workflow.md](release-workflow.md).
 
 ## 11. Everyday cheat sheet
 
@@ -598,15 +594,15 @@ revision folder instead (`...-r002`). Commit the folder.
 | push my edited files to the live app | `scripts/team.sh publish <app-id> --env dev` |
 | refresh the read-only database copy | `scripts/team.sh backup-db` |
 | export a schema's ORDS (REST) definition (optional, see [ords-export.md](ords-export.md)) | `scripts/team.sh backup-ords` |
-| test a SQL change without a database | `scripts/team.sh check-conflicts <folder> --local` |
-| test a SQL change against the database | `scripts/team.sh check-conflicts <folder> --env dev` |
+| list open draft and deployed release bundles | `scripts/team.sh release list` (offline) |
+| create a new release bundle | `scripts/team.sh release new <slug>` (offline) |
+| collect a live package/view/trigger into a bundle | `scripts/team.sh release collect <bundle> --from dev --schema <OWNER> --object <TYPE:NAME> --mode <new\|replace\|patch>` |
 | plan or run the DEV fixture suite | `scripts/team.sh dev-test --env dev --schema <OWNER> --plan` or `--run`; see [dev-test.md](dev-test.md) for retained-fixture and project-suite rules |
-| start a package or procedure change from the live DEV source | `scripts/team.sh new-migration <name> --source "PACKAGE BODY:<NAME>" --env dev` |
-| apply a SQL change | `scripts/team.sh migrate <folder> --env dev` |
-| change a migration that was already attempted | `scripts/team.sh revise <folder>` |
+| preflight a release bundle | `scripts/team.sh release check <bundle> --env dev` |
+| execute a release bundle | `scripts/team.sh release run <bundle> --env dev --confirm-target <DB_UNIQUE_NAME>` |
 | list the everyday commands | `scripts/team.sh` (no command); `--help` lists every command |
 | see how two environments differ | `scripts/team.sh compare-schema --from dev --to staging --object <NAME>` |
-| release to staging or production | `scripts/team.sh deploy <app-id> --env staging` |
+| release an app standalone to staging or production | `scripts/team.sh deploy <app-id> --env staging` |
 | get the latest template scripts | `scripts/team.sh upgrade-template --dry-run` |
 | see local template-file changes | `scripts/team.sh template-status` |
 | look something up in the database, read-only | `scripts/team.sh query --env dev --connection code "SELECT ..."` |
@@ -618,7 +614,7 @@ revision folder instead (`...-r002`). Commit the folder.
 - [TROUBLESHOOTING.md](TROUBLESHOOTING.md): what each error means and how to fix it.
 - [../README.md](../README.md): the full feature list, the skills list, and the
   command reference.
-- [publish-rules.md](publish-rules.md) and [migration-rules.md](migration-rules.md):
+- [publish-rules.md](publish-rules.md) and [release-workflow.md](release-workflow.md):
   every rule in detail.
 
 ## Optional workflow packs
