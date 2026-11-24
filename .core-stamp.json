@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "coreCommit": "224cdafcc14ae9b496c6dcd4ec123e00541f80f7",
+  "coreCommit": "5a7757b9bc5a33c71885e7b3b240eed02cc3b535",
   "files": [
     {
       "path": "scripts/backup_db.ps1",
@@ -674,7 +674,7 @@
     },
     {
       "path": "tests/test_publication_identity.py",
-      "sha256": "c04c44ea35e35bf63f25dda606fe01025f6a624dedab7046605effe8c657febe",
+      "sha256": "965a901b662204e3b1c3302621c4d516e9b47422c42e1ac7c7b576d916f325bd",
       "executable": false
     },
     {

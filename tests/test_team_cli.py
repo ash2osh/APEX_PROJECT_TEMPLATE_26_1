@@ -1137,7 +1137,7 @@ class TeamCliTests(unittest.TestCase):
                 for name in ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "LOCALAPPDATA"):
                     environment[name.upper()] = str(empty)
             result = subprocess.run(
-                [pwsh, "-NoProfile", "-File", str(ROOT / "scripts" / "team.ps1"), "migrate", "migrations/x", "--env", "dev"],
+                [pwsh, "-NoProfile", "-File", str(ROOT / "scripts" / "team.ps1"), "release", "check", "releases/x", "--env", "dev"],
                 cwd=ROOT, env=environment, text=True, capture_output=True, check=False,
             )
         self.assertNotEqual(result.returncode, 0)
