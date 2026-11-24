@@ -806,7 +806,7 @@ def main(argv: list[str] | None = None) -> int:
             if (project_root / MANIFEST_NAME).is_file():
                 validate_lock_ownership(lock, load_manifest(project_root))
             else:
-                for path in lock["files"]:
+                for path in lock.get("files", {}):
                     if protected_project_path(path):
                         raise UpgradeError(f"{LOCK_NAME} path is protected project data: {path}")
             actions, new_lock = plan_upgrade(project_root, template_root, template_owned, placeholders, lock)
