@@ -124,47 +124,7 @@ python3 "$REPO_ROOT/scripts/validate_app_source.py" "$REPO_ROOT" "$app_dir" || e
 deployment_file="$app_dir/deployments/$app_environment.json"
 [ -f "$deployment_file" ] || fail "deployment descriptor not found: ${deployment_file#"$REPO_ROOT/"}"
 
-deployment_values="$(python3 - "$deployment_file" "$app_id" <<'PY'
-import json
-import re
-import sys
-
-path, expected_id = sys.argv[1:]
-try:
-    with open(path, "rb") as raw:
-        if raw.read(3) == b"\xef\xbb\xbf":
-            # SQLcl prints "Deployment file cannot be parsed" and imports nothing.
-            print(
-                "invalid deployment descriptor: it starts with a UTF-8 byte-order mark, "
-                "which SQLcl cannot parse; save it without one",
-                file=sys.stderr,
-            )
-            raise SystemExit(1)
-    with open(path, encoding="utf-8") as source:
-        descriptor = json.load(source)
-    workspace = descriptor["workspace"]["name"]
-    app = descriptor["app"]
-    app_id = app["id"]
-    schema = app["databaseSession"]["parsingSchema"]
-except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
-    print(f"invalid deployment descriptor: {exc}", file=sys.stderr)
-    raise SystemExit(1)
-
-if isinstance(app_id, bool) or not isinstance(app_id, int):
-    print(f"deployment app.id must be a number: set \"id\": {expected_id} in the descriptor", file=sys.stderr)
-    raise SystemExit(1)
-if app_id != int(expected_id):
-    print(f"deployment app.id is {app_id} but this is application {expected_id}: set \"id\": {expected_id} in the descriptor", file=sys.stderr)
-    raise SystemExit(1)
-if not isinstance(workspace, str) or not workspace.strip() or any(c in workspace for c in "\t\r\n"):
-    print("deployment workspace.name must be a non-empty single-line string", file=sys.stderr)
-    raise SystemExit(1)
-if not isinstance(schema, str) or not re.fullmatch(r"[A-Z][A-Z0-9_$#]{0,127}", schema):
-    print("deployment parsingSchema must be an uppercase Oracle identifier", file=sys.stderr)
-    raise SystemExit(1)
-print(f"{workspace}\t{schema}")
-PY
-)" || exit 2
+deployment_values="$(python3 "$REPO_ROOT/scripts/deployment_descriptor.py" "$deployment_file" "$app_id")" || exit 2
 IFS=$'\t' read -r workspace_name parsing_schema <<< "$deployment_values"
 
 # With several schemas the descriptor's parsing schema selects the connection.
@@ -231,6 +191,8 @@ if [ "$PROJECT_MULTI_SCHEMA" = true ]; then
   esac
 fi
 
+python3 "$REPO_ROOT/scripts/validate_app_source.py" "$REPO_ROOT" "$app_dir" --for-import || exit 2
+
 if [ "$describe" = true ]; then
   # Internal read-only interface for deploy.sh to show the selected descriptor
   # before it asks the operator to confirm or prints a DBA runbook.
@@ -238,8 +200,6 @@ if [ "$describe" = true ]; then
     "$sqlcl_connection" "$expected_user" "$target_environment"
   exit 0
 fi
-
-python3 "$REPO_ROOT/scripts/validate_app_source.py" "$REPO_ROOT" "$app_dir" --for-import || exit 2
 
 if [ -z "$sqlcl_connection" ] || [ -z "$expected_user" ]; then
   case "$app_environment" in

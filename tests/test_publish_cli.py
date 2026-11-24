@@ -46,6 +46,7 @@ class PublishAppCliTests(unittest.TestCase):
             "record_export_state.py",
             "verify_publish_state.py",
             "validate_app_source.py",
+            "deployment_descriptor.py",
             "path_utils.py",
             "stamp_publish_version.py",
         ):
@@ -1209,6 +1210,7 @@ class PublishAppCliTests(unittest.TestCase):
                     "record_export_state.py",
                     "verify_publish_state.py",
                     "validate_app_source.py",
+                    "deployment_descriptor.py",
                     "path_utils.py",
                     "stamp_publish_version.py",
                 ):
@@ -1547,6 +1549,60 @@ class PublishAppCliTests(unittest.TestCase):
             result = self.run_promotion(runner, env, root, "--env", "staging", stdin=b"y\r\n")
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse(sql_log.exists())
+
+    def test_describe_enforces_strict_descriptor_and_for_import_offline(self) -> None:
+        pwsh = _test_subprocess_safety.working_pwsh()
+        shells = [("bash", "publish_app.sh")] + ([("pwsh", "publish_app.ps1")] if pwsh else [])
+        cases = (
+            (
+                "unknown-property",
+                "app SAMPLE (\n    name: Sample\n)\n",
+                {
+                    "workspace": {"name": "STAGE_WS"},
+                    "app": {"id": 100, "databaseSession": {"parsingSchema": "DEMO"}, "runtime": {"debugging": True}},
+                },
+                "unsupported deployment property",
+            ),
+            (
+                "autoInstall",
+                "app SAMPLE (\n    includeInAppExport: autoInstall\n)\n",
+                {
+                    "workspace": {"name": "STAGE_WS"},
+                    "app": {"id": 100, "databaseSession": {"parsingSchema": "DEMO"}},
+                },
+                "autoInstall",
+            ),
+        )
+        for shell, script_name in shells:
+            for case, apx_text, descriptor_data, expected_error in cases:
+                with self.subTest(shell=shell, case=case), tempfile.TemporaryDirectory() as temporary:
+                    root = Path(temporary)
+                    scripts = root / "scripts"
+                    scripts.mkdir()
+                    for name in (
+                        "publish_app.sh", "publish_app.ps1", "load_env.sh", "load_env.ps1",
+                        "sqlcl_safe.sh", "resolve_python.ps1", "validate_app_source.py",
+                        "deployment_descriptor.py", "path_utils.py",
+                    ):
+                        shutil.copy2(ROOT / "scripts" / name, scripts / name)
+                    if (ROOT / "scripts" / "template_release.ps1").exists():
+                        shutil.copy2(ROOT / "scripts" / "template_release.ps1", scripts / "template_release.ps1")
+                    shutil.copy2(ROOT / "template-manifest.json", root / "template-manifest.json")
+                    shutil.copy2(ROOT / ".env.example", root / ".env")
+                    app = root / "apps" / "DEMO" / "100"
+                    (app / "deployments").mkdir(parents=True)
+                    (app / "application.apx").write_text(apx_text, encoding="utf-8")
+                    (app / "deployments" / "staging.json").write_text(
+                        json.dumps(descriptor_data), encoding="utf-8"
+                    )
+                    env = {**os.environ, "PROJECT_ROOT": str(root)}
+                    cmd = ([BASH, str(scripts / script_name)] if shell == "bash"
+                           else [pwsh, "-NoProfile", "-File", str(scripts / script_name)])
+                    result = subprocess.run([*cmd, "100", "--env", "staging", "--describe"],
+                                            cwd=root, env=env, encoding="utf-8", errors="replace",
+                                            capture_output=True, check=False)
+                    self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn(expected_error, result.stderr + result.stdout)
 
 
 if __name__ == "__main__":

@@ -127,31 +127,11 @@ $deploymentFile = Join-Path $appDir "deployments/$appEnvironment.json"
 if (-not (Test-Path -LiteralPath $deploymentFile -PathType Leaf)) {
   throw "publish error: deployment descriptor not found: $deploymentFile"
 }
-$deploymentHead = [System.IO.File]::ReadAllBytes($deploymentFile) | Select-Object -First 3
-if (@($deploymentHead).Count -eq 3 -and $deploymentHead[0] -eq 0xEF -and $deploymentHead[1] -eq 0xBB -and $deploymentHead[2] -eq 0xBF) {
-  # SQLcl prints "Deployment file cannot be parsed" and imports nothing.
-  throw "publish error: invalid deployment descriptor: it starts with a UTF-8 byte-order mark, which SQLcl cannot parse; save it without one"
-}
-try {
-  $deployment = Get-Content -LiteralPath $deploymentFile -Raw | ConvertFrom-Json
-} catch {
-  throw "publish error: invalid deployment descriptor: $($_.Exception.Message)"
-}
-if ($deployment.workspace.name -isnot [string] -or [string]::IsNullOrWhiteSpace($deployment.workspace.name)) {
-  throw "publish error: deployment workspace.name must be a non-empty string"
-}
-$deploymentAppId = 0L
-if ($deployment.app.id -is [bool] -or
-    -not [Int64]::TryParse([string]$deployment.app.id, [ref]$deploymentAppId)) {
-  throw "publish error: deployment app.id must be a number: set `"id`": $AppId in the descriptor"
-}
-if ($deploymentAppId -ne [Int64]$AppId) {
-  throw "publish error: deployment app.id is $deploymentAppId but this is application ${AppId}: set `"id`": $AppId in the descriptor"
-}
+$descriptorScript = Join-Path $PSScriptRoot 'deployment_descriptor.py'
+$descriptorJson = & $python.Path @($python.Prefix) $descriptorScript $deploymentFile $AppId --json
+if ($LASTEXITCODE -ne 0) { throw 'publish error: invalid deployment descriptor; see the property error above' }
+$deployment = $descriptorJson | ConvertFrom-Json
 $parsingSchema = [string]$deployment.app.databaseSession.parsingSchema
-if ($parsingSchema -cnotmatch '^[A-Z][A-Z0-9_$#]{0,127}$') {
-  throw "publish error: deployment parsingSchema must be an uppercase Oracle identifier"
-}
 # With several schemas the descriptor's parsing schema selects the connection.
 # Folder, descriptor, --schema and (below) the live app must all agree.
 if ($env:PROJECT_MULTI_SCHEMA -eq "true") {
@@ -217,15 +197,15 @@ if ($env:PROJECT_MULTI_SCHEMA -eq "true") {
   }
 }
 
+& $python.Path @($python.Prefix) $sourceValidator $repoRoot $appDir --for-import
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
 if ($describe) {
   # Internal read-only interface for deployment summaries and DBA runbooks.
   Write-Output (@($appDir, $deployment.workspace.name, $parsingSchema,
     $sqlclConnection, $expectedUser, $targetEnvironment) -join "`t")
   exit 0
 }
-
-& $python.Path @($python.Prefix) $sourceValidator $repoRoot $appDir --for-import
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 if ([string]::IsNullOrWhiteSpace($sqlclConnection) -or [string]::IsNullOrWhiteSpace($expectedUser)) {
   switch ($appEnvironment) {
     "dev" {

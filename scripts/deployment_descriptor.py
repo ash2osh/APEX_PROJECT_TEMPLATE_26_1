@@ -3,8 +3,10 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import re
+import sys
 from pathlib import Path
 
 
@@ -31,7 +33,7 @@ def _check(value: object, contract: object, path: str = "") -> None:
 
     if contract == "id":
         valid = type(value) is int and 0 < value < 10**18
-        description = "must be a positive integer"
+        description = "must be a number (positive integer)"
     elif contract == "schema":
         valid = isinstance(value, str) and re.fullmatch(r"[A-Z][A-Z0-9_$#]{0,127}", value) is not None
         description = "must be an uppercase Oracle identifier"
@@ -88,7 +90,12 @@ def read_json(path: Path) -> dict:
 
 
 def validate_descriptor(data: dict, app_id: int) -> None:
-    _check(data, _FIELDS)
+    try:
+        _check(data, _FIELDS)
+    except DescriptorError as exc:
+        if str(exc).startswith("deployment app.id must"):
+            raise DescriptorError(f'{exc}: set "id": {app_id} in the descriptor') from None
+        raise
     _get(data, "workspace.name")
     selected_id = _get(data, "app.id")
     _get(data, "app.databaseSession.parsingSchema")
@@ -103,3 +110,25 @@ def read_descriptor(path: Path, app_id: int) -> dict:
     data = read_json(path)
     validate_descriptor(data, app_id)
     return data
+
+
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("descriptor", type=Path)
+    parser.add_argument("app_id", type=int)
+    parser.add_argument("--json", action="store_true", help="emit validated JSON for wrapper consumption")
+    args = parser.parse_args(argv)
+    try:
+        data = read_descriptor(args.descriptor, args.app_id)
+        if args.json:
+            print(json.dumps(data, ensure_ascii=True))
+        else:
+            print(data["workspace"]["name"] + "\t" + data["app"]["databaseSession"]["parsingSchema"])
+        return 0
+    except DescriptorError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
