@@ -47,6 +47,12 @@ PLSQL_CODE_TYPE_RE = re.compile(
     r"(?im)^[ \t]*ALTER[ \t]+SESSION[ \t]+SET[ \t]+PLSQL_CODE_TYPE[ \t]*=[ \t]*INTERPRETED[ \t]*;?[ \t]*\r?\n?"
 )
 PLSQL_CODE_TYPE_ANY_RE = re.compile(r"(?is)\bALTER\s+SESSION\s+SET\s+PLSQL_CODE_TYPE\s*=\s*INTERPRETED\b")
+_TRIGGER_ENABLE_TAIL_RE = re.compile(
+    r"(?is)\n/\s*\n[ \t]*ALTER[ \t]+TRIGGER\b[^\n;]*\bENABLE\s*;?\s*\Z"
+)
+_TRIGGER_DISABLE_TAIL_RE = re.compile(
+    r"(?is)\n/\s*\n[ \t]*ALTER[ \t]+TRIGGER\b[^\n;]*\bDISABLE\s*;?\s*\Z"
+)
 
 CODE_MODES = frozenset({"new", "replace", "patch"})
 ENVIRONMENTS = ("dev", "staging", "prod")
@@ -539,6 +545,36 @@ def _sqlcl_child_env(values: Mapping[str, str] | None) -> dict[str, str] | None:
     return env
 
 
+def _preserve_sqlcl_failure_log(run_dir: Path, exc: BaseException) -> tuple[Path | None, str]:
+    """Copy sqlcl-output.log out of TemporaryDirectory and extract key error lines."""
+    log_src = run_dir / "sqlcl-output.log"
+    output = getattr(exc, "output", None)
+    if not isinstance(output, str) and log_src.is_file():
+        output = log_src.read_text(encoding="utf-8", errors="replace")
+    output_text = output if isinstance(output, str) else ""
+
+    saved_log: Path | None = None
+    scratch_root = run_dir.parent.parent
+    if scratch_root.name == "scratch" and (log_src.is_file() or output_text):
+        logs_dir = scratch_root / "release-logs"
+        logs_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        saved_log = logs_dir / f"{_utc_stamp()}-{run_dir.name}-sqlcl-output.log"
+        descriptor = os.open(saved_log, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(output_text)
+
+    snippet = ""
+    if output_text.strip():
+        lines = [line.rstrip() for line in output_text.splitlines() if line.strip()]
+        interesting = [
+            line for line in lines
+            if re.search(r"(?:ORA-|PLS-|SP2-|Error starting at line|Error report)", line)
+        ]
+        excerpt = interesting[:6] if interesting else lines[-6:]
+        snippet = "\n  " + "\n  ".join(excerpt)
+    return saved_log, snippet
+
+
 def _run_driver(
     runner: Callable,
     target: Target,
@@ -559,7 +595,9 @@ def _run_driver(
     try:
         result = runner(target, driver, run_dir, environment=_sqlcl_child_env(environ), phase=phase)
     except (SqlclError, SqlclTimeout) as exc:
-        raise ReleaseError(f"{exc} (see {run_dir / 'sqlcl-output.log'})") from exc
+        saved_log, snippet = _preserve_sqlcl_failure_log(run_dir, exc)
+        log_ref = saved_log if saved_log is not None else (run_dir / "sqlcl-output.log")
+        raise ReleaseError(f"{exc} (see {log_ref}){snippet}") from exc
     return result.output
 
 
@@ -587,12 +625,19 @@ def _fetch_schema_objects(
 def _format_collected_sql(object_type: str, object_name: str, schema: str, item: Mapping[str, Any]) -> str:
     if object_type in {"VIEW", "TRIGGER"} and isinstance(item.get("ddl"), str) and item["ddl"].strip():
         text = strip_plsql_code_type(item["ddl"])
-        text = text.replace("\r\n", "\n").replace("\r", "\n").strip() + "\n"
-        if object_type == "TRIGGER" and not text.rstrip().endswith("/"):
-            text += "/\n"
-        elif object_type == "VIEW" and not text.rstrip().endswith((";", "/")):
-            text = text.rstrip() + ";\n"
-        return text
+        text = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+        if object_type == "TRIGGER":
+            # DBMS_METADATA appends ALTER TRIGGER ... ENABLE; which fails ORA-01031
+            # without ALTER ANY TRIGGER and caused a stray trailing slash after ';'.
+            text = _TRIGGER_ENABLE_TAIL_RE.sub("\n/", text)
+            if _TRIGGER_DISABLE_TAIL_RE.search(text):
+                if not text.endswith(";"):
+                    text += ";"
+            elif not text.endswith("/"):
+                text += "\n/"
+        elif object_type == "VIEW" and not text.endswith((";", "/")):
+            text += ";"
+        return text + "\n"
     src = item.get("source")
     if not isinstance(src, str) or not src.strip():
         raise ReleaseError(f"{schema}.{object_name} ({object_type}) was not found or has empty source")

@@ -730,6 +730,77 @@ class ReleaseBundleTests(unittest.TestCase):
             code_batch_driver.index("RELEASE_STEP_START:02-code/02-code-body.sql"),
         )
 
+    def test_collect_trigger_strips_enable_tail_and_preserves_disable(self) -> None:
+        state = self._read_state()
+        state["envs"]["dev"]["objects"]["TRIGGER:TRG_ENABLED"] = {
+            "source": "",
+            "ddl": (
+                '  CREATE OR REPLACE EDITIONABLE TRIGGER "APP_CODE"."TRG_ENABLED"\n'
+                "BEFORE INSERT ON APP_CODE.ORDERS FOR EACH ROW BEGIN NULL; END;\n\n/\n"
+                'ALTER TRIGGER "APP_CODE"."TRG_ENABLED" ENABLE;\n'
+            ),
+        }
+        state["envs"]["dev"]["objects"]["TRIGGER:TRG_DISABLED"] = {
+            "source": "",
+            "ddl": (
+                '  CREATE OR REPLACE EDITIONABLE TRIGGER "APP_CODE"."TRG_DISABLED"\n'
+                "BEFORE INSERT ON APP_CODE.ORDERS FOR EACH ROW BEGIN NULL; END;\n\n/\n"
+                'ALTER TRIGGER "APP_CODE"."TRG_DISABLED" DISABLE;\n'
+            ),
+        }
+        self._write_state(state)
+
+        self.assertEqual(self._run_cli(["new", "trg-rel"])[0], 0)
+        code, _, err = self._run_cli([
+            "collect", "trg-rel", "--from", "dev", "--schema", "APP_CODE",
+            "--object", "TRIGGER:TRG_ENABLED", "--mode", "new",
+        ])
+        self.assertEqual(code, 0, err)
+        enabled_sql = (self.root / "releases" / "trg-rel" / "02-code" / "trg_enabled_trigger.sql").read_text(encoding="utf-8")
+        self.assertNotIn("ALTER TRIGGER", enabled_sql)
+        self.assertTrue(enabled_sql.endswith("\n/\n"))
+        self.assertEqual(enabled_sql.count("\n/"), 1)
+
+        code, _, err = self._run_cli([
+            "collect", "trg-rel", "--from", "dev", "--schema", "APP_CODE",
+            "--object", "TRIGGER:TRG_DISABLED", "--mode", "new",
+        ])
+        self.assertEqual(code, 0, err)
+        disabled_sql = (self.root / "releases" / "trg-rel" / "02-code" / "trg_disabled_trigger.sql").read_text(encoding="utf-8")
+        self.assertIn('ALTER TRIGGER "APP_CODE"."TRG_DISABLED" DISABLE;', disabled_sql)
+        self.assertTrue(disabled_sql.endswith("DISABLE;\n"))
+
+    def test_sqlcl_failure_preserves_log_and_surfaces_ora_error(self) -> None:
+        self.assertEqual(self._run_cli(["new", "fail-rel"])[0], 0)
+        bundle = self.root / "releases" / "fail-rel"
+        (bundle / "01-ddl" / "001-bad.sql").write_text("CREATE TABLE T (ID NUMBER);\n", encoding="utf-8", newline="\n")
+        manifest = {
+            "schemaVersion": 1,
+            "slug": "fail-rel",
+            "status": "draft",
+            "createdAt": "2026-11-24T00:00:00Z",
+            "schemas": ["APP_CODE"],
+            "ddl": [{"schema": "APP_CODE", "file": "01-ddl/001-bad.sql"}],
+            "code": [],
+            "ords": [],
+            "verify": [],
+            "apps": [],
+            "forbiddenPatterns": [],
+        }
+        (bundle / "release.json").write_text(json.dumps(manifest), encoding="utf-8", newline="\n")
+
+        state = self._read_state()
+        state["envs"]["staging"]["failDdl"] = True
+        self._write_state(state)
+
+        code, _, err = self._run_cli(["run", "fail-rel", "--env", "staging", "--confirm-target", "STAGEDB_UNQ"])
+        self.assertEqual(code, 1)
+        self.assertIn("ORA-00955: name is already used by an existing object", err)
+        logs = list((self.root / "scratch" / "release-logs").glob("*-apply-APP_CODE-sqlcl-output.log"))
+        self.assertEqual(len(logs), 1)
+        self.assertIn("ORA-00955", logs[0].read_text(encoding="utf-8"))
+        self.assertIn(str(logs[0]), err)
+
 
 if __name__ == "__main__":
     unittest.main()
