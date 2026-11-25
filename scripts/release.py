@@ -26,7 +26,7 @@ import tempfile
 import time
 import uuid
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from itertools import groupby
 from pathlib import Path
@@ -41,6 +41,17 @@ from .db_targets import (
 )
 from .local_config import ConfigError, read_project_env
 from .path_utils import PathReparseError, relative_to_root
+from .release_state import (
+    StateError,
+    app_source_sha256,
+    effective_status,
+    load_state,
+    merge_state,
+    select_steps,
+    staging_mismatches,
+    text_sha256,
+    write_state,
+)
 from .sqlcl_session import SqlclError, SqlclTimeout, bash_command, driver_epilogue, run_sqlcl
 
 
@@ -136,6 +147,15 @@ class PreflightResult:
     ords_metadata_coverage: str
     unbacked_ords_steps: list[str]
     materialized_app_dirs: dict[int, Path]
+    # ASHARIF 2026-11-25: per-environment state: what this run applies, skips and re-applies after drift.
+    to_apply: list[str] = field(default_factory=list)
+    skipped: list[str] = field(default_factory=list)
+    drifted: list[str] = field(default_factory=list)
+    current_shas: dict[str, str] = field(default_factory=dict)
+    app_shas: dict[int, str] = field(default_factory=dict)
+    apps_to_deploy: list[int] = field(default_factory=list)
+    env_state: dict[str, Any] | None = None
+    staging_proof: str = "not-applicable"
 
 
 def _utc_now() -> str:
@@ -494,8 +514,9 @@ def _load_and_validate_manifest(
     if not isinstance(slug, str) or slug != expected_slug:
         raise ReleaseError(f"release.json slug {slug!r} does not match directory {expected_slug!r}")
     status = manifest.get("status")
-    if status not in {"draft", "deployed"}:
-        raise ReleaseError(f"release.json status must be 'draft' or 'deployed', got {status!r}")
+    # ASHARIF 2026-11-25: 'staged' is set by a successful staging run (see release_state.py).
+    if status not in {"draft", "staged", "deployed"}:
+        raise ReleaseError(f"release.json status must be 'draft', 'staged' or 'deployed', got {status!r}")
 
     declared_schemas: list[str] = []
     raw_schemas = manifest.get("schemas")
@@ -1582,6 +1603,35 @@ def _git_create_release_tag(repo_root: Path, slug: str, target_commit: str | Non
 # --- Subcommands -------------------------------------------------------------
 
 
+def _load_env_state(bundle_dir: Path, slug: str, env: str) -> dict[str, Any] | None:
+    try:
+        return load_state(bundle_dir, slug, env)
+    except StateError as exc:
+        raise ReleaseError(str(exc)) from exc
+
+
+def _bundle_fingerprints(
+    repo_root: Path,
+    steps: Sequence[BundleStep],
+    apps: Sequence[int],
+    *,
+    step_texts: Mapping[str, str] | None = None,
+    app_dirs: Mapping[int, Path] | None = None,
+) -> tuple[dict[str, str], dict[int, str]]:
+    """ASHARIF 2026-11-25: current fingerprints of the applied sections (verify excluded) and of each app."""
+    current = {s.rel_file: text_sha256(_step_text(s, step_texts)) for s in steps if s.section != "verify"}
+    app_shas = {app_id: app_source_sha256(repo_root, app_id, (app_dirs or {}).get(app_id)) for app_id in apps}
+    return current, app_shas
+
+
+def _status_label(effective: str, mismatches: Sequence[str], total: int, has_staging: bool) -> str:
+    if effective == "stale":
+        return f"staged (stale: {len(mismatches)} changed)"
+    if effective == "draft" and has_staging and mismatches:
+        return f"draft: {len(mismatches)} of {total} steps not on staging"
+    return effective
+
+
 def cmd_list(repo_root: Path, fmt: str) -> int:
     releases_dir = repo_root / "releases"
     drafts: list[dict[str, Any]] = []
@@ -1610,6 +1660,19 @@ def cmd_list(repo_root: Path, fmt: str) -> int:
                     "apps": len(data.get("apps") or []),
                 },
             }
+            # ASHARIF 2026-11-25: effective status from the files and state/staging.json
+            try:
+                _m, list_steps, _s, list_apps, _f = _load_and_validate_manifest(child, child.name)
+                current, app_shas = _bundle_fingerprints(repo_root, list_steps, list_apps)
+                staging_state = _load_env_state(child, child.name, "staging")
+                effective, mismatches = effective_status(data, current, app_shas, staging_state)
+                entry["effectiveStatus"] = effective
+                entry["notOnStaging"] = mismatches
+                entry["label"] = _status_label(effective, mismatches, len(current) + len(app_shas), staging_state is not None)
+            except ReleaseError as exc:
+                entry["effectiveStatus"] = "unknown"
+                entry["notOnStaging"] = []
+                entry["label"] = f"{entry['status']}, unreadable: {exc}"
             if entry["status"] == "deployed":
                 deployed.append(entry)
             else:
@@ -1623,7 +1686,7 @@ def cmd_list(repo_root: Path, fmt: str) -> int:
             schemas = ", ".join(item["schemas"]) if item["schemas"] else "-"
             counts = item["counts"]
             print(
-                f"  {index}- {item['slug']} (schemas: {schemas}; "
+                f"  {index}- {item['slug']} [{item['label']}] (schemas: {schemas}; "
                 f"ddl={counts['ddl']}, code={counts['code']}, ords={counts['ords']}, verify={counts['verify']}, apps={counts['apps']})"
             )
     else:
@@ -1811,12 +1874,20 @@ def cmd_collect(
     if schema not in schemas:
         schemas.append(schema)
     manifest["schemas"] = schemas
+    # ASHARIF 2026-11-25: a change after staging returns the bundle to draft.
+    returned_to_draft = manifest.get("status") == "staged"
+    if returned_to_draft:
+        manifest["status"] = "draft"
+        for key in ("stagedAt", "stagedTarget", "stagedCommit"):
+            manifest.pop(key, None)
     _write_json_lf(manifest_path, manifest)
 
     msg = f"Collected {schema}.{object_name} ({object_type}, mode={mode}) -> releases/{slug}/{rel_entry_file}"
     if base_sha256:
         msg += f" (baseSha256={base_sha256[:12]}...)"
     print(msg)
+    if returned_to_draft:
+        print(f"releases/{slug}/release.json status returned to draft (changed after staging); rerun staging before production")
     return 0
 
 
@@ -1845,56 +1916,14 @@ def _step_text(step: BundleStep, step_texts: Mapping[str, str] | None) -> str:
     return step.path.read_text(encoding="utf-8")
 
 
-def _preflight_bundle(
-    repo_root: Path,
-    slug: str,
-    env: str,
-    *,
-    allow_existing: bool,
-    confirm_target: str | None,
-    values: Mapping[str, str],
-    runner: Callable,
-    work_dir: Path,
-    require_deployer: bool = True,
-    pinned_commit: str | None = None,
-    env_file_path: Path | None = None,
-) -> PreflightResult:
-    bundle_dir = _safe_bundle_dir(repo_root, slug)
-    if not bundle_dir.is_dir():
-        raise ReleaseError(f"release bundle not found: releases/{slug}")
-    if pinned_commit is not None:
-        manifest, steps, schemas, apps, forbidden_patterns, pinned_step_texts = _load_pinned_prod_bundle(
-            repo_root, bundle_dir, slug, pinned_commit
-        )
-    else:
-        manifest, steps, schemas, apps, forbidden_patterns = _load_and_validate_manifest(bundle_dir, slug)
-        pinned_step_texts = None
-    if manifest.get("status") == "deployed":
-        raise ReleaseError(f"release bundle '{slug}' is already deployed and locked")
-    _check_bundle_contents(steps, forbidden_patterns, step_texts=pinned_step_texts)
-
-    targets: dict[str, Target] = {}
-    identities: dict[str, dict[str, str]] = {}
-    fetched_by_schema: dict[str, dict[tuple[str, str], dict[str, Any]]] = {}
-    failures: list[str] = []
-    materialized_app_dirs: dict[int, Path] = {}
-
-    if env == "prod" and pinned_commit is None and _is_git_repo(repo_root):
-        rel_paths = [f"releases/{slug}/release.json", *(f"releases/{slug}/{s.rel_file}" for s in steps)]
-        ignored = _git_ignored_bundle_paths(repo_root, slug, rel_paths)
-        if ignored:
-            failures.append(f"--env prod refuses Git-ignored paths in releases/{slug}: {', '.join(ignored)}")
-
-    if apps and env == "prod" and pinned_commit is not None:
-        materialized_app_dirs, mat_failures = _resolve_and_materialize_prod_apps(
-            repo_root, apps, pinned_commit, work_dir / "prod-apps"
-        )
-        if mat_failures:
-            raise ReleaseError("Preflight refused:\n  - " + "\n  - ".join(mat_failures))
-
-    for schema in schemas:
-        targets[schema] = _resolve_schema_target(values, env, schema, operation="migration")
-
+def _collect_step_items(
+    steps: Sequence[BundleStep],
+    targets: Mapping[str, Target],
+    schemas: Sequence[str],
+    pinned_step_texts: Mapping[str, str] | None,
+    failures: list[str],
+) -> dict[str, list[tuple[str, str]]]:
+    """Objects each schema's steps create or touch (fetched for existence, backup and patch checks)."""
     items_by_schema: dict[str, list[tuple[str, str]]] = {schema: [] for schema in schemas}
     for step in steps:
         if step.section == "code" and step.object_type and step.object_name:
@@ -1927,6 +1956,85 @@ def _preflight_bundle(
                             f"which has no backup target in manifest schemas ({', '.join(schemas)})"
                         )
 
+    return items_by_schema
+
+
+def _preflight_bundle(
+    repo_root: Path,
+    slug: str,
+    env: str,
+    *,
+    allow_existing: bool,
+    confirm_target: str | None,
+    values: Mapping[str, str],
+    runner: Callable,
+    work_dir: Path,
+    require_deployer: bool = True,
+    pinned_commit: str | None = None,
+    env_file_path: Path | None = None,
+    full: bool = False,
+    enforce_staging_proof: bool = False,
+) -> PreflightResult:
+    bundle_dir = _safe_bundle_dir(repo_root, slug)
+    if not bundle_dir.is_dir():
+        raise ReleaseError(f"release bundle not found: releases/{slug}")
+    if pinned_commit is not None:
+        manifest, steps, schemas, apps, forbidden_patterns, pinned_step_texts = _load_pinned_prod_bundle(
+            repo_root, bundle_dir, slug, pinned_commit
+        )
+    else:
+        manifest, steps, schemas, apps, forbidden_patterns = _load_and_validate_manifest(bundle_dir, slug)
+        pinned_step_texts = None
+    if manifest.get("status") == "deployed":
+        raise ReleaseError(f"release bundle '{slug}' is already deployed and locked")
+    _check_bundle_contents(steps, forbidden_patterns, step_texts=pinned_step_texts)
+    all_steps = list(steps)
+    env_state = None if env == "prod" else _load_env_state(bundle_dir, slug, env)
+    staging_state = env_state if env == "staging" else _load_env_state(bundle_dir, slug, "staging")
+
+    targets: dict[str, Target] = {}
+    identities: dict[str, dict[str, str]] = {}
+    fetched_by_schema: dict[str, dict[tuple[str, str], dict[str, Any]]] = {}
+    failures: list[str] = []
+    materialized_app_dirs: dict[int, Path] = {}
+
+    if env == "prod" and pinned_commit is None and _is_git_repo(repo_root):
+        rel_paths = [f"releases/{slug}/release.json", *(f"releases/{slug}/{s.rel_file}" for s in steps)]
+        ignored = _git_ignored_bundle_paths(repo_root, slug, rel_paths)
+        if ignored:
+            failures.append(f"--env prod refuses Git-ignored paths in releases/{slug}: {', '.join(ignored)}")
+
+    if apps and env == "prod" and pinned_commit is not None:
+        materialized_app_dirs, mat_failures = _resolve_and_materialize_prod_apps(
+            repo_root, apps, pinned_commit, work_dir / "prod-apps"
+        )
+        if mat_failures:
+            raise ReleaseError("Preflight refused:\n  - " + "\n  - ".join(mat_failures))
+
+    for schema in schemas:
+        targets[schema] = _resolve_schema_target(values, env, schema, operation="migration")
+
+    # ASHARIF 2026-11-25: per-environment state decides which steps run (DEV/staging delta, prod all).
+    current_shas, app_shas = _bundle_fingerprints(
+        repo_root, all_steps, apps, step_texts=pinned_step_texts, app_dirs=materialized_app_dirs
+    )
+    to_apply, skipped = select_steps(current_shas, env_state, full=full or env == "prod")
+    recorded_steps = (env_state or {}).get("steps") or {}
+    drift_candidates = {
+        s.rel_file: s
+        for s in all_steps
+        if s.rel_file in skipped
+        and s.section == "code"
+        and s.object_type
+        and s.object_name
+        and isinstance(recorded_steps.get(s.rel_file), dict)
+        and recorded_steps[s.rel_file].get("liveSha256")
+    }
+    candidate_set = set(to_apply) | set(drift_candidates)
+    steps = [s for s in all_steps if s.section == "verify" or s.rel_file in candidate_set]
+    drifted: list[str] = []
+    items_by_schema = _collect_step_items(steps, targets, schemas, pinned_step_texts, failures)
+
     for schema in schemas:
         target = targets[schema]
         schema_code_steps = [s for s in steps if s.schema == schema and s.section == "code"]
@@ -1936,14 +2044,16 @@ def _preflight_bundle(
             for s in schema_code_steps
             if s.mode == "patch" and s.object_type and s.object_name
         }
-        need_ddl = any(obj_type in {"VIEW", "TRIGGER"} for obj_type, _ in patch_items)
+        drift_items = {(s.object_type, s.object_name) for s in drift_candidates.values() if s.schema == schema}
+        source_items = patch_items | drift_items
+        need_ddl = any(obj_type in {"VIEW", "TRIGGER"} for obj_type, _ in source_items)
         identity, fetched = _fetch_schema_objects(
             runner,
             target,
             work_dir / f"preflight-{schema}",
             items,
             include_ddl=need_ddl,
-            source_items=patch_items,
+            source_items=source_items,
             environ=values,
         )
         identities[schema] = identity
@@ -1955,6 +2065,20 @@ def _preflight_bundle(
                     f"--confirm-target {confirm_target!r} does not match live DB_UNIQUE_NAME "
                     f"{identity['db_unique_name']!r} for schema {schema}"
                 )
+
+        # ASHARIF 2026-11-25: a skipped object whose live source changed since our apply runs again.
+        for rel_file, dstep in drift_candidates.items():
+            if dstep.schema != schema:
+                continue
+            dobj = fetched.get((dstep.object_type, dstep.object_name), {})
+            live_now = (
+                compute_source_sha256(_source_text_for_hash(dstep.object_type, dobj))
+                if dobj.get("exists") is True
+                else None
+            )
+            if live_now != recorded_steps[rel_file].get("liveSha256"):
+                drifted.append(rel_file)
+        schema_code_steps = [s for s in schema_code_steps if s.rel_file not in drift_candidates or s.rel_file in drifted]
 
         for step in schema_code_steps:
             assert step.object_type and step.object_name
@@ -1972,7 +2096,8 @@ def _preflight_bundle(
                     continue
                 live_text = _source_text_for_hash(step.object_type, obj)
                 live_sha = compute_source_sha256(live_text)
-                if live_sha != step.base_sha256:
+                recorded_live = (recorded_steps.get(step.rel_file) or {}).get("liveSha256") if env != "prod" else None
+                if live_sha != step.base_sha256 and live_sha != recorded_live:
                     diff_dir = repo_root / "scratch" / "release-diffs"
                     diff_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
                     type_slug = step.object_type.lower().replace(" ", "_")
@@ -1988,6 +2113,43 @@ def _preflight_bundle(
                     failures.append(
                         f"patch baseSha256 mismatch for {schema}.{step.object_name} ({step.object_type}): "
                         f"expected {step.base_sha256[:12]}..., live {live_sha[:12]}... (diff: {diff_path.relative_to(repo_root).as_posix()})"
+                    )
+
+    run_set = set(to_apply) | set(drifted)
+    steps = [s for s in all_steps if s.section == "verify" or s.rel_file in run_set]
+    run_files = [rel for rel in current_shas if rel in run_set]
+    skipped_files = [rel for rel in current_shas if rel not in run_set]
+    drifted = [rel for rel in current_shas if rel in set(drifted)]
+    keep_items = _collect_step_items(steps, targets, schemas, pinned_step_texts, [])
+    fetched_by_schema = {
+        schema: {key: obj for key, obj in fetched.items() if key in keep_items.get(schema, [])}
+        for schema, fetched in fetched_by_schema.items()
+    }
+    if env == "staging" and not full:
+        recorded_apps = (env_state or {}).get("apps") or {}
+        apps_to_deploy = [
+            app_id for app_id in apps
+            if (recorded_apps.get(str(app_id)) or {}).get("sourceSha256") != app_shas.get(app_id)
+        ]
+    else:
+        apps_to_deploy = list(apps)
+    staging_proof = "not-applicable"
+    if env == "prod":
+        effective, mismatches = effective_status(manifest, current_shas, app_shas, staging_state)
+        if effective == "staged":
+            staging_proof = "matched staging"
+        else:
+            staging_proof = "missing"
+            if enforce_staging_proof:
+                if manifest.get("status") != "staged" or staging_state is None:
+                    failures.append(
+                        f"release '{slug}' is not staged (status {manifest.get('status')!r}); "
+                        "run it on staging first, or pass --no-staging-proof"
+                    )
+                else:
+                    failures.append(
+                        "bundle differs from what staging received: " + ", ".join(mismatches)
+                        + "; rerun staging, or pass --no-staging-proof"
                     )
 
     ords_steps = [s for s in steps if s.section == "ords"]
@@ -2116,6 +2278,14 @@ def _preflight_bundle(
         ords_metadata_coverage=ords_metadata_coverage,
         unbacked_ords_steps=unbacked_ords_steps,
         materialized_app_dirs=materialized_app_dirs,
+        to_apply=run_files,
+        skipped=skipped_files,
+        drifted=drifted,
+        current_shas=current_shas,
+        app_shas=app_shas,
+        apps_to_deploy=apps_to_deploy,
+        env_state=env_state,
+        staging_proof=staging_proof,
     )
 
 
@@ -2128,6 +2298,7 @@ def cmd_check(
     allow_existing: bool,
     environ: Mapping[str, str] | None,
     runner: Callable,
+    full: bool = False,
 ) -> int:
     slug = _parse_bundle_slug(bundle_arg)
     values = _load_env(repo_root, environ)
@@ -2145,6 +2316,7 @@ def cmd_check(
             runner=runner,
             work_dir=Path(tmp_dir),
             env_file_path=env_file_path,
+            full=full,
         )
     steps = pre.steps
     schemas = pre.schemas
@@ -2181,6 +2353,11 @@ def cmd_check(
         "ordsBackingObjects": pre.ords_backing_objects,
         "ordsMetadataCoverage": pre.ords_metadata_coverage,
         "unbackedOrdsSteps": pre.unbacked_ords_steps,
+        "apply": pre.to_apply,
+        "skipped": pre.skipped,
+        "drifted": pre.drifted,
+        "appsToDeploy": pre.apps_to_deploy,
+        "stagingProof": pre.staging_proof,
         "failures": failures,
     }
     if fmt == "json":
@@ -2198,7 +2375,20 @@ def cmd_check(
             extra = f" [{s.mode} {s.object_type}:{s.object_name}]" if s.section == "code" else ""
             print(f"    - {s.schema}: {s.rel_file}{extra}")
         for app_id in apps:
-            print(f"    - APEX app deploy: {app_id}")
+            note = "" if app_id in pre.apps_to_deploy else " (unchanged since last run, skipped)"
+            print(f"    - APEX app deploy: {app_id}{note}")
+        # ASHARIF 2026-11-25: what this environment already holds (state/<env>.json)
+        print(f"  State for {env}: apply {len(pre.to_apply)}, skip {len(pre.skipped)}, drift {len(pre.drifted)}")
+        drifted_set = set(pre.drifted)
+        for rel in pre.to_apply:
+            if rel in drifted_set:
+                print(f"    drift: {rel} (changed on {env} since our apply)")
+            else:
+                print(f"    apply: {rel}")
+        for rel in pre.skipped:
+            print(f"    skip:  {rel}")
+        if env == "prod":
+            print(f"  Staging proof: {pre.staging_proof}")
         if pre.unbacked_ords_steps:
             print(
                 "  WARNING: ORDS backup coverage: unbacked steps: "
@@ -2304,7 +2494,8 @@ def _patch_base_guard_lines(target: Target, step: BundleStep, expected_source: s
     q_name = _sql_literal(step.object_name)
     q_meta_type = _sql_literal(step.object_type.replace(" ", "_"))
     expected_norm = normalize_source_for_hash(expected_source)
-    expected_sha = step.base_sha256 or compute_source_sha256(expected_source)
+    # ASHARIF 2026-11-25: name the source the guard compares (equals baseSha256 except on a staging rerun).
+    expected_sha = compute_source_sha256(expected_source) if expected_norm else step.base_sha256
 
     append_lines: list[str] = []
     if expected_norm:
@@ -2770,6 +2961,120 @@ def _call_app_deployer(
     app_deployer(repo_root, app_id, env, confirm_target, values)
 
 
+def _capture_live_hashes(
+    runner: Callable,
+    pre: PreflightResult,
+    targets: Mapping[str, Target],
+    *,
+    tmp_state_dir: Path,
+    values: Mapping[str, str],
+) -> dict[str, str]:
+    """ASHARIF 2026-11-25: live source hash after apply for each applied code step (read-only).
+
+    Best effort: a failed read leaves those steps without liveSha256 (drift checks then skip them)
+    instead of failing a run whose database work already succeeded.
+    """
+    applied = set(pre.to_apply)
+    hashes: dict[str, str] = {}
+    by_schema: dict[str, list[BundleStep]] = {}
+    for step in pre.steps:
+        if step.section == "code" and step.rel_file in applied and step.object_type and step.object_name:
+            by_schema.setdefault(step.schema, []).append(step)
+    for schema, schema_steps in by_schema.items():
+        items = list(dict.fromkeys((s.object_type, s.object_name) for s in schema_steps))
+        try:
+            with tempfile.TemporaryDirectory(prefix="release-live-", dir=tmp_state_dir) as tmp_dir:
+                _, fetched = _fetch_schema_objects(
+                    runner,
+                    targets[schema],
+                    Path(tmp_dir),
+                    items,
+                    include_ddl=any(t in {"VIEW", "TRIGGER"} for t, _ in items),
+                    environ=values,
+                )
+        except (ReleaseError, SqlclError, SqlclTimeout) as exc:
+            print(f"release warning: live source not recorded for {schema} ({exc}); drift checks skip it", file=sys.stderr)
+            continue
+        for step in schema_steps:
+            obj = fetched.get((step.object_type, step.object_name)) or {}
+            text = _source_text_for_hash(step.object_type, obj) if obj.get("exists") is True else ""
+            if text.strip():
+                hashes[step.rel_file] = compute_source_sha256(text)
+    return hashes
+
+
+def _record_run_state(
+    repo_root: Path,
+    slug: str,
+    env: str,
+    pre: PreflightResult,
+    *,
+    live_hashes: Mapping[str, str],
+    deployed_apps: Sequence[int],
+    identities: Mapping[str, Mapping[str, str]],
+    before_invalids: Mapping[str, set[tuple[str, str]]],
+    after_invalids: Mapping[str, set[tuple[str, str]]],
+    new_invalids: Mapping[str, Sequence[tuple[str, str]]],
+    timings: Mapping[str, float],
+    mode: str,
+    report_path: Path,
+    release_commit: str,
+    confirm_target: str,
+) -> None:
+    """ASHARIF 2026-11-25: write state/<env>.json after a fully successful run; staging marks release.json staged."""
+    bundle_dir = _safe_bundle_dir(repo_root, slug)
+    at = _utc_now()
+    try:
+        report_ref = report_path.relative_to(repo_root).as_posix()
+    except ValueError:
+        report_ref = report_path.as_posix()
+    run_info = {
+        "at": at,
+        "commit": release_commit,
+        "mode": mode,
+        "applied": len(pre.to_apply),
+        "skipped": len(pre.skipped),
+        "drifted": list(pre.drifted),
+        "identities": {
+            schema: {
+                "dbUniqueName": ident.get("db_unique_name", ""),
+                "conName": ident.get("con_name", ""),
+                "user": ident.get("session_user", ""),
+                "invalidBefore": len(before_invalids.get(schema, ())),
+                "invalidAfter": len(after_invalids.get(schema, ())),
+                "newInvalid": len(new_invalids.get(schema, ())),
+            }
+            for schema, ident in identities.items()
+        },
+        "timings": dict(timings),
+        "appsDeployed": list(deployed_apps),
+        "report": report_ref,
+    }
+    if env == "prod" and pre.staging_proof != "matched staging":
+        run_info["stagingProof"] = pre.staging_proof
+    new_state = merge_state(
+        pre.env_state,
+        slug=slug,
+        env=env,
+        current=pre.current_shas,
+        applied=pre.to_apply,
+        live_hashes=live_hashes,
+        app_shas_deployed={app_id: pre.app_shas[app_id] for app_id in deployed_apps if app_id in pre.app_shas},
+        run=run_info,
+        at=at,
+        commit=release_commit,
+    )
+    write_state(bundle_dir, env, new_state)
+    if env == "staging" and not staging_mismatches(pre.current_shas, pre.app_shas, new_state):
+        manifest_path = bundle_dir / "release.json"
+        disk_manifest = _read_json_object(manifest_path, f"releases/{slug}/release.json")
+        disk_manifest["status"] = "staged"
+        disk_manifest["stagedAt"] = at
+        disk_manifest["stagedTarget"] = confirm_target.strip().upper()
+        disk_manifest["stagedCommit"] = release_commit
+        _write_json_lf(manifest_path, disk_manifest)
+
+
 def cmd_run(
     repo_root: Path,
     bundle_arg: str,
@@ -2783,6 +3088,8 @@ def cmd_run(
     environ: Mapping[str, str] | None,
     runner: Callable,
     app_deployer: Callable[..., None] = _invoke_app_deploy,
+    full: bool = False,
+    no_staging_proof: bool = False,
 ) -> int:
     if not isinstance(confirm_target, str) or not confirm_target.strip():
         raise ReleaseUsageError("--confirm-target <db_unique_name> is required and must be non-empty")
@@ -2819,6 +3126,13 @@ def cmd_run(
     error_message: str | None = None
     preflight_started = False
     release_commit = "unknown"
+    # ASHARIF 2026-11-25: per-environment state summary for the report
+    run_mode = "full" if (full or env == "prod") else "delta"
+    applied_count = 0
+    skipped_count = 0
+    staging_proof = "not-applicable"
+    state_rel = f"releases/{slug}/state/{env}.json"
+    state_written = False
 
     try:
         with _acquire_release_lock(scratch_root / f".release-{slug}.lock", slug):
@@ -2844,6 +3158,8 @@ def cmd_run(
                         require_deployer=(app_deployer is _invoke_app_deploy),
                         pinned_commit=pinned_commit,
                         env_file_path=env_file_path,
+                        full=full,
+                        enforce_staging_proof=not no_staging_proof,
                     )
                 finally:
                     timings["preflight"] = round(time.monotonic() - t0, 3)
@@ -2862,6 +3178,11 @@ def cmd_run(
                 ords_metadata_coverage = pre.ords_metadata_coverage
                 unbacked_ords_steps = list(pre.unbacked_ords_steps)
                 materialized_app_dirs = pre.materialized_app_dirs
+                applied_count = len(pre.to_apply)
+                skipped_count = len(pre.skipped)
+                staging_proof = pre.staging_proof
+                if env == "prod" and no_staging_proof and staging_proof != "matched staging":
+                    staging_proof = "skipped (--no-staging-proof)"
                 before_invalids = {schema: set() for schema in schemas}
                 after_invalids = {schema: set() for schema in schemas}
                 new_invalids = {schema: [] for schema in schemas}
@@ -3200,7 +3521,7 @@ def cmd_run(
                 # Step 5: Optional APEX app deploy
                 t4 = time.monotonic()
                 try:
-                    for app_id in apps:
+                    for app_id in pre.apps_to_deploy:
                         _call_app_deployer(
                             app_deployer,
                             repo_root,
@@ -3214,6 +3535,11 @@ def cmd_run(
                     completed_phases.append("apps")
                 finally:
                     timings["apps"] = round(time.monotonic() - t4, 3)
+
+            # ASHARIF 2026-11-25: read the live source of the applied code objects (read-only) for drift checks.
+            live_hashes = _capture_live_hashes(
+                runner, pre, targets, tmp_state_dir=scratch_root, values=values
+            )
 
             # Step 6: Report & Prod lock
             if env == "prod":
@@ -3229,8 +3555,32 @@ def cmd_run(
                 manifest["deployedAt"] = _utc_now()
                 manifest["deployedTarget"] = observed_db
                 manifest["deployedCommit"] = release_commit
+                if no_staging_proof and pre.staging_proof != "matched staging":
+                    manifest["deployedWithoutStagingProof"] = True
                 _write_json_lf(bundle_dir / "release.json", manifest)
                 completed_phases.append("prod-lock")
+
+            # ASHARIF 2026-11-25: record what this environment now holds; staging marks the bundle staged.
+            _record_run_state(
+                repo_root,
+                slug,
+                env,
+                pre,
+                live_hashes=live_hashes,
+                deployed_apps=deployed_apps,
+                identities=identities,
+                before_invalids=before_invalids,
+                after_invalids=after_invalids,
+                new_invalids=new_invalids,
+                timings=timings,
+                mode=run_mode,
+                report_path=report_path,
+                release_commit=release_commit,
+                confirm_target=confirm_target,
+            )
+            state_written = True
+            if env == "staging":
+                manifest["status"] = "staged"
 
             outcome = "SUCCEEDED"
     except Exception as exc:
@@ -3244,7 +3594,12 @@ def cmd_run(
                 "",
                 f"- **Outcome:** {outcome}",
                 f"- **Status:** {manifest.get('status')}",
+                # ASHARIF 2026-11-25: per-environment state summary
+                f"- **Mode:** {run_mode} (applied {applied_count}, skipped {skipped_count})",
+                f"- **State file:** `{state_rel}` ({'written' if state_written else 'not written'})",
             ]
+            if env == "prod":
+                report_lines.append(f"- **Staging proof:** {staging_proof}")
             if error_message:
                 report_lines.append(f"- **Error:** {error_message}")
             report_lines.extend([
@@ -3299,10 +3654,17 @@ def cmd_run(
                 print(f"Release {slug} -> {env} succeeded. Report: {report_path}")
                 if "prod-lock" in completed_phases:
                     print(
-                        f"Next: commit releases/{slug}/release.json (now status 'deployed'); "
-                        f"tag release/{slug} points at the release commit {release_commit[:12]}, "
-                        "so push the tag along with that commit."
+                        f"Next: commit releases/{slug}/release.json and releases/{slug}/state/prod.json "
+                        f"(now status 'deployed'); tag release/{slug} points at the release commit "
+                        f"{release_commit[:12]}, so push the tag along with that commit."
                     )
+                elif env == "staging":
+                    print(
+                        f"Next: commit releases/{slug}/release.json and releases/{slug}/state/staging.json "
+                        "(status 'staged'); production requires them committed."
+                    )
+                else:
+                    print(f"Next: commit releases/{slug}/state/{env}.json")
             else:
                 print(f"Release {slug} -> {env} failed. Report: {report_path}", file=sys.stderr)
 
@@ -3337,6 +3699,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_check.add_argument("--env", choices=ENVIRONMENTS, required=True)
     p_check.add_argument("--format", choices=("text", "json"), default="text")
     p_check.add_argument("--allow-existing", action="store_true")
+    p_check.add_argument("--full", action="store_true", help="Plan every step, ignoring state/<env>.json")
 
     p_run = sub.add_parser("run", help="Execute a release bundle (zero prompts; requires --confirm-target)")
     p_run.add_argument("bundle", help="Release slug or releases/<slug>")
@@ -3350,6 +3713,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Proceed when 03-ords/ steps lack an ORDS metadata backup export (also required with --skip-backup)",
     )
     p_run.add_argument("--report", dest="report_arg", help="Optional custom report path")
+    p_run.add_argument("--full", action="store_true", help="Apply every step, ignoring state/<env>.json (DEV/staging)")
+    p_run.add_argument(
+        "--no-staging-proof",
+        action="store_true",
+        help="Production only: run without a matching staging record (recorded in the report and release.json)",
+    )
 
     return parser
 
@@ -3391,6 +3760,7 @@ def main(
                 allow_existing=args.allow_existing,
                 environ=environ,
                 runner=runner,
+                full=args.full,
             )
         if args.subcommand == "run":
             return cmd_run(
@@ -3405,6 +3775,8 @@ def main(
                 environ=environ,
                 runner=runner,
                 app_deployer=app_deployer,
+                full=args.full,
+                no_staging_proof=args.no_staging_proof,
             )
         raise ReleaseUsageError(f"unknown subcommand: {args.subcommand}")
     except ReleaseUsageError as exc:
