@@ -489,7 +489,8 @@ says how to check it and route it upstream.
 ### Recover an older template lock
 
 An existing 26.1 project may have inherited
-`https://github.com/ash2osh/APEX_PROJECT_TEMPLATE_TEAM.git` in its
+`https://github.com/ash2osh/APEX_PROJECT_TEMPLATE_TEAM.git`
+(since renamed `APEX_PROJECT_TEMPLATE_TEAM_26_2`; GitHub redirects the old URL) in its
 `.template-lock.json` upstream. That repository now uses the 26.2 manifest
 contract, so the 26.1 upgrade can refuse it with `unsupported template manifest
 schemaVersion`. Correcting the local manifest alone does not change the source:
