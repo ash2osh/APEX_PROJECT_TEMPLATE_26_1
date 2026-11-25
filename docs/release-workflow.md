@@ -11,7 +11,8 @@ releases/<slug>/
 ├── 02-code/      # Packages, views, triggers, procedures, functions, types
 ├── 03-ords/      # ORDS module scripts (optional)
 ├── 04-verify/    # Read-only verification / smoke SQL scripts (optional)
-└── state/        # Written by `release run`: dev.json, staging.json, prod.json (commit them)
+└── state/        # Written by `release run`: dev.json, staging.json, prod.json (commit them);
+                  # a failed DEV/staging run adds <env>.partial.json for --resume
 ```
 
 - `slug`: lowercase identifier matching `^[a-z0-9][a-z0-9._-]*$`.
@@ -61,7 +62,7 @@ scripts/team.sh release collect 2026-11-24-order-fixes \
 
 `release collect` writes schema-qualified default filenames (`02-code/<schema>_<object_name>_<type>.sql`), refuses overwriting a file already used by a different `(schema, objectType, objectName)` entry in `release.json`, and automatically strips `ALTER SESSION SET PLSQL_CODE_TYPE = INTERPRETED;` lines so Oracle Autonomous Database (ADB) non-ADMIN logins never fail with `ORA-01031`. Both `release check` and `release run` refuse any SQL file that still contains that statement.
 
-Add hand-authored DDL or reference updates under `01-ddl/` and list them under `"ddl"` in `release.json`. Prefer idempotent/guarded PL/SQL blocks where appropriate so re-runs or target drift fail cleanly with clear errors:
+Add hand-authored DDL or reference updates under `01-ddl/` and list them under `"ddl"` in `release.json`. The runner commits after each `01-ddl` file finishes, so a later failure does not roll back that file's DML, and a failed run can be resumed (see [Failed runs and `--resume`](#failed-runs-and---resume)). Keep one change per file so a failure leaves whole files done or not done. Prefer idempotent/guarded PL/SQL blocks where appropriate so re-runs or target drift fail cleanly with clear errors:
 
 ```sql
 DECLARE
@@ -117,7 +118,7 @@ Execution sequence:
 
 ## Per-environment state (`state/<env>.json`)
 
-Each successful `release run` writes `releases/<slug>/state/<env>.json` for the environment it ran on (`dev.json`, `staging.json`, `prod.json`). A failed run writes nothing. The runner never commits; it prints the files to commit, and production refuses uncommitted bundle files, so a staging record cannot be skipped by accident. The repository belongs to one developer, so these files describe that developer's runs.
+Each successful `release run` writes `releases/<slug>/state/<env>.json` for the environment it ran on (`dev.json`, `staging.json`, `prod.json`). A failed run never changes it; it may write a separate failed-run record (below). The runner never commits; it prints the files to commit, and production refuses uncommitted bundle files, so a staging record cannot be skipped by accident. The repository belongs to one developer, so these files describe that developer's runs.
 
 ```json
 { "schemaVersion": 1, "slug": "2026-11-24-order-fixes", "env": "staging",
@@ -134,7 +135,33 @@ Each successful `release run` writes `releases/<slug>/state/<env>.json` for the 
 - **Delta (DEV, staging):** a step runs only when its fingerprint differs from the one recorded for that environment. `--full` runs every step (use it after restoring staging from production). On staging an app is imported only when its source changed. Production always runs every step and imports every app.
 - **Drift:** after each run the live source of every applied code object is recorded as `liveSha256`. When a later run would skip that object but its live source changed (someone edited it on that target), it is applied again and listed under `drifted`. A `patch` step re-applied on staging accepts live source equal to `baseSha256` or to its recorded `liveSha256`; production keeps the strict `baseSha256` guard.
 - **Production gate:** `release run --env prod` refuses unless the bundle is `staged` and every file and app fingerprint equals `state/staging.json`, naming what differs. `--no-staging-proof` overrides this (for projects without staging); the report and `release.json` record it.
+- **Failed runs and `--resume`:** see the next section.
 - **`release status <bundle>`:** offline table, one row per step and app, columns DEV / STAGING / PROD (`ok` current version applied, `old` an older version, `-` never). `--live --env <env>` adds a read-only drift check; `--format json` for agents.
+
+## Failed runs and `--resume`
+
+A run can fail halfway: `01-ddl/001-create.sql` creates a table, `01-ddl/002-add-note.sql` fails. Running the bundle again would hit `ORA-00955` on file 1, because the table already exists.
+
+- **What a failed DEV or staging run records.** The runner prints `RELEASE_STEP_END:<file>` after each file and commits after each `01-ddl` file, so it knows which `01-ddl` files finished and are saved. It writes them to `releases/<slug>/state/<env>.partial.json`: each file's fingerprint, the time, the commit and the Oracle error lines (no local paths). `state/<env>.json` is not touched, so it still describes successful runs only.
+- **Resume.** Fix the failing file, then `release run <slug> --env <env> --confirm-target <db_unique_name> --resume`. It skips the `01-ddl` files that finished, as long as their text is unchanged; an edited file runs again. `02-code` and `03-ords` files always run again (they replace objects, and a finished code file may still be invalid). `release check --resume` shows the same plan first.
+- **Without `--resume`** every step runs again, as before; `check` and `run` print a `NOTE` naming the partial record.
+- **After a successful run** the partial record is removed and its steps are written to `state/<env>.json`. Commit the removal if the partial record was committed (commit it when a teammate may finish the run).
+- **Refused:** `--resume` with no partial record, `--resume --full`, and `--resume --env prod`. Production always runs the whole bundle; a failed production run prints which files finished in its output and report.
+
+### Run output
+
+`release run` narrates every phase so anyone reading the console can follow it: the target identity, the plan (`apply` / `skip` / `resume` / `drift`), then for each SQLcl session a `start` line per file before it runs and a `done`, `FAILED` or `not run` line per file when the session ends (SQLcl returns its output at the end of a session, so the result lines follow the session). `04-verify` scripts and app deploys print the same before and after lines.
+
+```text
+[Step 4/6] Apply: 01-ddl, then 02-code, then 03-ords (each 01-ddl file is committed when it finishes)
+    SQLcl session as TPLSTG: 3 file(s)
+      [1/3] start    01-ddl/001-create.sql  [TPLSTG, DDL]
+      [2/3] start    01-ddl/002-add-note.sql  [TPLSTG, DDL]
+      [3/3] start    02-code/resume_live_p.sql  [TPLSTG, new PROCEDURE RESUME_LIVE_P]
+      [1/3] done     01-ddl/001-create.sql
+      [2/3] FAILED   01-ddl/002-add-note.sql
+      [3/3] not run  02-code/resume_live_p.sql
+```
 
 ## Upgrading existing downstream projects
 

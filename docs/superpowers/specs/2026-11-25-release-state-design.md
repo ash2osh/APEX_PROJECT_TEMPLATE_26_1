@@ -29,7 +29,7 @@ The template is used by one developer per repository; the repository is not shar
 
 - A step skipped on staging or production that the target does not actually hold in that version.
 - Production running a bundle that differs from what staging received, without the override being visible in the report and in `release.json`.
-- A failed or interrupted run recording anything as applied.
+- A failed or interrupted run recording anything as applied in `state/<env>.json`. (Amended 2026-11-25: a failed DEV/staging run may write the separate, opt-in `state/<env>.partial.json`; see rule 2.)
 - The runner committing or pushing on its own.
 
 ## Approaches considered
@@ -81,7 +81,7 @@ One state file per environment, `releases/<slug>/state/<env>.json` (`dev.json`, 
 ### Rules
 
 1. **Fingerprint.** sha256 of the file text with line endings normalised to LF. Keyed by the path under the bundle. A renamed file is a new step and is applied again; a moved position in `release.json` is not a change. App fingerprint: sha256 over the sorted relative paths and contents of `apps/*/<app_id>/`.
-2. **Writing.** Only the runner writes `state/<env>.json`, only for the environment it ran on, and only at the end of a fully successful run (all phases including verify and apps). Written atomically (temp file and rename), keys sorted, LF. A failed run writes nothing; the next run applies the same changes again. Entries for files no longer in `release.json` are dropped on the next write of that environment.
+2. **Writing.** Only the runner writes `state/<env>.json`, only for the environment it ran on, and only at the end of a fully successful run (all phases including verify and apps). Written atomically (temp file and rename), keys sorted, LF. A failed run never writes `state/<env>.json`. Amended 2026-11-25 (the original "writes nothing" rule left a rerun stuck on `ORA-00955` after a halfway failure): a failed DEV or staging run writes `state/<env>.partial.json` with the `01-ddl` files that finished (each committed before its end marker), read only by `release run --resume`, which skips them while their fingerprint is unchanged, and removed after a successful run. Without `--resume` the next run applies the same changes again. Entries for files no longer in `release.json` are dropped on the next write of that environment.
 3. **Delta (DEV, staging).** A step runs when its current fingerprint differs from the one recorded for that environment, or has none. `--full` runs every step and rewrites the environment's records. `04-verify/` always runs in full. On staging an app is imported only when its fingerprint changed; production always imports (it runs everything); DEV still refuses apps. Backup covers only the objects of the steps that run. Phase and schema batching keep their order with the skipped steps removed.
 4. **Patch steps on a rerun.** A `patch` step re-applied to an environment that already holds an earlier bundle version would fail its `baseSha256` guard. Record, at apply time, the live source hash after the step as `liveSha256` (the post-apply phase already reads the source; rule 12 uses the same value). On a later delta run the guard accepts live == `baseSha256` or live == that recorded post-apply hash. Production, which runs once, keeps the strict `baseSha256` guard.
 5. **`new` steps.** Skipped when recorded with the same fingerprint, so a rerun no longer needs `--allow-existing`. A changed `new` step still refuses an existing object unless `--allow-existing`.

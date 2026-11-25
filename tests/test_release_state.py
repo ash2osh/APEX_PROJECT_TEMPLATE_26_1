@@ -131,6 +131,39 @@ class ReleaseStateTests(unittest.TestCase):
         (app_dir / "pages" / "p1.apx").write_text("page2\n", encoding="utf-8")
         self.assertNotEqual(rs.app_source_sha256(self.root, 130), first)
 
+    # ASHARIF 2026-11-25: failed-run record for --resume
+    def test_partial_record_round_trip_and_resume_split(self) -> None:
+        bundle = self.root / "releases" / "rel"
+        current = {"01-ddl/a.sql": "s1", "01-ddl/b.sql": "s2", "02-code/c.sql": "s3"}
+        self.assertIsNone(rs.load_partial(bundle, "rel", "dev"))
+        partial = rs.build_partial(slug="rel", env="dev", current=current, finished=["01-ddl/a.sql"],
+                                   previous=None, at="T1", commit="c1", error="ORA-00904")
+        rs.write_partial(bundle, "dev", partial)
+        loaded = rs.load_partial(bundle, "rel", "dev")
+        self.assertEqual(loaded["steps"], {"01-ddl/a.sql": {"sha256": "s1", "at": "T1", "commit": "c1"}})
+        ddl = ["01-ddl/a.sql", "01-ddl/b.sql"]
+        self.assertEqual(rs.resumable_steps(loaded, current, ddl), (["01-ddl/a.sql"], []))
+        edited = {**current, "01-ddl/a.sql": "s9"}
+        self.assertEqual(rs.resumable_steps(loaded, edited, ddl), ([], ["01-ddl/a.sql"]))
+        # A second failure keeps earlier finished steps that still match and adds the new ones
+        again = rs.build_partial(slug="rel", env="dev", current=current, finished=["01-ddl/b.sql"],
+                                 previous=loaded, at="T2", commit="c2", error="x")
+        self.assertEqual(set(again["steps"]), {"01-ddl/a.sql", "01-ddl/b.sql"})
+        dropped = rs.build_partial(slug="rel", env="dev", current=edited, finished=[],
+                                   previous=loaded, at="T2", commit="c2", error="x")
+        self.assertEqual(dropped["steps"], {})
+        self.assertTrue(rs.clear_partial(bundle, "dev"))
+        self.assertFalse(rs.clear_partial(bundle, "dev"))
+        with self.assertRaises(ValueError):
+            rs.partial_path(bundle, "prod")
+
+    def test_partial_record_rejects_wrong_bundle(self) -> None:
+        bundle = self.root / "releases" / "rel"
+        rs.write_partial(bundle, "staging", rs.build_partial(
+            slug="other", env="staging", current={}, finished=[], previous=None, at="T", commit="c", error=""))
+        with self.assertRaisesRegex(rs.StateError, "does not match bundle"):
+            rs.load_partial(bundle, "rel", "staging")
+
 
 if __name__ == "__main__":
     unittest.main()
