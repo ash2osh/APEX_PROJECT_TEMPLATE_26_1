@@ -29,7 +29,7 @@ releases/<slug>/
     - `mode: "patch"`: requires `baseSha256` (64-char hex SHA-256 of normalized target `ALL_SOURCE` text). `release check` and `release run` **refuse** if live target source changed since capture and write a unified diff to `scratch/release-diffs/`.
   - `ords`: optional ordered list of `{ "schema", "file", "objects"?: [...] }` entries under `03-ords/`.
   - `verify`: optional ordered list of `{ "schema", "file" }` entries under `04-verify/` (read-only smoke SQL).
-  - `apps`: optional list of numeric APEX app IDs deployed in Step 5 via `scripts/deploy.sh` (`--env staging` and `--env prod` only).
+  - `apps`: optional list of numeric APEX app IDs deployed in Step 5 via `scripts/deploy.sh` (`--env staging` and `--env prod`; a `--env dev` run applies the SQL and skips the apps, which reach DEV through `scripts/team.sh publish <app_id> --env dev`).
   - `forbiddenPatterns`: optional list of uppercase glob/prefix patterns (such as `"HR_WF_*"`) refused in bundle filenames or SQL.
 - Duplicate `file` references across `ddl`, `code`, `ords`, and `verify` are refused.
 
@@ -94,7 +94,7 @@ scripts/team.sh release check 2026-11-24-order-fixes --env prod --format json
 - Verifies target identity (`DB_UNIQUE_NAME`, `CON_NAME`, `USER`) per schema, honoring optional `.env` `MIGRATION_*` / `STAGING_MIGRATION_*` / `PROD_MIGRATION_*` override triples when set.
 - Checks `ALL_OBJECTS` for `mode: "new"` entries (refuses if object already exists unless `--allow-existing`).
 - Fetches live `ALL_SOURCE` normalized SHA-256 for `mode: "patch"` entries and refuses on mismatch, saving a unified diff under `scratch/release-diffs/`.
-- When `apps` is non-empty, refuses `--env dev` (use `scripts/team.sh publish <app_id> --env dev` for DEV), verifies `scripts/deploy.sh`, `scripts/publish_app.sh`, and `apps/*/<app_id>/deployments/<env>.json` exist for `staging` / `prod`, and runs `scripts/publish_app.sh <app_id> --env <env> --describe` offline to validate the strict deployment descriptor and `--for-import` source rules before any SQL runs.
+- When `apps` is non-empty, a `--env dev` run skips them (printed and listed in the report as `Apps skipped on DEV`; use `scripts/team.sh publish <app_id> --env dev` for DEV); for `staging` / `prod` it verifies `scripts/deploy.sh`, `scripts/publish_app.sh`, and `apps/*/<app_id>/deployments/<env>.json` exist for `staging` / `prod`, and runs `scripts/publish_app.sh <app_id> --env <env> --describe` offline to validate the strict deployment descriptor and `--for-import` source rules before any SQL runs.
 - Reports `ordsBackingObjects` (whether declared PL/SQL/table `objects` exist for backup) separately from `ordsMetadataCoverage` (`"unbacked"` whenever `03-ords/` steps exist, because Step 3 does not export ORDS module/handler metadata), and keeps `ordsBackupCoverage` in sync (`"unbacked"` when `03-ords/` steps exist).
 - Prints the ordered execution plan.
 
