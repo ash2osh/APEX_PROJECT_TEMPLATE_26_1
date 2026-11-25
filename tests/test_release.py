@@ -1347,12 +1347,25 @@ class ReleaseBundleTests(unittest.TestCase):
         }
         (bundle / "release.json").write_text(json.dumps(manifest), encoding="utf-8", newline="\n")
 
-        # (a) apps non-empty on --env dev fails preflight with zero apply/backup SQL
-        code, _, err = self._run_cli(["run", "app-rel", "--env", "dev", "--confirm-target", "DEVDB_UNQ"])
-        self.assertEqual(code, 1)
-        self.assertIn("supports staging and prod only", err)
-        self.assertEqual(self._read_state().get("appliedSteps", []), [])
-        self.assertFalse((self.root / "scratch" / "backups").exists())
+        # (a) ASHARIF 2026-11-25: on --env dev the SQL runs and the apps are skipped (DEV apps go through publish)
+        deployed: list[int] = []
+        code, out, err = self._run_cli(
+            ["run", "app-rel", "--env", "dev", "--confirm-target", "DEVDB_UNQ"],
+            app_deployer=lambda _r, app_id, *_a: deployed.append(app_id),
+        )
+        self.assertEqual(code, 0, err)
+        self.assertEqual(deployed, [])
+        self.assertEqual(self._read_state().get("appliedSteps", []), ["01-ddl/001-t.sql"])
+        self.assertIn("APEX app 130 skipped on DEV (use 'scripts/team.sh publish 130 --env dev')", out)
+        report = Path(re.search(r"Report:\s*(.+\.md)", out).group(1).strip()).read_text(encoding="utf-8")
+        self.assertIn("- **Apps skipped on DEV:** 130", report)
+        dev_state = json.loads((bundle / "state" / "dev.json").read_text(encoding="utf-8"))
+        self.assertEqual(dev_state["apps"], {})
+        code, out, _ = self._run_cli(["check", "app-rel", "--env", "dev"])
+        self.assertIn("APEX app deploy: 130 (skipped on DEV: use publish)", out)
+        state = self._read_state()
+        state["appliedSteps"] = []
+        self._write_state(state)
 
         # (b) missing scripts/deploy.sh and missing apps/*/130/deployments/staging.json fail preflight
         (self.root / "apps" / "APP_CODE" / "130" / "deployments").mkdir(parents=True)

@@ -2231,6 +2231,8 @@ def _preflight_bundle(
             app_id for app_id in apps
             if (recorded_apps.get(str(app_id)) or {}).get("sourceSha256") != app_shas.get(app_id)
         ]
+    elif env == "dev":
+        apps_to_deploy = []
     else:
         apps_to_deploy = list(apps)
     staging_proof = "not-applicable"
@@ -2275,10 +2277,8 @@ def _preflight_bundle(
 
     if apps:
         if env == "dev":
-            failures.append(
-                "APEX app deploy in release run supports staging and prod only; "
-                "use 'scripts/team.sh publish <app_id> --env dev' for DEV"
-            )
+            # ASHARIF 2026-11-25: DEV apps go through publish; a DEV run applies the SQL and skips the apps.
+            pass
         else:
             if require_deployer and not (repo_root / "scripts" / "deploy.sh").is_file():
                 failures.append(
@@ -2475,7 +2475,10 @@ def cmd_check(
             extra = f" [{s.mode} {s.object_type}:{s.object_name}]" if s.section == "code" else ""
             print(f"    - {s.schema}: {s.rel_file}{extra}")
         for app_id in apps:
-            note = "" if app_id in pre.apps_to_deploy else " (unchanged since last run, skipped)"
+            if env == "dev":
+                note = " (skipped on DEV: use publish)"
+            else:
+                note = "" if app_id in pre.apps_to_deploy else " (unchanged since last run, skipped)"
             print(f"    - APEX app deploy: {app_id}{note}")
         # ASHARIF 2026-11-25: what this environment already holds (state/<env>.json)
         print(f"  State for {env}: apply {len(pre.to_apply)}, skip {len(pre.skipped)}, drift {len(pre.drifted)}")
@@ -3233,6 +3236,7 @@ def cmd_run(
     staging_proof = "not-applicable"
     state_rel = f"releases/{slug}/state/{env}.json"
     state_written = False
+    dev_skipped_apps: list[int] = []
 
     try:
         with _acquire_release_lock(scratch_root / f".release-{slug}.lock", slug):
@@ -3280,6 +3284,8 @@ def cmd_run(
                 applied_count = len(pre.to_apply)
                 skipped_count = len(pre.skipped)
                 staging_proof = pre.staging_proof
+                if env == "dev":
+                    dev_skipped_apps = list(pre.apps)
                 if env == "prod" and no_staging_proof and staging_proof != "matched staging":
                     staging_proof = "skipped (--no-staging-proof)"
                 before_invalids = {schema: set() for schema in schemas}
@@ -3620,6 +3626,9 @@ def cmd_run(
                 # Step 5: Optional APEX app deploy
                 t4 = time.monotonic()
                 try:
+                    if env == "dev":
+                        for app_id in pre.apps:
+                            print(f"APEX app {app_id} skipped on DEV (use 'scripts/team.sh publish {app_id} --env dev')")
                     for app_id in pre.apps_to_deploy:
                         _call_app_deployer(
                             app_deployer,
@@ -3716,6 +3725,7 @@ def cmd_run(
                 f"- **Git tag:** `{tag_status}`",
                 f"- **Completed phases:** {', '.join(completed_phases) if completed_phases else 'none'}",
                 f"- **Apps deployed:** {', '.join(str(a) for a in deployed_apps) if deployed_apps else 'none'}",
+                *([f"- **Apps skipped on DEV:** {', '.join(str(a) for a in dev_skipped_apps)}"] if dev_skipped_apps else []),
                 "",
                 "## Target Identities",
                 "",
