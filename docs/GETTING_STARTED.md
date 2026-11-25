@@ -276,7 +276,8 @@ A project that finished its cleanup earlier gets these changes with
 ### Recover an existing 26.1 upgrade lock
 
 If your 26.1 project's `.template-lock.json` still records
-`https://github.com/ash2osh/APEX_PROJECT_TEMPLATE_TEAM.git`, the upgrade may
+`https://github.com/ash2osh/APEX_PROJECT_TEMPLATE_TEAM.git`
+(since renamed `APEX_PROJECT_TEMPLATE_TEAM_26_2`; GitHub redirects the old URL), the upgrade may
 refuse that repository's newer manifest contract. The lock's upstream takes
 precedence over the local manifest; an explicit `--source` takes precedence over
 both. With a clean working tree, review a dry-run and then apply the same source:
