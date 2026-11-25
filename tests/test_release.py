@@ -2875,5 +2875,39 @@ class ReleaseBundleTests(unittest.TestCase):
         self.assertEqual((prod_state["lastRun"]["mode"], prod_state["lastRun"]["applied"]), ("full", 2))
 
 
+    def test_status_table_text_and_json(self) -> None:
+        bundle = self._make_state_bundle("status-tbl-rel")
+        self.assertEqual(self._stage("status-tbl-rel")[0], 0)
+        self._edit_code(bundle)
+        code, out, err = self._run_cli(["status", "status-tbl-rel"])
+        self.assertEqual(code, 0, err)
+        self.assertIn("status-tbl-rel   status: staged (effective: stale)", out)
+        self.assertIn("last runs: dev -, staging ", out)
+        self.assertRegex(out, r"01-ddl/001-add-col\.sql\s+-\s+ok\s+-")
+        self.assertRegex(out, r"02-code/orders_pkg_package_body\.sql\s+-\s+old\s+-")
+        self.assertIn("legend: ok = current version applied, old = an older version applied, - = never applied", out)
+        doc = json.loads(self._run_cli(["status", "status-tbl-rel", "--format", "json"])[1])
+        self.assertEqual(doc["effectiveStatus"], "stale")
+        rows = {r["item"]: r for r in doc["rows"]}
+        self.assertEqual(rows["01-ddl/001-add-col.sql"], {"item": "01-ddl/001-add-col.sql", "dev": "-", "staging": "ok", "prod": "-"})
+        self.assertEqual(rows["02-code/orders_pkg_package_body.sql"]["staging"], "old")
+        calls = self._read_state()["calls"]
+        self.assertFalse(any(c["driverName"] != "release-fetch.sql" and "release-run" in c["driverName"] for c in calls))
+
+    def test_status_live_reports_drift(self) -> None:
+        self._make_state_bundle("status-live-rel")
+        self.assertEqual(self._stage("status-live-rel")[0], 0)
+        state = self._read_state()
+        state["envs"]["staging"]["objects"]["PACKAGE BODY:ORDERS_PKG"] = {"source": "PACKAGE BODY ORDERS_PKG AS HOTFIX END;\n"}
+        state["calls"] = []
+        self._write_state(state)
+        code, out, err = self._run_cli(["status", "status-live-rel", "--live", "--env", "staging"])
+        self.assertEqual(code, 0, err)
+        self.assertIn("drift on staging: 02-code/orders_pkg_package_body.sql (changed since our apply)", out)
+        names = [c["driverName"] for c in self._read_state()["calls"]]
+        self.assertEqual(names, ["release-fetch.sql"])
+        self.assertEqual(self._run_cli(["status", "status-live-rel", "--live"])[0], 2)
+
+
 if __name__ == "__main__":
     unittest.main()

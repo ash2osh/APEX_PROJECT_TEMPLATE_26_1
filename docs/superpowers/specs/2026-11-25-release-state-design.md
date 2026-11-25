@@ -1,6 +1,6 @@
 # Release bundle state per environment: design
 
-Date: 2026-11-25. Status: decisions taken in conversation by the owner, including suggestions 11–13 and one state file per environment (draft for approval). Applies to the 26.1 template's Lean release runner (`scripts/release.py`).
+Date: 2026-11-25. Status: approved by the owner 2026-11-25, including suggestions 11–13 and one state file per environment. Applies to the 26.1 template's Lean release runner (`scripts/release.py`).
 
 ## Intent
 
@@ -105,14 +105,14 @@ One state file per environment, `releases/<slug>/state/<env>.json` (`dev.json`, 
       "appsDeployed": [130], "report": "scratch/release-reports/prod-v1-staging-….md" }
     ```
 12. **Drift warning (owner-accepted suggestion).** For each code step applied, record the live source hash read after the apply (`liveSha256`, the same value rule 4 needs). `release check --env <env>` compares the current live source of recorded objects with it and reports `changed on <env> since our apply` per object. It is a warning in `check`; in `run` a drifted object that the run would skip is applied again instead (it no longer holds our version). Only code objects are compared; DDL steps have no single source to compare.
-13. **`release status <slug>` (owner-accepted suggestion).** Offline, read-only; reads `release.json`, the bundle files and every `state/<env>.json`. One row per step and app, one column per environment: `✓` recorded and matching, `~` recorded with an older fingerprint, `–` never applied. Header shows status, effective status and last run per environment. `--format json` for agents. `--live --env <env>` adds the drift column from rule 12 (read-only query).
+13. **`release status <slug>` (owner-accepted suggestion).** Offline, read-only; reads `release.json`, the bundle files and every `state/<env>.json`. One row per step and app, one column per environment: `ok` recorded and matching, `old` recorded with an older fingerprint, `-` never applied (builder's call: ASCII, because Windows consoles in cp1252 cannot print ✓). Header shows status, effective status and last run per environment. `--format json` for agents. `--live --env <env>` adds the drift column from rule 12 (read-only query).
 
     ```
     prod-v1   status: staged   last runs: dev 2026-11-24, staging 2026-11-26, prod –
     STEP                                                       DEV  STAGING  PROD
-    01-ddl/001_RUNERP_CUSTDATA_stage1_sequences.sql             ✓      ✓      –
-    02-code/045_RUNERP_CODE_absh_visit_pkg_package_body.sql     ~      ✓      –
-    app 130                                                     –      ✓      –
+    01-ddl/001_RUNERP_CUSTDATA_stage1_sequences.sql             ok     ok     -
+    02-code/045_RUNERP_CODE_absh_visit_pkg_package_body.sql     old    ok     -
+    app 130                                                     -      ok     -
     ```
 
 ### Day-3 example

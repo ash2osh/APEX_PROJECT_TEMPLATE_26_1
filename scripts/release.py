@@ -1700,6 +1700,106 @@ def cmd_list(repo_root: Path, fmt: str) -> int:
     return 0
 
 
+def cmd_status(
+    repo_root: Path,
+    bundle_arg: str,
+    *,
+    fmt: str,
+    live: bool,
+    env: str | None,
+    environ: Mapping[str, str] | None,
+    runner: Callable,
+) -> int:
+    """ASHARIF 2026-11-25: one row per step and app, one column per environment (offline unless --live)."""
+    if live and not env:
+        raise ReleaseUsageError("--live requires --env <dev|staging|prod>")
+    slug = _parse_bundle_slug(bundle_arg)
+    bundle_dir = _safe_bundle_dir(repo_root, slug)
+    if not bundle_dir.is_dir():
+        raise ReleaseError(f"release bundle not found: releases/{slug}")
+    manifest, steps, _schemas, apps, _forbidden = _load_and_validate_manifest(bundle_dir, slug)
+    current, app_shas = _bundle_fingerprints(repo_root, steps, apps)
+    states = {name: _load_env_state(bundle_dir, slug, name) for name in ENVIRONMENTS}
+    effective, _mismatches = effective_status(manifest, current, app_shas, states["staging"])
+
+    def mark(recorded: Any, sha: str, key: str) -> str:
+        if not isinstance(recorded, dict):
+            return "-"
+        return "ok" if recorded.get(key) == sha else "old"
+
+    rows: list[dict[str, str]] = []
+    for rel, sha in current.items():
+        rows.append({"item": rel, **{name: mark(((st or {}).get("steps") or {}).get(rel), sha, "sha256") for name, st in states.items()}})
+    for app_id, sha in app_shas.items():
+        rows.append({
+            "item": f"app {app_id}",
+            **{name: mark(((st or {}).get("apps") or {}).get(str(app_id)), sha, "sourceSha256") for name, st in states.items()},
+        })
+
+    drift: dict[str, list[str]] = {}
+    if live and env:
+        env_state = states.get(env) or {}
+        recorded_steps = env_state.get("steps") or {}
+        values = _load_env(repo_root, environ)
+        scratch_root = repo_root / "scratch"
+        scratch_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        by_schema: dict[str, list[BundleStep]] = {}
+        for step in steps:
+            entry = recorded_steps.get(step.rel_file)
+            if step.section == "code" and isinstance(entry, dict) and entry.get("liveSha256"):
+                by_schema.setdefault(step.schema, []).append(step)
+        drifted: list[str] = []
+        for schema, schema_steps in by_schema.items():
+            target = _resolve_schema_target(values, env, schema, operation="migration")
+            items = list(dict.fromkeys((s.object_type, s.object_name) for s in schema_steps))
+            with tempfile.TemporaryDirectory(prefix="release-status-", dir=scratch_root) as tmp_dir:
+                _, fetched = _fetch_schema_objects(
+                    runner,
+                    target,
+                    Path(tmp_dir),
+                    items,
+                    include_ddl=any(t in {"VIEW", "TRIGGER"} for t, _ in items),
+                    environ=values,
+                )
+            for step in schema_steps:
+                obj = fetched.get((step.object_type, step.object_name)) or {}
+                live_now = (
+                    compute_source_sha256(_source_text_for_hash(step.object_type, obj))
+                    if obj.get("exists") is True
+                    else None
+                )
+                if live_now != recorded_steps[step.rel_file].get("liveSha256"):
+                    drifted.append(step.rel_file)
+        drift[env] = drifted
+
+    last_runs = {name: ((st or {}).get("lastRun") or {}).get("at") for name, st in states.items()}
+    if fmt == "json":
+        print(json.dumps({
+            "schemaVersion": SCHEMA_VERSION,
+            "slug": slug,
+            "status": manifest.get("status"),
+            "effectiveStatus": effective,
+            "lastRuns": last_runs,
+            "rows": rows,
+            "drift": drift,
+        }, indent=2))
+        return 0
+    print(f"{slug}   status: {manifest.get('status')} (effective: {effective})")
+    print("last runs: " + ", ".join(f"{name} {last_runs[name] or '-'}" for name in ENVIRONMENTS))
+    width = max([len("STEP")] + [len(r["item"]) for r in rows]) + 2
+    print("STEP".ljust(width) + "DEV".ljust(9) + "STAGING".ljust(9) + "PROD")
+    for row in rows:
+        print(row["item"].ljust(width) + row["dev"].ljust(9) + row["staging"].ljust(9) + row["prod"])
+    print("legend: ok = current version applied, old = an older version applied, - = never applied")
+    for name, files in drift.items():
+        if files:
+            for rel in files:
+                print(f"drift on {name}: {rel} (changed since our apply)")
+        else:
+            print(f"drift on {name}: none")
+    return 0
+
+
 def cmd_new(repo_root: Path, raw_slug: str) -> int:
     slug = _validate_slug(raw_slug)
     bundle_dir = _safe_bundle_dir(repo_root, slug)
@@ -3167,7 +3267,6 @@ def cmd_run(
                 manifest_baseline = json.loads(json.dumps(manifest))
                 steps = pre.steps
                 schemas = pre.schemas
-                apps = pre.apps
                 targets = pre.targets
                 identities = pre.identities
                 fetched_by_schema = pre.fetched_by_schema
@@ -3674,13 +3773,19 @@ def cmd_run(
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="scripts/team.sh release",
-        description="Lean 6-step release bundle workflow (list, new, collect, check, run).",
+        description="Lean 6-step release bundle workflow (list, new, collect, check, run, status).",
     )
     parser.add_argument("--repo-root", type=Path, help=argparse.SUPPRESS)
     sub = parser.add_subparsers(dest="subcommand", required=True, metavar="SUBCOMMAND")
 
     p_list = sub.add_parser("list", help="List open draft and deployed release bundles (offline)")
     p_list.add_argument("--format", choices=("text", "json"), default="text")
+
+    p_status = sub.add_parser("status", help="Show what each environment holds of a bundle (offline; --live reads drift)")
+    p_status.add_argument("bundle", help="Release slug or releases/<slug>")
+    p_status.add_argument("--format", choices=("text", "json"), default="text")
+    p_status.add_argument("--live", action="store_true", help="Read-only check of live source against state (needs --env)")
+    p_status.add_argument("--env", choices=ENVIRONMENTS)
 
     p_new = sub.add_parser("new", help="Create a new draft release bundle")
     p_new.add_argument("slug", help="Lowercase slug matching [a-z0-9][a-z0-9._-]*")
@@ -3738,6 +3843,10 @@ def main(
             return cmd_list(repo_root, args.format)
         if args.subcommand == "new":
             return cmd_new(repo_root, args.slug)
+        if args.subcommand == "status":
+            return cmd_status(
+                repo_root, args.bundle, fmt=args.format, live=args.live, env=args.env, environ=environ, runner=runner
+            )
         if args.subcommand == "collect":
             return cmd_collect(
                 repo_root,

@@ -52,7 +52,7 @@ Each line names one route and links to the single place that owns its procedure.
 | APEX apps as text in Git | `export` copies a live app into APEXlang files you can review, diff and commit. |
 | Two ways to work | **Builder-first** (change it in APEX, export it) or **file-first** (edit the files, publish them). |
 | Safe publish | Refuses to overwrite newer Builder work, stamps who published and when, then re-exports the app and checks it byte for byte against your files. |
-| Lean 6-step release bundles | `release new`, `collect`, `check`, and zero-prompt `run` under `releases/<slug>/` with `baseSha256` patch guards, target object backups, invalid-object delta checks, and prod locking. |
+| Lean 6-step release bundles | `release new`, `collect`, `check`, zero-prompt `run` and `status` under `releases/<slug>/` with `baseSha256` patch guards, target object backups, invalid-object delta checks, per-environment state (`state/<env>.json`, staged status, changed-only staging reruns, production staging gate), and prod locking. |
 | DEV test runner | Read-only planning and explicit schema-owner fixture runs (`datatype-roundtrip`, `compiler-settings`, or project suites) with durable reports; see [DEV test runner](docs/dev-test.md). |
 | Schema comparison | Read-only comparison of selected tables, views and code between DEV, staging and production (`compare-schema`, `compare-env`). |
 | Several schemas per workspace | Comma-separated lists in `.env` and `--schema`; apps and database copies are kept per schema, and bundles carry explicit schema entries. |
