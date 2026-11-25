@@ -10,15 +10,17 @@ releases/<slug>/
 ├── 01-ddl/       # Ordered DDL / data SQL scripts (optional)
 ├── 02-code/      # Packages, views, triggers, procedures, functions, types
 ├── 03-ords/      # ORDS module scripts (optional)
-└── 04-verify/    # Read-only verification / smoke SQL scripts (optional)
+├── 04-verify/    # Read-only verification / smoke SQL scripts (optional)
+└── state/        # Written by `release run`: dev.json, staging.json, prod.json (commit them)
 ```
 
 - `slug`: lowercase identifier matching `^[a-z0-9][a-z0-9._-]*$`.
 - **`release.json` (`schemaVersion: 1`):**
   - `slug`: bundle folder name.
-  - `status`: `"draft"` (mutable) or `"deployed"` (locked after a successful `--env prod` run).
+  - `status`: `"draft"` (mutable), `"staged"` (set by a successful `--env staging` run whose state matches every file and app) or `"deployed"` (locked after a successful `--env prod` run). `release collect` on a staged bundle sets it back to `"draft"`; a hand edit cannot change the JSON, so `list`, `check`, `run` and `status` compute the effective status from fingerprints and show `staged (stale: N changed)`.
+  - `stagedAt`, `stagedTarget`, `stagedCommit`: written by a successful staging run.
   - `createdAt`: ISO-8601 UTC timestamp.
-  - `deployedAt`, `deployedTarget`, `deployedCommit`: written automatically when `release run --env prod` succeeds.
+  - `deployedAt`, `deployedTarget`, `deployedCommit`: written automatically when `release run --env prod` succeeds; `deployedWithoutStagingProof: true` is added when `--no-staging-proof` was used.
   - `schemas`: optional/inferred ordered list of touched schema names.
   - `ddl`: ordered list of `{ "schema": "<SCHEMA>", "file": "01-ddl/001-add-column.sql", "objects"?: [...] }` entries. Optional `objects` lists `{"objectType": "...", "objectName": "..."}` or `"TYPE:NAME"` strings to back up; when omitted, `release` automatically extracts candidate existing object references (`ALTER TABLE`, `DROP ...`, `CREATE [OR REPLACE] ...`, `GRANT ... ON`) from the SQL file.
   - `code`: ordered list of `{ "schema", "file", "objectType", "objectName", "mode", "baseSha256"? }` entries:
@@ -112,6 +114,27 @@ Execution sequence:
 - **Step 4 — Apply & invalid-object delta:** records `ALL_OBJECTS WHERE status <> 'VALID'` for every touched schema before any DDL runs. Every apply, post-apply, and `04-verify/` session begins with an in-session PL/SQL target guard (`DB_UNIQUE_NAME`, `CON_NAME`, `USER`, `CURRENT_SCHEMA`, raising `-20901` on mismatch), each SQL step keeps `WHENEVER SQLERROR EXIT FAILURE ROLLBACK`, every `mode: "new"` step (unless `--allow-existing`) runs an in-session pre-check raising `-20904` if the object appeared before apply, and every `mode: "patch"` step runs an in-session PL/SQL live-source guard immediately before its SQL executes (raising `-20902` if the target object changed between preflight and apply). Executes **all `01-ddl/` across all schemas before any `02-code/`, and all `02-code/` before any `03-ords/`**. Within each phase (`01-ddl/` -> `02-code/` -> `03-ords/`), steps execute in exact `release.json` order (1 session for single-schema bundles; consecutive same-schema batches for multi-schema) and require explicit `RELEASE_STEP_END` / `RELEASE_BATCH_APPLIED` markers. After all apply phases finish, `ALL_ERRORS` (`ERROR` fails, non-`ERROR` warnings are reported) and `ALL_OBJECTS` (asserting every `02-code/` object exists and is `VALID`, with zero new invalids) are checked per schema; runs `04-verify/` smoke scripts if present.
 - **Step 5 — Optional APEX app deploy:** for each numeric app ID in `"apps"` (`staging` and `prod` only), invokes `scripts/deploy.sh <app_id> --env <env> --yes --confirm-target <db_unique_name>` non-interactively (passing `--app-source-dir` to the commit-pinned materialized app tree on `--env prod`).
 - **Step 6 — Report & prod lock:** writes a markdown report to a unique file `scratch/release-reports/<slug>-<env>-<YYYYMMDDTHHMMSSZ>-<pid>-<seq>.md` (or `--report <path>`), including `ordsBackingObjects`, `ordsMetadataCoverage`, `ordsBackupCoverage`, `unbackedOrdsSteps` (if any), compiler warnings, and failure details when an error occurs after preflight starts (`Outcome: FAILED`, error, backup path, completed phases, and timings). When `--env prod` succeeds, re-verifies that on-disk `release.json` still matches the preflight baseline and that tag `release/<slug>` does not exist, creates Git tag `release/<slug>` at the verified `HEAD` release commit, and updates `release.json` to `"status": "deployed"` with `deployedAt`, `deployedTarget`, and `deployedCommit`. The locked `release.json` is written to disk but not committed, and the tag points at the release commit (which still holds the draft manifest): commit `releases/<slug>/release.json` afterwards and push the tag with your branch (`git push origin release/<slug>`). The run prints this reminder.
+
+## Per-environment state (`state/<env>.json`)
+
+Each successful `release run` writes `releases/<slug>/state/<env>.json` for the environment it ran on (`dev.json`, `staging.json`, `prod.json`). A failed run writes nothing. The runner never commits; it prints the files to commit, and production refuses uncommitted bundle files, so a staging record cannot be skipped by accident. The repository belongs to one developer, so these files describe that developer's runs.
+
+```json
+{ "schemaVersion": 1, "slug": "2026-11-24-order-fixes", "env": "staging",
+  "lastRun": { "at": "…", "commit": "a46b8c97…", "mode": "delta", "applied": 1, "skipped": 130, "drifted": [],
+               "identities": { "APP_CODE": { "dbUniqueName": "STAGE_DB_U1", "conName": "STAGEPDB", "user": "APP_LOGIN",
+                                             "invalidBefore": 30, "invalidAfter": 30, "newInvalid": 0 } },
+               "timings": { "preflight": 46.6, "backup": 212.0, "apply": 942.5, "verify": 26.9, "apps": 195.8 },
+               "appsDeployed": [130], "report": "scratch/release-reports/….md" },
+  "steps": { "02-code/orders_pkg_package_body.sql": { "sha256": "b41d…", "liveSha256": "c903…", "at": "…", "commit": "a46b8c97…" } },
+  "apps": { "130": { "sourceSha256": "e01f…", "at": "…" } } }
+```
+
+- **Fingerprints:** `sha256` of each bundle file with line endings normalised to LF, keyed by its path (a renamed file is a new step). Apps: sha256 over the sorted paths and bytes of `apps/*/<app_id>/`. `04-verify/` is never recorded and always runs.
+- **Delta (DEV, staging):** a step runs only when its fingerprint differs from the one recorded for that environment. `--full` runs every step (use it after restoring staging from production). On staging an app is imported only when its source changed. Production always runs every step and imports every app.
+- **Drift:** after each run the live source of every applied code object is recorded as `liveSha256`. When a later run would skip that object but its live source changed (someone edited it on that target), it is applied again and listed under `drifted`. A `patch` step re-applied on staging accepts live source equal to `baseSha256` or to its recorded `liveSha256`; production keeps the strict `baseSha256` guard.
+- **Production gate:** `release run --env prod` refuses unless the bundle is `staged` and every file and app fingerprint equals `state/staging.json`, naming what differs. `--no-staging-proof` overrides this (for projects without staging); the report and `release.json` record it.
+- **`release status <bundle>`:** offline table, one row per step and app, columns DEV / STAGING / PROD (`ok` current version applied, `old` an older version, `-` never). `--live --env <env>` adds a read-only drift check; `--format json` for agents.
 
 ## Upgrading existing downstream projects
 
