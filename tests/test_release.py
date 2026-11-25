@@ -208,6 +208,17 @@ if "RELEASE_BEFORE_INVALID_BEGIN" in driver and "RELEASE_POST_APPLY_BEGIN" in dr
         print("ORA-00955: name is already used by an existing object")
         sys.exit(1)
     steps = re.findall(r"PROMPT RELEASE_STEP_START:([^\n]+)", driver)
+    fail_at = env_state.get("failAtStep")
+    if fail_at in steps:
+        done = steps[:steps.index(fail_at)]
+        state.setdefault("appliedSteps", []).extend(done)
+        Path(state_path).write_text(json.dumps(state), encoding="utf-8")
+        for s in done:
+            print(f"RELEASE_STEP_START:{s}")
+            print(f"RELEASE_STEP_END:{s}")
+        print(f"RELEASE_STEP_START:{fail_at}")
+        print("ORA-00904: \"NOTE_TXT\": invalid identifier")
+        sys.exit(1)
     state.setdefault("appliedSteps", []).extend(steps)
     _record_applied_objects()
     Path(state_path).write_text(json.dumps(state), encoding="utf-8")
@@ -276,6 +287,9 @@ if "RELEASE_VERIFY_OK" in driver:
     if env_state.get("failVerify"):
         print("ORA-20001: smoke check failed")
         sys.exit(1)
+    for s in re.findall(r"PROMPT RELEASE_VERIFY_START:([^\n]+)", driver):
+        print(f"RELEASE_VERIFY_START:{s}")
+        print(f"RELEASE_VERIFY_END:{s}")
     print("RELEASE_VERIFY_OK")
     sys.exit(0)
 
@@ -2752,6 +2766,103 @@ class ReleaseBundleTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual((bundle / "state" / "staging.json").read_bytes(), before_state)
         self.assertEqual((bundle / "release.json").read_bytes(), before_manifest)
+
+    # ---- ASHARIF 2026-11-25: failed-run record (state/<env>.partial.json) and --resume ----
+
+    def _make_two_ddl_bundle(self, slug: str) -> Path:
+        bundle = self._make_state_bundle(slug)
+        (bundle / "01-ddl" / "002-add-note.sql").write_text(
+            "ALTER TABLE ORDERS ADD (NOTE_TXT VARCHAR2(50));\n", encoding="utf-8", newline="\n")
+        manifest = json.loads((bundle / "release.json").read_text(encoding="utf-8"))
+        manifest["ddl"].append({"schema": "APP_CODE", "file": "01-ddl/002-add-note.sql"})
+        (bundle / "release.json").write_text(json.dumps(manifest), encoding="utf-8", newline="\n")
+        return bundle
+
+    def _fail_at(self, step: str | None) -> None:
+        state = self._read_state()
+        if step is None:
+            state["envs"]["staging"].pop("failAtStep", None)
+        else:
+            state["envs"]["staging"]["failAtStep"] = step
+        state["calls"] = []
+        state["appliedSteps"] = []
+        self._write_state(state)
+
+    def test_ddl_steps_commit_before_their_end_marker(self) -> None:
+        self._make_two_ddl_bundle("commit-rel")
+        self.assertEqual(self._stage("commit-rel")[0], 0)
+        apply_driver = next(c["driver"] for c in self._read_state()["calls"] if c["driverName"] == "release-apply.sql")
+        self.assertIn("ALTER TABLE ORDERS ADD (NOTES VARCHAR2(50));\nCOMMIT;\nPROMPT RELEASE_STEP_END:01-ddl/001-add-col.sql", apply_driver)
+        self.assertNotIn("COMMIT;\nPROMPT RELEASE_STEP_END:02-code/", apply_driver)
+
+    def test_failed_run_records_finished_ddl_and_resume_skips_them(self) -> None:
+        bundle = self._make_two_ddl_bundle("resume-rel")
+        self._fail_at("01-ddl/002-add-note.sql")
+        code, out, err = self._stage("resume-rel")
+        self.assertEqual(code, 1)
+        # Verbose run output: a before and an after line for each file
+        self.assertIn("[Step 4/6] Apply", out)
+        self.assertIn("[1/3] start    01-ddl/001-add-col.sql  [APP_CODE, DDL]", out)
+        self.assertIn("[1/3] done     01-ddl/001-add-col.sql", out)
+        self.assertIn("[2/3] FAILED   01-ddl/002-add-note.sql", out)
+        self.assertIn("[3/3] not run  02-code/orders_pkg_package_body.sql", out)
+        self.assertIn("rerun with --resume", err)
+        # state/staging.json still describes successful runs only
+        self.assertFalse((bundle / "state" / "staging.json").exists())
+        partial = json.loads((bundle / "state" / "staging.partial.json").read_text(encoding="utf-8"))
+        self.assertEqual(partial["kind"], "partial")
+        self.assertEqual(list(partial["steps"]), ["01-ddl/001-add-col.sql"])
+        self.assertIn("ORA-00904", partial["error"])
+        self.assertNotIn(str(self.root), partial["error"])  # no local paths in a file that may be committed
+        report = Path(re.search(r"Report:\s*(.+\.md)", err).group(1).strip()).read_text(encoding="utf-8")
+        self.assertIn("staging.partial.json` (written (1 finished 01-ddl step(s)))", report)
+
+        # Without --resume, check explains the record and plans every step
+        code, out, _ = self._run_cli(["check", "resume-rel", "--env", "staging"])
+        self.assertEqual(code, 0)
+        self.assertIn("NOTE: a failed run left releases/resume-rel/state/staging.partial.json", out)
+        self.assertIn("apply: 01-ddl/001-add-col.sql", out)
+        code, out, _ = self._run_cli(["check", "resume-rel", "--env", "staging", "--resume"])
+        self.assertIn("resume: 01-ddl/001-add-col.sql (finished by the failed run; skipped by --resume)", out)
+
+        # Fixed: --resume starts at the failed file, then the run records every step and drops the partial record
+        self._fail_at(None)
+        code, out, err = self._stage("resume-rel", "--resume")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self._read_state()["appliedSteps"],
+                         ["01-ddl/002-add-note.sql", "02-code/orders_pkg_package_body.sql"])
+        self.assertFalse((bundle / "state" / "staging.partial.json").exists())
+        st = json.loads((bundle / "state" / "staging.json").read_text(encoding="utf-8"))
+        self.assertEqual(set(st["steps"]), {"01-ddl/001-add-col.sql", "01-ddl/002-add-note.sql",
+                                            "02-code/orders_pkg_package_body.sql"})
+        self.assertEqual(st["lastRun"]["resumed"], ["01-ddl/001-add-col.sql"])
+        self.assertEqual(json.loads((bundle / "release.json").read_text(encoding="utf-8"))["status"], "staged")
+        self.assertIn("Removed releases/resume-rel/state/staging.partial.json", out)
+        self.assertIn("[1/1] done     04-verify/001-smoke.sql", out)
+
+    def test_resume_reapplies_a_finished_ddl_file_edited_since(self) -> None:
+        bundle = self._make_two_ddl_bundle("resume-edit-rel")
+        self._fail_at("01-ddl/002-add-note.sql")
+        self.assertEqual(self._stage("resume-edit-rel")[0], 1)
+        (bundle / "01-ddl" / "001-add-col.sql").write_text(
+            "ALTER TABLE ORDERS ADD (NOTES VARCHAR2(80));\n", encoding="utf-8", newline="\n")
+        self._fail_at(None)
+        code, out, _ = self._run_cli(["check", "resume-edit-rel", "--env", "staging", "--resume"])
+        self.assertIn("apply: 01-ddl/001-add-col.sql (finished by the failed run, but edited since; runs again)", out)
+        code, _, err = self._stage("resume-edit-rel", "--resume")
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self._read_state()["appliedSteps"][0], "01-ddl/001-add-col.sql")
+
+    def test_resume_refusals(self) -> None:
+        self._make_two_ddl_bundle("resume-refuse-rel")
+        code, _, err = self._stage("resume-refuse-rel", "--resume")
+        self.assertEqual(code, 1)
+        self.assertIn("no failed-run record releases/resume-refuse-rel/state/staging.partial.json", err)
+        self._fail_at("01-ddl/002-add-note.sql")
+        self.assertEqual(self._stage("resume-refuse-rel")[0], 1)
+        code, _, err = self._stage("resume-refuse-rel", "--resume", "--full")
+        self.assertEqual(code, 1)
+        self.assertIn("--resume and --full cannot be combined", err)
 
     def test_drifted_skipped_object_is_reapplied(self) -> None:
         bundle = self._make_state_bundle("drift-rel")

@@ -44,12 +44,17 @@ from .path_utils import PathReparseError, relative_to_root
 from .release_state import (
     StateError,
     app_source_sha256,
+    build_partial,
+    clear_partial,
     effective_status,
+    load_partial,
     load_state,
     merge_state,
+    resumable_steps,
     select_steps,
     staging_mismatches,
     text_sha256,
+    write_partial,
     write_state,
 )
 from .sqlcl_session import SqlclError, SqlclTimeout, bash_command, driver_epilogue, run_sqlcl
@@ -156,6 +161,10 @@ class PreflightResult:
     apps_to_deploy: list[int] = field(default_factory=list)
     env_state: dict[str, Any] | None = None
     staging_proof: str = "not-applicable"
+    # ASHARIF 2026-11-25: --resume skips 01-ddl steps a failed run already finished (state/<env>.partial.json).
+    resumed: list[str] = field(default_factory=list)
+    resume_changed: list[str] = field(default_factory=list)
+    partial: dict[str, Any] | None = None
 
 
 def _utc_now() -> str:
@@ -1610,6 +1619,15 @@ def _load_env_state(bundle_dir: Path, slug: str, env: str) -> dict[str, Any] | N
         raise ReleaseError(str(exc)) from exc
 
 
+def _load_env_partial(bundle_dir: Path, slug: str, env: str) -> dict[str, Any] | None:
+    if env not in ("dev", "staging"):
+        return None
+    try:
+        return load_partial(bundle_dir, slug, env)
+    except StateError as exc:
+        raise ReleaseError(str(exc)) from exc
+
+
 def _bundle_fingerprints(
     repo_root: Path,
     steps: Sequence[BundleStep],
@@ -2074,6 +2092,7 @@ def _preflight_bundle(
     env_file_path: Path | None = None,
     full: bool = False,
     enforce_staging_proof: bool = False,
+    resume: bool = False,
 ) -> PreflightResult:
     bundle_dir = _safe_bundle_dir(repo_root, slug)
     if not bundle_dir.is_dir():
@@ -2119,6 +2138,25 @@ def _preflight_bundle(
         repo_root, all_steps, apps, step_texts=pinned_step_texts, app_dirs=materialized_app_dirs
     )
     to_apply, skipped = select_steps(current_shas, env_state, full=full or env == "prod")
+    # ASHARIF 2026-11-25: --resume skips the 01-ddl steps a failed run finished, while their text is unchanged.
+    partial = _load_env_partial(bundle_dir, slug, env)
+    resumed: list[str] = []
+    resume_changed: list[str] = []
+    if resume:
+        if env == "prod":
+            raise ReleaseError("--resume is not allowed with --env prod: production always runs the whole bundle")
+        if full:
+            raise ReleaseError("--resume and --full cannot be combined")
+        if partial is None:
+            raise ReleaseError(
+                f"--resume: no failed-run record releases/{slug}/state/{env}.partial.json "
+                "(only a failed DEV or staging run writes one)"
+            )
+        finished, resume_changed = resumable_steps(
+            partial, current_shas, [s.rel_file for s in all_steps if s.section == "ddl"]
+        )
+        resumed = [rel for rel in finished if rel in to_apply]
+        to_apply = [rel for rel in to_apply if rel not in set(resumed)]
     recorded_steps = (env_state or {}).get("steps") or {}
     drift_candidates = {
         s.rel_file: s
@@ -2386,6 +2424,9 @@ def _preflight_bundle(
         apps_to_deploy=apps_to_deploy,
         env_state=env_state,
         staging_proof=staging_proof,
+        resumed=resumed,
+        resume_changed=resume_changed,
+        partial=partial,
     )
 
 
@@ -2399,6 +2440,7 @@ def cmd_check(
     environ: Mapping[str, str] | None,
     runner: Callable,
     full: bool = False,
+    resume: bool = False,
 ) -> int:
     slug = _parse_bundle_slug(bundle_arg)
     values = _load_env(repo_root, environ)
@@ -2417,6 +2459,7 @@ def cmd_check(
             work_dir=Path(tmp_dir),
             env_file_path=env_file_path,
             full=full,
+            resume=resume,
         )
     steps = pre.steps
     schemas = pre.schemas
@@ -2456,6 +2499,8 @@ def cmd_check(
         "apply": pre.to_apply,
         "skipped": pre.skipped,
         "drifted": pre.drifted,
+        "resumed": pre.resumed,
+        "resumeChanged": pre.resume_changed,
         "appsToDeploy": pre.apps_to_deploy,
         "stagingProof": pre.staging_proof,
         "failures": failures,
@@ -2481,15 +2526,8 @@ def cmd_check(
                 note = "" if app_id in pre.apps_to_deploy else " (unchanged since last run, skipped)"
             print(f"    - APEX app deploy: {app_id}{note}")
         # ASHARIF 2026-11-25: what this environment already holds (state/<env>.json)
-        print(f"  State for {env}: apply {len(pre.to_apply)}, skip {len(pre.skipped)}, drift {len(pre.drifted)}")
-        drifted_set = set(pre.drifted)
-        for rel in pre.to_apply:
-            if rel in drifted_set:
-                print(f"    drift: {rel} (changed on {env} since our apply)")
-            else:
-                print(f"    apply: {rel}")
-        for rel in pre.skipped:
-            print(f"    skip:  {rel}")
+        for line in _plan_lines(pre, slug, env, resume=resume):
+            print(line)
         if env == "prod":
             print(f"  Staging proof: {pre.staging_proof}")
         if pre.unbacked_ords_steps:
@@ -2506,6 +2544,35 @@ def cmd_check(
         else:
             print("  Preflight checks passed.")
     return 1 if failures else 0
+
+
+def _plan_lines(pre: PreflightResult, slug: str, env: str, *, resume: bool) -> list[str]:
+    """ASHARIF 2026-11-25: what this run applies and skips, and why, for check and run output."""
+    resumed_set = set(pre.resumed)
+    plain_skipped = [rel for rel in pre.skipped if rel not in resumed_set]
+    lines = [
+        f"  State for {env}: apply {len(pre.to_apply)}, skip {len(plain_skipped)}, "
+        f"resume-skip {len(pre.resumed)}, drift {len(pre.drifted)}"
+    ]
+    drifted_set = set(pre.drifted)
+    for rel in pre.to_apply:
+        if rel in drifted_set:
+            lines.append(f"    drift: {rel} (changed on {env} since our apply)")
+        elif rel in set(pre.resume_changed):
+            lines.append(f"    apply: {rel} (finished by the failed run, but edited since; runs again)")
+        else:
+            lines.append(f"    apply: {rel}")
+    for rel in pre.resumed:
+        lines.append(f"    resume: {rel} (finished by the failed run; skipped by --resume)")
+    for rel in plain_skipped:
+        lines.append(f"    skip:  {rel} (already applied on {env}, unchanged)")
+    if pre.partial is not None and not resume:
+        done = len(pre.partial.get("steps") or {})
+        lines.append(
+            f"  NOTE: a failed run left releases/{slug}/state/{env}.partial.json ({done} finished 01-ddl step(s), "
+            f"at {pre.partial.get('at')}). Add --resume to skip them; without it every step runs again."
+        )
+    return lines
 
 
 def _apply_session_prelude(target: Target) -> list[str]:
@@ -2766,8 +2833,12 @@ def _sql_step_lines(
             "WHENEVER SQLERROR EXIT FAILURE ROLLBACK",
             f"PROMPT RELEASE_STEP_START:{step.rel_file}",
             text.rstrip("\n"),
-            f"PROMPT RELEASE_STEP_END:{step.rel_file}",
         ])
+        if step.section == "ddl":
+            # ASHARIF 2026-11-25: a finished 01-ddl step is saved before its END marker, so a later
+            # failure cannot roll it back and the partial record (--resume) tells the truth.
+            lines.append("COMMIT;")
+        lines.append(f"PROMPT RELEASE_STEP_END:{step.rel_file}")
     return lines
 
 
@@ -3106,6 +3177,99 @@ def _capture_live_hashes(
     return hashes
 
 
+def _say(message: str = "") -> None:
+    """ASHARIF 2026-11-25: progress line for `release run`; flushed so it shows while SQLcl works."""
+    print(message, flush=True)
+
+
+def _step_desc(step: BundleStep) -> str:
+    if step.section == "code":
+        return f"  [{step.schema}, {step.mode} {step.object_type} {step.object_name}]"
+    return f"  [{step.schema}, {step.section.upper()}]"
+
+
+def _marker_sets(output: str, start_prefix: str, end_prefix: str) -> tuple[set[str], set[str]]:
+    started: set[str] = set()
+    ended: set[str] = set()
+    for raw in output.splitlines():
+        line = raw.strip()
+        if line.startswith(start_prefix):
+            started.add(line[len(start_prefix):])
+        elif line.startswith(end_prefix):
+            ended.add(line[len(end_prefix):])
+    return started, ended
+
+
+def _failed_session_output(exc: BaseException) -> str:
+    """SQLcl output of a failed driver: from the SqlclError, else its log file."""
+    cause = exc.__cause__
+    output = getattr(cause, "output", None)
+    if isinstance(output, str) and output:
+        return output
+    run_dir = getattr(cause, "run_dir", None)
+    if isinstance(run_dir, Path):
+        log = run_dir / "sqlcl-output.log"
+        if log.is_file():
+            return log.read_text(encoding="utf-8", errors="replace")
+    return ""
+
+
+def _short_error(message: str) -> str:
+    """The Oracle error lines of a failure, without local paths (the partial record may be committed)."""
+    lines = [ln.strip() for ln in message.splitlines() if re.search(r"\b(?:ORA|PLS|SP2)-\d+", ln)]
+    if lines:
+        return "\n".join(lines[:6])
+    first = message.strip().splitlines()[0] if message.strip() else ""
+    return re.sub(r"(?:[A-Za-z]:)?[\\/][^\s;()]+", "<path>", first)
+
+
+def _run_marked_session(
+    runner: Callable,
+    target: Target,
+    run_dir: Path,
+    driver_name: str,
+    driver_sql: str,
+    *,
+    phase: str,
+    environ: Mapping[str, str] | None,
+    session_steps: Sequence[BundleStep],
+    positions: Mapping[str, int],
+    total: int,
+    finished: set[str],
+    start_prefix: str = "RELEASE_STEP_START:",
+    end_prefix: str = "RELEASE_STEP_END:",
+) -> str:
+    """ASHARIF 2026-11-25: run one SQLcl session and print a before and an after line for each file in it.
+
+    SQLcl runs the whole session before the runner sees its output, so the "start" lines list what the
+    session is about to run and the result lines follow when it ends (done / FAILED / not run).
+    """
+    _say(f"    SQLcl session as {target.schema}: {len(session_steps)} file(s)")
+    for step in session_steps:
+        _say(f"      [{positions[step.rel_file]}/{total}] start    {step.rel_file}{_step_desc(step)}")
+    started_at = time.monotonic()
+    failure: ReleaseError | None = None
+    try:
+        output = _run_driver(runner, target, run_dir, driver_name, driver_sql, phase=phase, environ=environ)
+    except ReleaseError as exc:
+        failure = exc
+        output = _failed_session_output(exc)
+    started, ended = _marker_sets(output, start_prefix, end_prefix)
+    finished.update(ended & {s.rel_file for s in session_steps})
+    for step in session_steps:
+        if step.rel_file in ended:
+            status = "done    "
+        elif step.rel_file in started:
+            status = "FAILED  "
+        else:
+            status = "not run " if failure is not None else "no end marker"
+        _say(f"      [{positions[step.rel_file]}/{total}] {status} {step.rel_file}")
+    _say(f"    Session {'failed' if failure is not None else 'finished'} after {time.monotonic() - started_at:.1f}s")
+    if failure is not None:
+        raise failure
+    return output
+
+
 def _record_run_state(
     repo_root: Path,
     slug: str,
@@ -3136,7 +3300,8 @@ def _record_run_state(
         "commit": release_commit,
         "mode": mode,
         "applied": len(pre.to_apply),
-        "skipped": len(pre.skipped),
+        "skipped": len(pre.skipped) - len(pre.resumed),
+        "resumed": list(pre.resumed),
         "drifted": list(pre.drifted),
         "identities": {
             schema: {
@@ -3160,7 +3325,7 @@ def _record_run_state(
         slug=slug,
         env=env,
         current=pre.current_shas,
-        applied=pre.to_apply,
+        applied=[*pre.to_apply, *pre.resumed],
         live_hashes=live_hashes,
         app_shas_deployed={app_id: pre.app_shas[app_id] for app_id in deployed_apps if app_id in pre.app_shas},
         run=run_info,
@@ -3193,6 +3358,7 @@ def cmd_run(
     app_deployer: Callable[..., None] = _invoke_app_deploy,
     full: bool = False,
     no_staging_proof: bool = False,
+    resume: bool = False,
 ) -> int:
     if not isinstance(confirm_target, str) or not confirm_target.strip():
         raise ReleaseUsageError("--confirm-target <db_unique_name> is required and must be non-empty")
@@ -3237,6 +3403,13 @@ def cmd_run(
     state_rel = f"releases/{slug}/state/{env}.json"
     state_written = False
     dev_skipped_apps: list[int] = []
+    # ASHARIF 2026-11-25: failed-run record (state/<env>.partial.json) for --resume
+    pre_ref: PreflightResult | None = None
+    apply_started = False
+    finished_steps: set[str] = set()
+    partial_rel = f"releases/{slug}/state/{env}.partial.json"
+    partial_status = "not-applicable" if env == "prod" else "none"
+    resumed_files: list[str] = []
 
     try:
         with _acquire_release_lock(scratch_root / f".release-{slug}.lock", slug):
@@ -3248,6 +3421,8 @@ def cmd_run(
 
                 # Step 1-2: Preflight + target confirmation
                 preflight_started = True
+                _say(f"Release {slug} -> {env} (confirm target {confirm_target.strip()}, commit {release_commit[:12]})")
+                _say("[Step 1-2/6] Preflight: read bundle files, check target identity and object state (read-only)")
                 t0 = time.monotonic()
                 try:
                     pre = _preflight_bundle(
@@ -3264,9 +3439,19 @@ def cmd_run(
                         env_file_path=env_file_path,
                         full=full,
                         enforce_staging_proof=not no_staging_proof,
+                        resume=resume,
                     )
                 finally:
                     timings["preflight"] = round(time.monotonic() - t0, 3)
+                pre_ref = pre
+                resumed_files = list(pre.resumed)
+                for schema_name, ident in pre.identities.items():
+                    _say(
+                        f"  Target {schema_name}: DB_UNIQUE_NAME={ident.get('db_unique_name')} "
+                        f"CON_NAME={ident.get('con_name')} USER={ident.get('session_user')}"
+                    )
+                for line in _plan_lines(pre, slug, env, resume=resume):
+                    _say(line)
                 manifest = pre.manifest
                 manifest_baseline = json.loads(json.dumps(manifest))
                 steps = pre.steps
@@ -3294,6 +3479,7 @@ def cmd_run(
                 if failures:
                     raise ReleaseError("Preflight refused:\n  - " + "\n  - ".join(failures))
                 completed_phases.append("preflight")
+                _say(f"  Preflight passed in {timings['preflight']:.1f}s")
 
                 patch_sources_by_schema: dict[str, dict[tuple[str, str], str]] = {schema: {} for schema in schemas}
                 for step in steps:
@@ -3304,6 +3490,7 @@ def cmd_run(
                         )
 
                 # Step 3: Backup existing target objects
+                _say("[Step 3/6] Backup: save the current definition of every object this run touches")
                 t1 = time.monotonic()
                 try:
                     if unbacked_ords_steps and not allow_unbacked_ords:
@@ -3398,10 +3585,13 @@ def cmd_run(
                                 },
                             )
                     completed_phases.append("backup")
+                    _say(f"  Backup: {backup_label}")
                 finally:
                     timings["backup"] = round(time.monotonic() - t1, 3)
 
                 # Step 4: Execute all 01-ddl -> all 02-code -> all 03-ords (consecutive schema batches) + invalid delta
+                _say("[Step 4/6] Apply: 01-ddl, then 02-code, then 03-ords (each 01-ddl file is committed when it finishes)")
+                apply_started = True
                 t2 = time.monotonic()
                 try:
                     apply_schemas = [
@@ -3479,7 +3669,8 @@ def cmd_run(
                             patch_sources=patch_sources_by_schema[schema],
                             step_texts=pinned_step_texts,
                         )
-                        output = _run_driver(
+                        positions = {s.rel_file: i for i, s in enumerate(schema_apply_steps, 1)}
+                        output = _run_marked_session(
                             runner,
                             targets[schema],
                             tmp_path / f"apply-{schema}",
@@ -3487,6 +3678,10 @@ def cmd_run(
                             driver_sql,
                             phase="apply",
                             environ=values,
+                            session_steps=schema_apply_steps,
+                            positions=positions,
+                            total=len(schema_apply_steps),
+                            finished=finished_steps,
                         )
                         before_payload = _extract_framed_json(output, "BEFORE_INVALID")
                         before_identity = _verify_live_identity(before_payload.get("identity") or {}, targets[schema])
@@ -3504,7 +3699,9 @@ def cmd_run(
                             if marker not in output_lines:
                                 raise ReleaseError(f"Apply missing step completion marker {marker} for {schema}")
                         post_payload = _extract_framed_json(output, "POST_APPLY")
+                        _say(f"  Checking {schema}: compile errors and new invalid objects")
                         _check_post_apply(schema, post_payload, schema_code_steps)
+                        _say(f"  {schema}: no compile errors, no new invalid objects")
                     elif len(apply_schemas) > 1:
                         # 4a. Capture before invalid-object baselines for all touched schemas before any DDL runs.
                         for schema in apply_schemas:
@@ -3535,6 +3732,8 @@ def cmd_run(
 
                         # 4b. Execute strictly by phase (ddl -> code -> ords), grouping consecutive same-schema steps.
                         batch_num = 0
+                        run_order = [s for sec in ("ddl", "code", "ords") for s in steps if s.section == sec]
+                        positions = {s.rel_file: i for i, s in enumerate(run_order, 1)}
                         for section in ("ddl", "code", "ords"):
                             phase_steps = [s for s in steps if s.section == section]
                             for batch_schema, batch_iter in groupby(phase_steps, key=lambda s: s.schema):
@@ -3549,7 +3748,7 @@ def cmd_run(
                                     patch_sources=patch_sources_by_schema[batch_schema],
                                     step_texts=pinned_step_texts,
                                 )
-                                batch_output = _run_driver(
+                                batch_output = _run_marked_session(
                                     runner,
                                     targets[batch_schema],
                                     tmp_path / f"apply-{batch_num:02d}-{section}-{batch_schema}",
@@ -3557,6 +3756,10 @@ def cmd_run(
                                     driver_sql,
                                     phase="apply",
                                     environ=values,
+                                    session_steps=batch_steps,
+                                    positions=positions,
+                                    total=len(run_order),
+                                    finished=finished_steps,
                                 )
                                 batch_lines = set(batch_output.splitlines())
                                 if "RELEASE_BATCH_APPLIED" not in batch_lines:
@@ -3589,12 +3792,21 @@ def cmd_run(
                                 environ=values,
                             )
                             post_payload = _extract_framed_json(output, "POST_APPLY")
+                            _say(f"  Checking {schema}: compile errors and new invalid objects")
                             _check_post_apply(schema, post_payload, schema_code_steps)
+                            _say(f"  {schema}: no compile errors, no new invalid objects")
                     completed_phases.append("apply")
                 finally:
                     timings["apply"] = round(time.monotonic() - t2, 3)
 
                 # Step 4b: 04-verify smoke scripts (read-only)
+                verify_all = [s for s in steps if s.section == "verify"]
+                if verify_all:
+                    _say(f"[Step 4b/6] Verify: {len(verify_all)} 04-verify script(s) (read-only)")
+                else:
+                    _say("[Step 4b/6] Verify: no 04-verify scripts in this bundle")
+                verify_positions = {s.rel_file: i for i, s in enumerate(verify_all, 1)}
+                verify_done: set[str] = set()
                 t3 = time.monotonic()
                 try:
                     for schema in schemas:
@@ -3608,7 +3820,7 @@ def cmd_run(
                             preflight_con_name=identities[schema].get("con_name"),
                             step_texts=pinned_step_texts,
                         )
-                        output = _run_driver(
+                        output = _run_marked_session(
                             runner,
                             targets[schema],
                             tmp_path / f"verify-{schema}",
@@ -3616,6 +3828,12 @@ def cmd_run(
                             driver_sql,
                             phase="postconditions",
                             environ=values,
+                            session_steps=verify_steps,
+                            positions=verify_positions,
+                            total=len(verify_all),
+                            finished=verify_done,
+                            start_prefix="RELEASE_VERIFY_START:",
+                            end_prefix="RELEASE_VERIFY_END:",
                         )
                         if "RELEASE_VERIFY_OK" not in output.splitlines():
                             raise ReleaseError(f"04-verify smoke scripts did not complete cleanly for {schema}")
@@ -3624,12 +3842,17 @@ def cmd_run(
                     timings["verify"] = round(time.monotonic() - t3, 3)
 
                 # Step 5: Optional APEX app deploy
+                if pre.apps:
+                    _say(f"[Step 5/6] APEX apps: {len(pre.apps_to_deploy)} to deploy, {len(pre.apps) - len(pre.apps_to_deploy)} skipped")
+                else:
+                    _say("[Step 5/6] APEX apps: none in this bundle")
                 t4 = time.monotonic()
                 try:
                     if env == "dev":
                         for app_id in pre.apps:
                             print(f"APEX app {app_id} skipped on DEV (use 'scripts/team.sh publish {app_id} --env dev')")
                     for app_id in pre.apps_to_deploy:
+                        _say(f"  start    APEX app {app_id} -> {env}")
                         _call_app_deployer(
                             app_deployer,
                             repo_root,
@@ -3640,6 +3863,7 @@ def cmd_run(
                             materialized_app_dirs.get(app_id),
                         )
                         deployed_apps.append(app_id)
+                        _say(f"  done     APEX app {app_id}")
                     completed_phases.append("apps")
                 finally:
                     timings["apps"] = round(time.monotonic() - t4, 3)
@@ -3650,6 +3874,7 @@ def cmd_run(
             )
 
             # Step 6: Report & Prod lock
+            _say("[Step 6/6] Record: state file, report" + (", production lock and Git tag" if env == "prod" else ""))
             if env == "prod":
                 bundle_dir = _safe_bundle_dir(repo_root, slug)
                 current_disk_manifest = _read_json_object(bundle_dir / "release.json", f"releases/{slug}/release.json")
@@ -3689,10 +3914,33 @@ def cmd_run(
             state_written = True
             if env == "staging":
                 manifest["status"] = "staged"
+            if clear_partial(_safe_bundle_dir(repo_root, slug), env) if env != "prod" else False:
+                partial_status = "cleared"
+                _say(f"  Removed {partial_rel}: the release is now fully applied on {env}")
 
             outcome = "SUCCEEDED"
     except Exception as exc:
         error_message = str(exc)
+        # ASHARIF 2026-11-25: keep the 01-ddl steps that finished, so `--resume` can skip them next time.
+        if apply_started and pre_ref is not None and env in ("dev", "staging"):
+            ddl_files = {s.rel_file for s in pre_ref.steps if s.section == "ddl"}
+            finished_ddl = [rel for rel in pre_ref.current_shas if rel in finished_steps and rel in ddl_files]
+            partial = build_partial(
+                slug=slug,
+                env=env,
+                current=pre_ref.current_shas,
+                finished=[*resumed_files, *finished_ddl],
+                previous=pre_ref.partial,
+                at=_utc_now(),
+                commit=release_commit,
+                error=_short_error(error_message),
+            )
+            if partial["steps"]:
+                try:
+                    write_partial(_safe_bundle_dir(repo_root, slug), env, partial)
+                    partial_status = f"written ({len(partial['steps'])} finished 01-ddl step(s))"
+                except OSError as write_exc:
+                    partial_status = f"not written ({write_exc})"
         raise
     finally:
         if preflight_started:
@@ -3705,6 +3953,8 @@ def cmd_run(
                 # ASHARIF 2026-11-25: per-environment state summary
                 f"- **Mode:** {run_mode} (applied {applied_count}, skipped {skipped_count})",
                 f"- **State file:** `{state_rel}` ({'written' if state_written else 'not written'})",
+                f"- **Failed-run record:** `{partial_rel}` ({partial_status})",
+                *([f"- **Skipped by --resume:** {', '.join(f'`{r}`' for r in resumed_files)}"] if resumed_files else []),
             ]
             if env == "prod":
                 report_lines.append(f"- **Staging proof:** {staging_proof}")
@@ -3774,8 +4024,16 @@ def cmd_run(
                     )
                 else:
                     print(f"Next: commit releases/{slug}/state/{env}.json")
+                if partial_status == "cleared":
+                    print(f"Also commit the removal of {partial_rel} (if it was committed).")
             else:
                 print(f"Release {slug} -> {env} failed. Report: {report_path}", file=sys.stderr)
+                if partial_status.startswith("written"):
+                    print(
+                        f"Finished 01-ddl steps are recorded in {partial_rel}. Fix the failing file, then rerun "
+                        f"with --resume to skip them (without --resume every step runs again).",
+                        file=sys.stderr,
+                    )
 
     return 0
 
@@ -3815,6 +4073,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_check.add_argument("--format", choices=("text", "json"), default="text")
     p_check.add_argument("--allow-existing", action="store_true")
     p_check.add_argument("--full", action="store_true", help="Plan every step, ignoring state/<env>.json")
+    p_check.add_argument(
+        "--resume", action="store_true", help="Plan as `run --resume` would: skip 01-ddl steps a failed run finished"
+    )
 
     p_run = sub.add_parser("run", help="Execute a release bundle (zero prompts; requires --confirm-target)")
     p_run.add_argument("bundle", help="Release slug or releases/<slug>")
@@ -3829,6 +4090,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_run.add_argument("--report", dest="report_arg", help="Optional custom report path")
     p_run.add_argument("--full", action="store_true", help="Apply every step, ignoring state/<env>.json (DEV/staging)")
+    p_run.add_argument(
+        "--resume",
+        action="store_true",
+        help="DEV/staging: skip the 01-ddl steps a failed run finished (state/<env>.partial.json), while unchanged",
+    )
     p_run.add_argument(
         "--no-staging-proof",
         action="store_true",
@@ -3880,6 +4146,7 @@ def main(
                 environ=environ,
                 runner=runner,
                 full=args.full,
+                resume=args.resume,
             )
         if args.subcommand == "run":
             return cmd_run(
@@ -3896,6 +4163,7 @@ def main(
                 app_deployer=app_deployer,
                 full=args.full,
                 no_staging_proof=args.no_staging_proof,
+                resume=args.resume,
             )
         raise ReleaseUsageError(f"unknown subcommand: {args.subcommand}")
     except ReleaseUsageError as exc:
