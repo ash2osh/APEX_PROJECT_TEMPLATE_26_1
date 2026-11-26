@@ -15,6 +15,8 @@ The selection belongs to the local checkout. Setup writes ignored configuration 
 
 Codex reads project settings only after the checkout is trusted. Reload the coding client after changing the selection. The selected MCP package is launched by the client; Node.js and npm/npx must be available then. Setup itself needs Python 3.10 or newer.
 
+For repeatable multi-user DEV acceptance tests, see [optional Playwright testing](playwright-testing.md).
+
 ## Browser choices
 
 - Chrome starts the pinned Chrome DevTools MCP with auto-connect enabled.

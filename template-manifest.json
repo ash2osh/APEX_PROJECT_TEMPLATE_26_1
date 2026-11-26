@@ -24,6 +24,7 @@
     "apps/templates/**",
     "docs/CHROME_DEVTOOLS_MCP.md",
     "docs/browser-mcp.md",
+    "docs/playwright-testing.md",
     "docs/ci-checks.md",
     "docs/compare-env.md",
     "docs/sqlcl-sessions.md",
@@ -47,6 +48,7 @@
     "tests/**",
     "tools/chrome_devtools_client.py",
     "tools/chrome_mcp_daemon.py",
+    "tools/playwright_acceptance.py",
     "tools/workflow-skills/**",
     "docs/workflow-skills.md"
   ],

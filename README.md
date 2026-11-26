@@ -61,18 +61,20 @@ Each line names one route and links to the single place that owns its procedure.
 | Safety built in | Every connection is identity-checked, production-looking names are caught, `release run` requires `--confirm-target` matching live `DB_UNIQUE_NAME`, file installs are all-or-nothing, and your uncommitted work is never overwritten. |
 | Template upgrades | `upgrade-template` updates the template's own files and never touches your apps, release bundles, database copy or `.env`. |
 | Knowledge graph | Optional Graphify index that links each app's pages, regions and processes to the tables and packages they use. |
-| AI-assistant support | Repository rules, 13 skills, optional workflow packs, SQLcl MCP, per-checkout Chrome/Firefox MCP selection, and an optional Chrome daemon. |
+| AI-assistant support | Repository rules, 14 skills, optional workflow packs, SQLcl MCP, per-checkout Chrome/Firefox MCP selection, and an optional Chrome daemon. |
 | Bash and PowerShell | `scripts/team.sh` and `scripts/team.ps1` expose the same commands. |
 
 ## Skills and agent support
 
 AI coding assistants read [AGENTS.md](AGENTS.md) (Claude Code loads it through
 `CLAUDE.md`) for the rules and load a skill on their own when a task matches
-its description. The same 13 skills for APEX and project setup are listed in `.agents/skills/` (for agents
+its description. The same 14 skills for APEX, browser testing, and project setup are listed in `.agents/skills/` (for agents
 that follow the `AGENTS.md` convention) and `.claude/skills/` (for Claude Code).
 Five Claude Code entries (`building-apex-template-components`, `chrome-devtools-mcp`, `firefox-devtools-mcp`,
 `safeguarding-apexlang-text-messages` and `sqlcl-mcp-r0`) are short pointers to the full `.agents/skills/` copy.
 You do not have to call them by name.
+
+Use `playwright-browser-testing` for optional multi-user DEV acceptance checks. See the [Playwright guide](docs/playwright-testing.md).
 
 Agents also load a conversation style at the start of each conversation: set `AGENT_STYLE` in
 `.env` (`standard`, `concise`, `teaching` or `asharif-style`). Your own preferences accumulate in
