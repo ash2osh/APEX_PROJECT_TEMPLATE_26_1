@@ -146,8 +146,8 @@ Each successful `release run` writes `releases/<slug>/state/<env>.json` for the 
 `release adopt <bundle> --env dev|staging` gives a bundle that ran before `state/<env>.json` existed a record, so the next run applies only what is really missing. It reads the database once per schema (read-only, same identity guard as `check`) and never applies anything. `release.json` is not changed; the next normal run sets `staged`.
 
 - **Code steps** (packages, views, triggers) are recorded when the live source equals the bundle file after both are reduced to the text Oracle keeps (no `ALTER SESSION` header, `CREATE OR REPLACE` prefix or terminating `/`; no GRANT lines).
-- **DDL and ORDS steps** need `--report <path>` to a successful run report for this bundle and environment. A step is recorded only when the report's identity matches the live schema, the file at the report's commit (`--commit`, default the report's `Commit`) equals today's file, and every object the step names exists.
-- **Apps** (staging only) need the report too, and the app folder must equal its state at that commit.
+- **DDL and ORDS steps** need `--report <path>` to a successful run report for this bundle and environment. A step is recorded only when the report's identity matches the live schema, the file at the report's commit (`--commit`, default the report's `Commit`) equals today's file, and every object the step names exists. A name parsed from DDL counts as present when it exists under any type that statement could mean (a `GRANT` names several). Objects listed explicitly in `release.json` must exist with their own type. A step that names no object (seed `INSERT`/`MERGE`) is recorded on the report alone (`objectCheck: none`).
+- **Apps** (staging only) need the report too, and the app folder must equal its state at that commit. Git-ignored local files in the folder (exports, local deployment files) do not count; untracked files do.
 - Anything else is printed as `not proven: <file> (<reason>)` and applied by the next run.
 
 ```bash
